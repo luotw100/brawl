@@ -1,0 +1,60 @@
+# 演出栈：一个 compose project = 一个"频道"。多栈并行（直播 + 调试）靠不同的
+# env 文件区分 COMPOSE_PROJECT_NAME / 端口 / 片库：
+#
+#   docker compose --env-file .env.live  up -d --build   # 直播频道
+#   docker compose --env-file .env.debug up -d --build   # 调试频道
+#
+# 所有变量必须由 env 文件显式给出（不设默认），缺了直接起不来——防止静默连错栈。
+services:
+  stage:
+    profiles: ["app"]
+    build: .
+    environment:
+      BRAWL_STAGE_REPLAY_ROOT: /data/replays
+      BRAWL_STAGE_STAGE_TOKEN: ${STAGE_TOKEN:?}
+      BRAWL_STAGE_CONSOLE_TOKEN: ${CONSOLE_TOKEN:?}
+      BRAWL_STAGE_PACE: ${PACE:?}
+      BRAWL_STAGE_INTERMISSION_SECONDS: ${INTERMISSION_SECONDS:?}
+      BRAWL_STAGE_LOOP_POOL: ${LOOP_POOL:?}
+    volumes:
+      - ${REPLAY_DIR:?}:/data/replays:ro  # 每局 replay 自带显示名/音色（meta.json），无需再挂 cast.yaml
+    # 刻意不发布端口：唯一入口是 caddy→frpc 的公网域名（和 wangzonghao 一致，不占本地端口）
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ edge
+  # 公网 https（外面调试用）：Caddy 在本机终结 TLS（Cloudflare DNS-01 签证书），
+  # frpc 主动外连 frp 中继做 TCP 透传——家里零入站端口，中继只见密文。
+  # 与 wangzonghao 共用同一个 frps 中继与 Cloudflare 账号，但容器互相独立。
+  caddy:
+    profiles: ["edge"]
+    build:
+      context: edge/caddy
+    environment:
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+      STAGE_DOMAIN: ${STAGE_DOMAIN:-}
+    volumes:
+      - ./edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - stage
+    restart: unless-stopped
+
+  frpc:
+    profiles: ["edge"]
+    image: snowdreamtech/frpc:0.69.0
+    environment:
+      FRP_SERVER_ADDR: ${FRP_SERVER_ADDR:-}
+      FRP_TOKEN: ${FRP_TOKEN:-}
+      FRP_PROXY_NAME: ${COMPOSE_PROJECT_NAME:?}-https
+      FRP_REMOTE_PORT: ${FRP_REMOTE_PORT:-}
+      STAGE_DOMAIN: ${STAGE_DOMAIN:-}
+    volumes:
+      - ./edge/frpc.toml:/etc/frp/frpc.toml:ro
+    depends_on:
+      - caddy
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:

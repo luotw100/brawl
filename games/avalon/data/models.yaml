@@ -1,0 +1,140 @@
+# LLM Provider 池：逻辑模型名 → OpenAI 兼容端点。与人设解耦——
+# 哪个座位用哪个模型由运行时 settings.models 决定（见 settings.py / --models）。
+# 换厂商/换参数只改这里。api_key_env 指向真实环境变量名（放 .env）。
+#
+# 池里只放实测能调通、且有 key 的模型——缺 key / 端点不通现在会直接报错（不再静默兜底）。
+# DeepSeek 两款是混合思考模型，阿瓦隆本质是推理博弈，故 extra_body 开启 thinking（卧底实测
+# 显著提升玩得好不好）：真推理走隐藏的 reasoning 通道，resp.content 只剩干净 JSON，prompt
+# 要求公开输出（含 monologue）简短——monologue 是给观众看的内心戏、不是模型的草稿纸。开思考
+# 后单次更慢，timeout 给到 120s；不设 max_tokens（=None，由 timeout 兜底）以免推理长被截断。
+#
+# opencode go（https://opencode.ai/zen/go/v1）是聚合端点，单把 OPENCODE_API_KEY。
+# 2026-06-12 实测 /models 共 18 款，逐个打 /chat/completions：17 款通；qwen3.7-max
+# 报 "not supported for format oa-compat"（不走 OpenAI 兼容格式），不收录。
+# 名字统一加 oc- 前缀以区分直连 DeepSeek。聚合端透传 extra_body 行为未验证，先不开 thinking。
+models:
+  - name: deepseek-v4-flash
+    base_url: https://api.deepseek.com
+    model_id: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+    temperature: 0.7
+    timeout: 120
+    extra_body:
+      thinking:
+        type: enabled
+
+  - name: deepseek-v4-pro
+    base_url: https://api.deepseek.com
+    model_id: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    temperature: 0.7
+    timeout: 120
+    extra_body:
+      thinking:
+        type: enabled
+
+  # opencode go 聚合端点（OPENCODE_API_KEY）
+  - name: oc-minimax-m3
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: minimax-m3
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-minimax-m2.7
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: minimax-m2.7
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-minimax-m2.5
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: minimax-m2.5
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-kimi-k2.6
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: kimi-k2.6
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-kimi-k2.5
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: kimi-k2.5
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-glm-5.1
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: glm-5.1
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-glm-5
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: glm-5
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-deepseek-v4-pro
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: deepseek-v4-pro
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-deepseek-v4-flash
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: deepseek-v4-flash
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-qwen3.7-plus
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: qwen3.7-plus
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-qwen3.6-plus
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: qwen3.6-plus
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-qwen3.5-plus
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: qwen3.5-plus
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-mimo-v2.5-pro
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: mimo-v2.5-pro
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-mimo-v2.5
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: mimo-v2.5
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120
+
+  - name: oc-hy3-preview
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: hy3-preview
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    timeout: 120

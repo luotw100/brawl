@@ -1,0 +1,10 @@
+{
+	acme_dns cloudflare {env.CF_API_TOKEN}
+}
+
+# 演出服务整站反代：/（页面静态）、/api（导播台控制）、/ws（频道）、/replays（音频）。
+# Caddy 对 WebSocket 透传开箱即用，无需额外配置。
+{$STAGE_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy stage:8000
+}

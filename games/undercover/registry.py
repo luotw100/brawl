@@ -1,0 +1,84 @@
+"""加载可调内容：LLM Provider 池、人设库、流派库、词库。全部来自 undercover/data/*.yaml。
+
+人设、流派、模型三轴彻底解耦：Persona 只有"怎么说话"（嗓音），Strategy 只有"怎么赢"
+（打法哲学），ModelSpec 只有接入信息（智商），运行时由 settings 的三套座位映射独立配起来。
+"""
+
+from __future__ import annotations
+
+import random
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
+
+DATA_DIR = Path(__file__).parent / "data"
+
+
+class ModelSpec(BaseModel):
+    """一个逻辑模型的 OpenAI 兼容接入规格。"""
+
+    name: str
+    base_url: str
+    model_id: str
+    api_key_env: str
+    temperature: float = 0.9
+    max_tokens: int | None = None  # None = 不设上限，由 timeout 兜底（开 thinking 后推理长，别截断）
+    timeout: float = 60  # 单次调用客户端超时（秒）；超时直接抛错，不兜底
+    extra_body: dict[str, Any] = Field(default_factory=dict)  # 透传给 API 的额外参数，如开/关思考
+
+
+class Persona(BaseModel):
+    """一个人设：只管"是谁、怎么说话"，不绑定模型。"""
+
+    id: str
+    name: str
+    system: str
+
+
+class Strategy(BaseModel):
+    """一个流派：只管"怎么赢"（风险偏好与主动性），不绑定人设与模型。"""
+
+    id: str
+    name: str
+    system: str
+
+
+@dataclass
+class Registry:
+    """data/ 下四份可调内容的内存视图。"""
+
+    models: dict[str, ModelSpec]
+    personas: dict[str, Persona]
+    strategies: dict[str, Strategy]
+    word_pairs: list[tuple[str, str]]
+
+    def model_names(self) -> list[str]:
+        return list(self.models)
+
+    def persona_ids(self) -> list[str]:
+        return list(self.personas)
+
+    def strategy_ids(self) -> list[str]:
+        return list(self.strategies)
+
+    def random_word_pair(self, rng: random.Random) -> tuple[str, str]:
+        """随机抽一对，并随机决定方向（返回 (平民词, 卧底词)）。"""
+        pair = list(rng.choice(self.word_pairs))
+        rng.shuffle(pair)
+        return pair[0], pair[1]
+
+
+def load_registry(data_dir: Path = DATA_DIR) -> Registry:
+    models_raw = yaml.safe_load((data_dir / "models.yaml").read_text(encoding="utf-8"))
+    cast_raw = yaml.safe_load((data_dir / "cast.yaml").read_text(encoding="utf-8"))
+    strategies_raw = yaml.safe_load((data_dir / "strategies.yaml").read_text(encoding="utf-8"))
+    words_raw = yaml.safe_load((data_dir / "words.yaml").read_text(encoding="utf-8"))
+
+    models = {m["name"]: ModelSpec(**m) for m in models_raw["models"]}
+    personas = {p["id"]: Persona(**p) for p in cast_raw["personas"]}
+    strategies = {s["id"]: Strategy(**s) for s in strategies_raw["strategies"]}
+    word_pairs = [(a, b) for a, b in words_raw["word_pairs"]]
+    return Registry(models=models, personas=personas, strategies=strategies, word_pairs=word_pairs)
