@@ -21,7 +21,9 @@ const roleLabel = (r: string) => ROLE[r] ?? r;
 
 const CIRC = "①②③④⑤⑥⑦⑧⑨⑩";
 const circ = (n: number) => CIRC[n - 1] ?? `${n}`;
-const ROMAN = ["I", "II", "III", "IV", "V"];
+const seatList = (ns: number[]) => ns.map(circ).join("");
+const CN = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+const cn = (n: number) => CN[n] ?? `${n}`;
 
 function hueOf(key: string): number {
   let h = 0;
@@ -92,17 +94,16 @@ function TopHud({ scene }: { scene: Scene }) {
       </div>
       <div className="hud-center">
         <div className="mission-track">
-          <span className="track-score good">{good}</span>
+          <span className="track-score good"><i>蓝</i>{good}</span>
           <div className="missions">
             {scene.missions.map((m, i) => (
               <div key={i} className={`dot ${m ?? (i + 1 === scene.quest_no ? "current" : "todo")}`}>
-                {m === "success" ? "✓" : m === "fail" ? "✕" : ROMAN[i]}
+                {m === "success" ? "✓" : m === "fail" ? "✕" : ""}
               </div>
             ))}
           </div>
-          <span className="track-score evil">{evil}</span>
+          <span className="track-score evil">{evil}<i>红</i></span>
         </div>
-        <div className="hud-sub">第 {scene.quest_no} 任务 · 第 {scene.attempt} 次组队</div>
         <Carousel scene={scene} />
       </div>
       <div className="hud-right" />
@@ -110,19 +111,39 @@ function TopHud({ scene }: { scene: Scene }) {
   );
 }
 
-// 前情回顾：一事件一条，竖向逐条翻页（停 ~3.3s 整条上滑、下一条从底滑入），像球场广告牌。
+// 前情提要：把全场每个关键节点（每次组队、每次发车）按时序逐条循环播，给中途进来的
+// 观众补课。5s 一条，叠帧卷轴：传送带停住让人看清→缓缓上移，旧条从顶卷出、新条从底升入。
+const HOLD_MS = 7800;
+const SLIDE_MS = 900;
 function Carousel({ scene }: { scene: Scene }) {
   const items = buildItems(scene);
   const [idx, setIdx] = useState(0);
+  const [sliding, setSliding] = useState(false);
   useEffect(() => {
-    const t = window.setInterval(() => setIdx((i) => i + 1), 3300);
-    return () => window.clearInterval(t);
-  }, []);
+    let hold: number, slide: number;
+    const tick = () => {
+      setSliding(true);
+      slide = window.setTimeout(() => {
+        setSliding(false);
+        setIdx((i) => i + 1);
+        hold = window.setTimeout(tick, HOLD_MS);
+      }, SLIDE_MS);
+    };
+    hold = window.setTimeout(tick, HOLD_MS);
+    return () => { window.clearTimeout(hold); window.clearTimeout(slide); };
+  }, [items.length]);
   if (items.length === 0) return <div className="carousel" />;
-  const cur = idx % items.length;
+  const cur = items[idx % items.length];
+  const nxt = items[(idx + 1) % items.length];
   return (
     <div className="carousel">
-      <div className="cline" key={cur}>{items[cur]}</div>
+      <span className="carousel-tag">前情提要</span>
+      <div className="belt">
+        <div className={`belt-track${sliding ? " slide" : ""}`}>
+          <div className="cline">{cur}</div>
+          <div className="cline">{nxt}</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -131,25 +152,29 @@ function buildItems(scene: Scene): ReactNode[] {
   const good = scene.missions.filter((m) => m === "success").length;
   const evil = scene.missions.filter((m) => m === "fail").length;
   const items: ReactNode[] = [
-    <span>比分 <span className="ok">{good}</span> : <span className="bad">{evil}</span></span>,
+    <span><span className="rc-when">当前比分</span> <span className="ok">蓝 {good}</span> ： <span className="bad">红 {evil}</span></span>,
   ];
   scene.timeline.forEach((t) => {
-    const teamNos = t.team.map((n) => circ(n)).join(" ");
     if (t.kind === "proposal") {
+      // 投票不写"赞成/反对"，赞成染蓝、反对染红，靠颜色区分
       items.push(
         <span>
-          第{t.quest}轮·{t.attempt}组 {circ(t.leader_no)}组队 {teamNos}
-          {" "}<span className={t.approved ? "ok" : "bad"}>{t.approved ? "通过" : "否决"}</span>
-          {" "}赞{t.approves.length} 反{t.rejects.length}
+          <span className="rc-when">第{cn(t.quest)}任务·第{cn(t.attempt)}次组队</span>
+          {"　"}{circ(t.leader_no)} 提 <span className="rc-team">{seatList(t.team)}</span>
+          {"　"}<span className="ok">{seatList(t.approves)}</span>
+          {t.rejects.length > 0 && <span className="bad rc-gap">{seatList(t.rejects)}</span>}
+          {"　"}<span className={t.approved ? "ok" : "bad"}>{t.approved ? "通过" : "否决"}</span>
         </span>,
       );
     } else {
+      // 队员号码直接按各自亮的牌染色：成功蓝、破坏红，不再写"队/成功/破坏"
       items.push(
         <span>
-          第{t.quest}轮发车 {teamNos}
-          {" "}<span className={t.result === "success" ? "ok" : "bad"}>
-            {t.result === "success" ? "成功" : `失败·破${t.fails}票`}
-          </span>
+          <span className="rc-when">第{cn(t.quest)}次发车</span>
+          {"　"}{t.team.map((n) => (
+            <span key={n} className={t.fail_seats.includes(n) ? "bad" : "ok"}>{circ(n)}</span>
+          ))}
+          {"　"}<span className={t.result === "success" ? "ok" : "bad"}>{t.result === "success" ? "成功" : "失败"}</span>
         </span>,
       );
     }

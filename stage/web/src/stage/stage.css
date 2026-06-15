@@ -45,28 +45,43 @@
 .track-score { font: 900 46px var(--f-display); text-shadow: var(--ts-strong); }
 .track-score.good { color: var(--c-good-bright); }
 .track-score.evil { color: var(--c-evil-bright); }
+.track-score i { font: 700 22px var(--f-sans); font-style: normal; opacity: .82; margin: 0 8px; vertical-align: 8px; }
 .missions { display: flex; align-items: center; gap: 13px; }
 .dot {
   width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center;
-  font: 900 22px var(--f-display); border: 2px solid rgba(214,173,87,.4);
+  font: 900 24px var(--f-display); border: 2px solid rgba(214,173,87,.4);
   background: rgba(20,15,8,.45); color: var(--c-gold-faint);
 }
-.dot.success { background: radial-gradient(circle at 35% 30%, var(--c-good-bright), var(--c-good)); color:#fff; border-color: var(--c-gold-deep); box-shadow: 0 0 16px rgba(60,120,210,.55); }
-.dot.fail    { background: radial-gradient(circle at 35% 30%, var(--c-evil-bright), var(--c-evil)); color:#fff; border-color: var(--c-gold-deep); box-shadow: 0 0 16px rgba(180,40,70,.55); }
+/* 已进行：实心染色，圈内叠一个很淡的 ✓/✕ 兜底（色弱 / 直播压缩可读） */
+.dot.success { background: radial-gradient(circle at 35% 30%, var(--c-good-bright), var(--c-good)); color: rgba(255,255,255,.78); border-color: var(--c-gold-deep); box-shadow: 0 0 16px rgba(60,120,210,.55); }
+.dot.fail    { background: radial-gradient(circle at 35% 30%, var(--c-evil-bright), var(--c-evil)); color: rgba(255,255,255,.78); border-color: var(--c-gold-deep); box-shadow: 0 0 16px rgba(180,40,70,.55); }
+/* 进行中：金色呼吸；未进行(.todo)用基础空心暗圈即可，无需额外样式 */
 .dot.current { width: 58px; height: 58px; border-color: var(--c-gold); color: var(--c-gold); animation: dotPulse 1.9s infinite; }
 @keyframes dotPulse { 0%,100%{box-shadow:0 0 0 0 rgba(240,208,137,.5),0 0 20px rgba(240,208,137,.5)} 50%{box-shadow:0 0 0 8px rgba(240,208,137,0),0 0 30px rgba(240,208,137,.9)} }
 
-.hud-sub { font: 600 21px var(--f-sans); color: var(--c-text-soft); text-shadow: var(--ts-soft); }
-
-.carousel { width: 640px; height: 38px; overflow: hidden; position: relative; }
+/* 前情提要：标题居中压在传送带上方（无竖杠、不贴边），内容在下方滚动 */
+.carousel { width: 1040px; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.carousel-tag {
+  font: 700 16px var(--f-sans); letter-spacing: .42em; text-indent: .42em;
+  color: var(--c-gold-faint); text-shadow: var(--ts-soft);
+}
+/* 传送带：只露一行高，顶/底用 mask 渐隐做卷轴的"缓缓出/入" */
+.belt {
+  width: 100%; height: 40px; overflow: hidden;
+  -webkit-mask-image: linear-gradient(transparent, #000 30%, #000 70%, transparent);
+  mask-image: linear-gradient(transparent, #000 30%, #000 70%, transparent);
+}
+.belt-track { display: flex; flex-direction: column; }
+.belt-track.slide { transition: transform var(--belt-slide, .9s) cubic-bezier(.4,0,.2,1); transform: translateY(-40px); }
 .cline {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  height: 40px; flex: none; display: flex; align-items: center; justify-content: center;
   white-space: nowrap; font: 600 21px var(--f-sans); color: var(--c-text-soft); text-shadow: var(--ts-soft);
-  animation: flipUp .55s cubic-bezier(.2,.8,.2,1) both;
 }
 .cline .ok { color: var(--c-ok); }
 .cline .bad { color: var(--c-bad); }
-@keyframes flipUp { from { opacity: 0; transform: translateY(110%); } to { opacity: 1; transform: translateY(0); } }
+.rc-when { color: var(--c-gold-dim); font-weight: 700; margin-right: 4px; }
+.rc-team { color: var(--c-gold); }
+.rc-gap { margin-left: .5em; }
 
 .arena { position: absolute; inset: 0; }
 .col { position: absolute; top: 200px; bottom: 80px; width: 336px; display: flex; flex-direction: column; justify-content: space-around; }
