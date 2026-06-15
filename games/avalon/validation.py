@@ -22,11 +22,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import random
 from dataclasses import dataclass
 
-
+from avalon import resume as resume_mod
 from avalon.registry import Registry
 from avalon.settings import AvalonSettings, SettingsError
 from avalon.state import Role
@@ -172,6 +173,30 @@ def _check_env(settings: AvalonSettings, models: list[str], registry: Registry) 
 
 
 def _check_replay(settings: AvalonSettings) -> None:
-    """--replay 目录已存在即报错（不覆盖、无 --force）：要重跑换个名。"""
+    """新局：--replay 目录已存在即报错（不覆盖、无 --force）：要重跑换个名。
+    （续跑反过来要求目录已存在，那条在 validate_resume 里把守，不走这里。）"""
     if settings.replay is not None and settings.replay.exists():
         raise SettingsError(f"--replay 目录已存在，拒绝覆盖：{settings.replay}（换个名，或先删掉它）")
+
+
+def validate_resume(settings: AvalonSettings, registry: Registry) -> dict:
+    """续跑的边界校验（与 resolve_and_validate 对称，但不重摇开局——开局方案与对局状态都
+    从 checkpoint/meta 恢复，绝不再掷骰子）。查清：目录在、有 checkpoint 与可续跑水位、
+    meta 可读、用到的模型 key 都已配。返回解析好的 meta（含开局方案，供编排层取用）。
+
+    replay 已存在由 settings 形状校验保证（--resume 必带 --replay）；这里查"世界一致性"。"""
+    run_dir = settings.replay
+    assert run_dir is not None  # settings._check 已保证 --resume 必带 --replay
+    if not run_dir.exists():
+        raise SettingsError(f"--resume 指向的对局目录不存在：{run_dir}")
+    if not resume_mod.has_checkpoint(run_dir):
+        raise SettingsError(f"{run_dir} 里没有 checkpoint 数据库，无法续跑（它可能不是续跑产出的对局）")
+    if resume_mod.last_watermark(run_dir) is None:
+        raise SettingsError(f"{run_dir} 还没跑出任何可续跑的完整检查点；请重开新局而非续跑")
+    meta_path = run_dir / "meta.json"
+    if not meta_path.exists():
+        raise SettingsError(f"{run_dir} 缺 meta.json，无法续跑")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    # 开局已定，模型清单从 meta 取（不是从当前 settings——续跑要忠于原局）；只查它们的 key 在不在。
+    _check_env(settings, meta["setup"]["models"], registry)
+    return meta

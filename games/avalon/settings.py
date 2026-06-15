@@ -99,6 +99,10 @@ class AvalonSettings(BaseSettings):
     # 平铺写进该目录;不给=只渲染不落盘。目录已存在即报错(不覆盖、无 --force)。
     replay: Path | None = None
 
+    # 断点续生成:--resume 配合 --replay 指向一个**已存在**、中途崩掉的对局目录,从最后一个
+    # 完整 super-step 接着往下跑(见 resume.py),不重摇开局、不从头重烧。新局不要给这个开关。
+    resume: bool = False
+
     @property
     def evil(self) -> int:
         return rules.EVIL_COUNT[self.players]
@@ -126,6 +130,8 @@ class AvalonSettings(BaseSettings):
                 raise ValueError(f"{field} 长度 {len(val)} 必须等于 players={self.players}")
         if self.concurrency < 1:
             raise ValueError(f"concurrency 必须 ≥1,收到 {self.concurrency}")
+        if self.resume and self.replay is None:
+            raise ValueError("--resume 需配合 --replay 指向那个要续跑的对局目录")
         return self
 
     # ------------------------------------------------------------------
