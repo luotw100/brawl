@@ -9,7 +9,7 @@ import pytest
 
 from server import scene as avalon
 from server.protocol import FeedItem, Scene
-from server.tests.conftest import EVENTS
+from server.tests.conftest import EVENTS, write_replay
 
 
 def _adapt_all(replay_root):
@@ -113,7 +113,8 @@ def test_audio_url_from_manifest(replay_root):
 
 def test_load_tts_missing_is_empty(replay_root):
     # 没有 TTS 的老 replay：空表，发言回退字数估算、不带音频
-    assert avalon.load_tts(replay_root / "game1") == {}
+    bare = write_replay(replay_root, "no-tts", voiced=False)
+    assert avalon.load_tts(bare) == {}
 
 
 def test_host_name_fallback(tmp_path):

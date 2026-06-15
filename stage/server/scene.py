@@ -86,6 +86,50 @@ def audio_durations(replay_id: str, tts: dict[str, dict[str, Any]]) -> dict[str,
             if (url := _audio_url(replay_id, cid, tts)) is not None}
 
 
+# 每条公开发言事件的 (call_id 字段, 文本字段)。与 games/avalon/tts.py 的 _utterances 同一套
+# 名单：那边合成谁、进库就核对谁，多一个少一个都会让"配音齐了没"判错。game_end 不配音故不在内。
+_VOICED = {
+    "host": ("call_id", "text"),
+    "propose": ("call_id", "speech"),
+    "discuss": ("call_id", "text"),
+    "lady": ("announce_call_id", "speech"),
+    "assassination": ("call_id", "speech"),
+    "banter": ("call_id", "text"),
+}
+
+
+def is_broadcastable(replay_dir: Path) -> bool:
+    """这局能否进直播库：①对局跑完——events 里有 game_end（游戏逻辑只在真·终局发的，
+    比"没有 state.sqlite"强：半截崩溃同样没 game_end，一并拦住）；②配音齐——每条公开发言
+    都有 manifest 记录且 .opus 文件还在。两道独立闸，AND。
+
+    为什么"有 manifest.json"不算配齐：manifest 是 games/avalon/tts.py 逐条合成成功就增量
+    刷盘的，半截 TTS 也会留下部分 manifest——所以得照 tts 的差集逐条核对。这里**stat 文件**
+    （播放期刻意不 stat、唯 manifest 是真相）是因为换声工作流会"改 meta + 删产物 + 续转"，
+    manifest 留着记录而 .opus 已删，得统计出来判未齐。
+
+    残缺/损坏一律判否：这是边界过滤，library 拿到的都是真能播的，扫描自身绝不因坏目录崩。"""
+    try:
+        events = load_events(replay_dir)
+        if not any(e.get("type") == "game_end" for e in events):
+            return False
+        tts = load_tts(replay_dir)
+        tts_dir = replay_dir / "tts"
+        for ev in events:
+            spec = _VOICED.get(ev["type"])
+            if spec is None:
+                continue
+            cid_field, text_field = spec
+            if not (ev.get(text_field) or "").strip():
+                continue  # 空发言 tts 不合成，这里也不要求
+            entry = tts.get(ev.get(cid_field) or "")
+            if entry is None or not (tts_dir / entry["file"]).is_file():
+                return False
+        return True
+    except (OSError, json.JSONDecodeError, KeyError):
+        return False
+
+
 def load_host_name(replay_dir: Path) -> str:
     """meta.setup.host_name → 主持人显示名（生成时快照进 meta，与玩家显示名同源）。
     老 replay 没有 host 事件、这名字不会被用到；缺 meta/host_name 都退 '主持人'。"""

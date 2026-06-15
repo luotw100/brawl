@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from server.scene import _VOICED
 from server.settings import StageSettings
 
 # 一局覆盖全部 10 种事件类型的微型 replay（手工裁剪，形状与 avalon/nodes.py 的 emit 一致）
@@ -48,15 +49,38 @@ META_NAMES = ["老狐狸", "社恐", "戏精", "阴阳师", "大姐头"]
 META_HOST_NAME = "司仪"
 
 
-def write_replay(root: Path, name: str, events: list[dict] | None = None) -> Path:
+def write_replay(root: Path, name: str, events: list[dict] | None = None, *, voiced: bool = True) -> Path:
+    """造一局 replay。默认 voiced=True 连配音产物一起写，是一局"跑完且配音齐"的可播局；
+    voiced=False 只留事件流（模拟 TTS 没跑/没跑完），用来验进库闸把它挡在外面。"""
     d = root / name
     d.mkdir(parents=True)
+    evs = events if events is not None else EVENTS
     d.joinpath("events.jsonl").write_text(
-        "\n".join(json.dumps(e, ensure_ascii=False) for e in (events or EVENTS)), encoding="utf-8")
+        "\n".join(json.dumps(e, ensure_ascii=False) for e in evs), encoding="utf-8")
     d.joinpath("meta.json").write_text(json.dumps({"setup": {
         "cast": META_CAST, "names": META_NAMES, "host_cast": "herald", "host_name": META_HOST_NAME,
     }}, ensure_ascii=False), encoding="utf-8")
+    if voiced:
+        _write_tts(d, evs)
     return d
+
+
+def _write_tts(replay_dir: Path, events: list[dict]) -> None:
+    """给每条公开发言写一份 .opus 桩 + manifest 记录（口径同 is_broadcastable / tts.py）。"""
+    tts = replay_dir / "tts"
+    tts.mkdir()
+    manifest: dict[str, dict] = {}
+    for ev in events:
+        spec = _VOICED.get(ev["type"])
+        if spec is None:
+            continue
+        cid_field, text_field = spec
+        if not (ev.get(text_field) or "").strip():
+            continue
+        cid = ev[cid_field]
+        tts.joinpath(f"{cid}.opus").write_bytes(b"OggS-stub")
+        manifest[cid] = {"file": f"{cid}.opus", "duration_ms": 0}  # 桩：进库只看存在性，时长不参与
+    tts.joinpath("manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
 
 @pytest.fixture

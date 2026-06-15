@@ -6,7 +6,7 @@ import asyncio
 
 from server.engine import Engine, _upcoming_audio
 from server.protocol import GameOpen, Speech, VoteReveal
-from server.tests.conftest import write_replay
+from server.tests.conftest import EVENTS, write_replay
 
 
 def test_upcoming_audio_collects_next_urls_skipping_silent():
@@ -129,10 +129,22 @@ async def test_queue_precedes_pool(settings):
     assert engine.replay_id == "game2" or any(p == "playing" for p, _ in rec.states)
 
 
-def test_library_only_lists_real_replays(settings):
+def test_library_only_lists_broadcastable_replays(settings):
+    """进库闸：只列"跑完且配音齐"的局，挡住裸目录/没配音/没跑完三类残局。"""
     (settings.replay_root / "junk").mkdir()  # 没有 events.jsonl 的目录不算片
+    write_replay(settings.replay_root, "silent", voiced=False)  # 跑完但 TTS 没生成
+    unfinished = [e for e in EVENTS if e["type"] != "game_end"]  # 缺终局事件 = 没跑完
+    write_replay(settings.replay_root, "running", events=unfinished)
     engine, _ = make_engine(settings)
     assert engine.library() == ["game1"]
+
+
+def test_library_excludes_replay_with_missing_audio_file(settings):
+    """配音齐的判据 stat 到文件：manifest 留着记录但 .opus 被删（换声/搬运掉了），判未齐。"""
+    game = write_replay(settings.replay_root, "holey")
+    next(game.joinpath("tts").glob("*.opus")).unlink()
+    engine, _ = make_engine(settings)
+    assert "holey" not in engine.library()
 
 
 def test_public_scene_respects_feed_window(settings):

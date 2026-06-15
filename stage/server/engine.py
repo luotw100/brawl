@@ -79,8 +79,8 @@ class Engine:
     # ---------------------------------------------------------------- 对外状态
 
     def library(self) -> list[str]:
-        """replay_root 下所有可播的局（边界过滤：有 events.jsonl 才算）。"""
-        return sorted(d.name for d in self._root.iterdir() if (d / "events.jsonl").is_file())
+        """replay_root 下所有可播的局（边界过滤：跑完且配音齐，详见 scene.is_broadcastable）。"""
+        return sorted(d.name for d in self._root.iterdir() if d.is_dir() and avalon.is_broadcastable(d))
 
     def public_scene(self) -> Scene:
         """下发给页面的 Scene：feed 按窗口旋钮裁剪（服务端硬上限只是内部护栏）。"""

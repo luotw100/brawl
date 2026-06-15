@@ -109,7 +109,7 @@ def test_static_shell_requires_token(settings, tmp_path):
 
 def test_replay_audio_served_but_nothing_else(client, settings):
     tts = settings.replay_root / "game1" / "tts"
-    tts.mkdir()
+    tts.mkdir(exist_ok=True)  # fixture 已建配音目录，这里只是再塞一条 wav 验证只发音频
     (tts / "1.1.host.opening.wav").write_bytes(b"RIFF")
     (tts / "manifest.json").write_text('{"x": 1}')
     (settings.replay_root / "game1" / "llm_calls.jsonl").write_text("secret prompts")
