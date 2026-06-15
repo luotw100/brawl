@@ -20,6 +20,12 @@ description: 本项目编程规范，写/改任何代码之前必须先完整读
   git worktree add .agent-worktrees/<branch> -b <branch>
   ```
   之后所有改动、运行、验证都在这个 worktree 里进行，主工作树保持干净。**完成并验证后，再问用户：要不要把这个分支合入主分支？** 得到明确同意才合并，否则停在分支上交给用户处置。
+  - **合入方式：rebase 到最新 master + fast-forward only**——不要 `--no-ff` 留合并提交。主分支可能在你干活期间被并发推进，所以先 `git fetch` 再把分支 rebase 到最新 master，然后 `git merge --ff-only`（或等价的 ff 推进）合入并 push。保持线性历史。
+    ```bash
+    git fetch origin && git rebase origin/master   # 在分支上，解决冲突
+    git switch master && git merge --ff-only <branch> && git push origin master
+    ```
+  - 合并后清理：`git worktree remove`、删掉已合并分支；若改了依赖，记得在主工作树 `uv sync`。
 - **用户拒绝** → 按用户的意思直接在当前工作树改。
 
 这条和[铁律"未经授权不写代码"]是一对：先聊定方案拿授权，再问分支+worktree，最后才动手。
