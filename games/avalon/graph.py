@@ -10,13 +10,17 @@ START → pregame → 组队 → 讨论 → 表决 ──通过──→ 任务 
 
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.graph import END, START, StateGraph
 
 from avalon import nodes
 from avalon.state import GameState
 
 
-def build_graph():
+def build_graph(checkpointer: Any = None):
+    """装配并编译图。给了 checkpointer（续跑用，见 resume.py）就让 LangGraph 在每个
+    super-step 后持久化整份 GameState；不给（缺省，等价旧行为）则纯内存跑、不可续。"""
     g = StateGraph(GameState)
     g.add_node("pregame", nodes.pregame_node)
     g.add_node("propose", nodes.propose_node)
@@ -41,4 +45,4 @@ def build_graph():
     g.add_edge("lady", "propose")
     g.add_edge("assassinate", "postgame")
     g.add_edge("postgame", END)
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
