@@ -15,7 +15,6 @@
 .bg::before {
   content: ""; position: absolute; inset: 0;
   background-image: var(--scene-url); background-size: cover; background-position: center;
-  opacity: var(--scene-url, 0);
 }
 .bg::after {
   content: ""; position: absolute; inset: 0;
@@ -59,23 +58,18 @@
 
 .hud-sub { font: 600 21px var(--f-sans); color: var(--c-text-soft); text-shadow: var(--ts-soft); }
 
-.carousel {
-  width: 780px; height: 42px; overflow: hidden; position: relative;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 9%, #000 91%, transparent);
-          mask-image: linear-gradient(90deg, transparent, #000 9%, #000 91%, transparent);
+.carousel { width: 640px; height: 38px; overflow: hidden; position: relative; }
+.cline {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  white-space: nowrap; font: 600 21px var(--f-sans); color: var(--c-text-soft); text-shadow: var(--ts-soft);
+  animation: flipUp .55s cubic-bezier(.2,.8,.2,1) both;
 }
-.ticker-row {
-  position: absolute; left: 0; top: 0; height: 42px; display: flex; align-items: center; gap: 30px;
-  white-space: nowrap; font: 600 21px var(--f-sans); color: var(--c-text-soft);
-  animation: ticker var(--ticker-dur,26s) linear infinite;
-}
-.ticker-row .ok { color: var(--c-ok); }
-.ticker-row .bad { color: var(--c-bad); }
-.ticker-row .sep { color: #6b5e44; margin: 0 4px; }
-@keyframes ticker { from{transform:translateX(0)} to{transform:translateX(-50%)} }
+.cline .ok { color: var(--c-ok); }
+.cline .bad { color: var(--c-bad); }
+@keyframes flipUp { from { opacity: 0; transform: translateY(110%); } to { opacity: 1; transform: translateY(0); } }
 
 .arena { position: absolute; inset: 0; }
-.col { position: absolute; top: 240px; bottom: 60px; width: 336px; display: flex; flex-direction: column; justify-content: space-around; }
+.col { position: absolute; top: 200px; bottom: 80px; width: 336px; display: flex; flex-direction: column; justify-content: space-around; }
 .col.left  { left: 48px; }
 .col.right { right: 48px; }
 
@@ -104,6 +98,16 @@
 .seat-role.good { color: var(--c-good-bright); }
 .seat-role.evil { color: var(--c-evil-bright); }
 
+/* 座位号：球衣号风格的小角标，钉在头像角上，和名字分开（名字单独成行）。 */
+.seat-no {
+  position: absolute; bottom: -3px; left: -3px; z-index: 4;
+  min-width: 26px; height: 26px; padding: 0 6px; border-radius: 13px;
+  display: grid; place-items: center; font: 800 16px var(--f-display);
+  color: var(--c-gold); background: rgba(12,9,5,.92); border: 1.5px solid var(--c-gold-deep);
+  box-shadow: 0 2px 6px rgba(0,0,0,.6);
+}
+.col.right .seat-no { left: auto; right: -3px; }
+
 .badge { position: absolute; line-height: 1; z-index: 3; }
 .badge.crown { top: -22px; left: 50%; transform: translateX(-50%); color: var(--c-gold); }
 .badge.lady {
@@ -125,9 +129,9 @@
 @keyframes deal-in { from { opacity: 0; transform: translateX(40px) rotateY(80deg) scale(.7); } 60% { opacity: 1; } to { opacity: 1; transform: none; } }
 @keyframes stamp { from { opacity: 0; transform: scale(2.6) rotate(-22deg); } 70% { opacity: 1; transform: scale(.86) rotate(5deg); } to { opacity: 1; transform: scale(1); } }
 
+.center-wrap { position: absolute; left: 50%; top: 54%; transform: translate(-50%,-50%); width: 1000px; }
 .center-stage {
-  position: absolute; left: 50%; top: 54%; transform: translate(-50%,-50%);
-  width: 1000px; height: 300px; background: var(--panel-bg); border: var(--panel-border);
+  position: relative; width: 100%; height: 300px; background: var(--panel-bg); border: var(--panel-border);
   border-radius: var(--panel-radius); backdrop-filter: var(--panel-blur); -webkit-backdrop-filter: var(--panel-blur);
   box-shadow: var(--panel-shadow); overflow: hidden;
 }
@@ -149,11 +153,39 @@
 .lady-line { padding: 8px 30px 0; font: 600 19px var(--f-sans); }
 .lady-line.ok { color: var(--c-good-bright); }
 .lady-line.bad { color: var(--c-evil-bright); }
-.spot-text { flex: 1; padding: 18px 32px; overflow: hidden; }
-.spot-text-inner { font: 600 36px/1.55 var(--f-serif); color: var(--c-text); }
+/* 发言区：约四行。文字从左上起逐字铺满，满了之后整体平滑上顶、末尾恒可见（LiveText 每帧把 scrollTop 拉到底）。 */
+.spot-text { flex: 1; min-height: 0; padding: 12px 32px 16px; overflow: hidden; scroll-behavior: smooth; }
+.spot-text-inner { font: 600 28px/1.5 var(--f-serif); color: var(--c-text); }
 .caret { color: var(--c-gold); font-weight: 400; animation: caretBlink .75s infinite; }
 @keyframes caretBlink { 50% { opacity: 0; } }
-.spot-mono { padding: 0 32px 16px; font: italic 500 20px var(--f-serif); color: var(--c-gold-dim); }
+
+/* 内心戏：漂浮在发言面板【外面】上方的思考云，左下两颗小气泡向面板（发言人）方向冒出来。 */
+.thought {
+  position: absolute; bottom: calc(100% + 20px); left: 18px; z-index: 6;
+  max-width: 480px; display: flex; flex-direction: column; gap: 4px; padding: 12px 22px;
+  background: linear-gradient(180deg, rgba(46,35,18,.94), rgba(26,19,10,.95));
+  border: 1.5px solid rgba(240,208,137,.42); border-radius: 26px;
+  box-shadow: 0 14px 34px rgba(0,0,0,.5), 0 0 30px rgba(240,208,137,.14), inset 0 1px 0 rgba(255,255,255,.07);
+  animation: thoughtPop .45s cubic-bezier(.2,1.4,.4,1) both;
+}
+@keyframes thoughtPop { from { opacity: 0; transform: translateY(10px) scale(.92); } to { opacity: 1; transform: none; } }
+.thought-tag {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 5px;
+  font: 800 14px var(--f-sans); letter-spacing: .14em; color: var(--c-gold);
+  padding: 2px 12px; border-radius: 999px; border: 1px solid rgba(240,208,137,.4);
+  background: rgba(240,208,137,.12);
+}
+.thought-text {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  font: italic 500 21px/1.45 var(--f-serif); color: var(--c-text-soft);
+}
+/* 两颗下垂的小气泡 = "从脑子里冒出来"的尾巴，朝面板里发言人的方向。 */
+.thought::before, .thought::after {
+  content: ""; position: absolute; border-radius: 50%;
+  background: rgba(26,19,10,.95); border: 1.5px solid rgba(240,208,137,.42);
+}
+.thought::before { width: 18px; height: 18px; left: 44px; bottom: -13px; }
+.thought::after  { width: 10px; height: 10px; left: 30px; bottom: -30px; }
 
 .host-stage { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; padding: 20px 30px; }
 .host-name { font: 900 30px var(--f-display); color: var(--c-gold); text-shadow: var(--ts-strong); letter-spacing: .04em; }

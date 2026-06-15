@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
   FeedItem, Intermission, ProposalLog, QuestLog, Scene, SeatInfo,
 } from "../protocol";
@@ -103,21 +103,26 @@ function TopHud({ scene }: { scene: Scene }) {
           <span className="track-score evil">{evil}</span>
         </div>
         <div className="hud-sub">第 {scene.quest_no} 任务 · 第 {scene.attempt} 次组队</div>
+        <Carousel scene={scene} />
       </div>
-      <div className="hud-right"><Carousel scene={scene} /></div>
+      <div className="hud-right" />
     </div>
   );
 }
 
+// 前情回顾：一事件一条，竖向逐条翻页（停 ~3.3s 整条上滑、下一条从底滑入），像球场广告牌。
 function Carousel({ scene }: { scene: Scene }) {
   const items = buildItems(scene);
+  const [idx, setIdx] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setIdx((i) => i + 1), 3300);
+    return () => window.clearInterval(t);
+  }, []);
   if (items.length === 0) return <div className="carousel" />;
-  const doubled = [...items, ...items];
+  const cur = idx % items.length;
   return (
     <div className="carousel">
-      <div className="ticker-row">
-        {doubled.map((node, i) => <React.Fragment key={i}>{node}</React.Fragment>)}
-      </div>
+      <div className="cline" key={cur}>{items[cur]}</div>
     </div>
   );
 }
@@ -128,21 +133,17 @@ function buildItems(scene: Scene): ReactNode[] {
   const items: ReactNode[] = [
     <span>比分 <span className="ok">{good}</span> : <span className="bad">{evil}</span></span>,
   ];
-  scene.timeline.forEach((t, i) => {
+  scene.timeline.forEach((t) => {
+    const teamNos = t.team.map((n) => circ(n)).join(" ");
     if (t.kind === "proposal") {
-      const leaderNo = circ(t.leader_no);
-      const teamNos = t.team.map((n) => circ(n)).join(" ");
-      const approveNos = t.approves.map((n) => circ(n)).join(" ");
-      const rejectNos = t.rejects.map((n) => circ(n)).join(" ");
       items.push(
         <span>
-          第{t.quest}轮·{t.attempt}组 {leaderNo}组队 {teamNos}
+          第{t.quest}轮·{t.attempt}组 {circ(t.leader_no)}组队 {teamNos}
           {" "}<span className={t.approved ? "ok" : "bad"}>{t.approved ? "通过" : "否决"}</span>
           {" "}赞{t.approves.length} 反{t.rejects.length}
         </span>,
       );
     } else {
-      const teamNos = t.team.map((n) => circ(n)).join(" ");
       items.push(
         <span>
           第{t.quest}轮发车 {teamNos}
@@ -153,12 +154,7 @@ function buildItems(scene: Scene): ReactNode[] {
       );
     }
   });
-  const withSep: ReactNode[] = [];
-  items.forEach((node, i) => {
-    withSep.push(node);
-    if (i < items.length - 1) withSep.push(<span className="sep">◆</span>);
-  });
-  return withSep;
+  return items;
 }
 
 function Arena({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem | undefined }) {
@@ -202,13 +198,14 @@ function Seat({ s, scene, vote, card, dealing }: {
         <div className="avatar" style={avatarStyle(s.persona)}>
           <span className="ava-init">{s.name.slice(0, 1)}</span>
         </div>
+        <span className="seat-no">{s.no}</span>
         {scene.leader_no === s.no && <span className="badge crown"><StageIcon name="crown" size={28} /></span>}
         {scene.lady_holder === s.no && <span className="badge lady"><StageIcon name="lady" size={16} /></span>}
         {vote !== undefined && <span className={`badge stamp ${vote ? "yes" : "no"}`}>{vote ? "赞" : "反"}</span>}
         {card !== undefined && <span className={`badge stamp ${card ? "yes" : "no"}`}>{card ? "成" : "破"}</span>}
       </div>
       <div className="seat-info">
-        <div className="seat-name">{s.no} {s.name}</div>
+        <div className="seat-name">{s.name}</div>
         <div className={`seat-role ${s.side}`}>
           <StageIcon name={roleIconName(s.role)} size={21} /> {roleLabel(s.role)}
         </div>
@@ -218,10 +215,21 @@ function Seat({ s, scene, vote, card, dealing }: {
 }
 
 function CenterStage({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem | undefined }) {
-  const tall = last?.directive.kind === "game_over";
+  const d = last?.directive;
+  const tall = d?.kind === "game_over";
+  // 内心戏漂浮在发言面板【外面】上方，不挤占正文区；像从发言人脑子里冒出来的思考云。
+  const monologue = d?.kind === "speech" ? d.monologue : "";
   return (
-    <div className={`center-stage${tall ? " tall" : ""}`}>
-      {last && <div className="stage-content" key={last.seq}><StageContent ch={ch} scene={scene} last={last} /></div>}
+    <div className="center-wrap">
+      {monologue && (
+        <div className="thought" key={last!.seq}>
+          <span className="thought-tag">💭 思考</span>
+          <span className="thought-text">{monologue}</span>
+        </div>
+      )}
+      <div className={`center-stage${tall ? " tall" : ""}`}>
+        {last && <div className="stage-content" key={last.seq}><StageContent ch={ch} scene={scene} last={last} /></div>}
+      </div>
     </div>
   );
 }
@@ -261,7 +269,7 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fe
       const sp = seatOf(d.seat_no);
       return (
         <Spotlight ch={ch} item={last} seat={sp} no={d.seat_no}
-          tag={PHASE_LABEL[d.phase]} text={d.text} monologue={d.monologue} audio={d.audio_url}
+          tag={PHASE_LABEL[d.phase]} text={d.text} audio={d.audio_url}
           team={d.team ?? undefined}
           ladyNo={d.lady_target} ladyEvil={d.lady_truth === "evil"} />
       );
@@ -313,9 +321,9 @@ function Feature({ cls, children }: { cls: string; children: ReactNode }) {
   return <div className={`feature ${cls}`}>{children}</div>;
 }
 
-function Spotlight({ ch, item, seat, no, tag, text, monologue, audio, team, ladyNo, ladyEvil }: {
+function Spotlight({ ch, item, seat, no, tag, text, audio, team, ladyNo, ladyEvil }: {
   ch: Channel; item: FeedItem; seat: SeatInfo | undefined; no: number; tag: string;
-  text: string; monologue: string; audio: string | null;
+  text: string; audio: string | null;
   team?: number[]; ladyNo: number | null; ladyEvil: boolean;
 }) {
   return (
@@ -338,7 +346,6 @@ function Spotlight({ ch, item, seat, no, tag, text, monologue, audio, team, lady
         </div>
       )}
       <div className="spot-text"><div className="spot-text-inner"><LiveText ch={ch} item={item} text={text} /></div></div>
-      {monologue && <div className="spot-mono">💭 {monologue}</div>}
       <Audio ch={ch} item={item} url={audio} />
     </div>
   );
@@ -379,13 +386,19 @@ function VoteView({ ch, item, d }: {
 
 function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: string }) {
   const [now, setNow] = useState(() => Date.now());
+  const ref = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     const t = window.setInterval(() => setNow(Date.now()), 50);
     return () => window.clearInterval(t);
   }, [item.seq]);
   const budget = Math.max(item.duration * 0.62, 0.001);
   const n = Math.min(Math.floor((elapsedOf(ch, item.started_at, now) / budget) * text.length), text.length);
-  return <>{text.slice(0, Math.max(n, 0))}{n < text.length && <span className="caret">▌</span>}</>;
+  // 文字铺满发言框后，把滚动容器拉到底，让最新一行始终可见（顶上的旧字滚出去）。
+  useEffect(() => {
+    const box = ref.current?.closest(".spot-text");
+    if (box) box.scrollTop = box.scrollHeight;
+  });
+  return <span ref={ref}>{text.slice(0, Math.max(n, 0))}{n < text.length && <span className="caret">▌</span>}</span>;
 }
 
 function Audio({ ch, item, url }: { ch: Channel; item: FeedItem; url: string | null | undefined }) {
