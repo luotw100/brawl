@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import random
 from dataclasses import dataclass
-from itertools import cycle, islice
+
 
 from avalon.registry import Registry
 from avalon.settings import AvalonSettings, SettingsError
@@ -74,7 +74,7 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
     cast = _resolve_cast(settings, registry)
     host_cast = _resolve_host_cast(settings, registry)
     strategies = _resolve_strategies(settings, registry)
-    models = _resolve_models(settings, registry)
+    models = _resolve_models(settings, registry, rng)
     _check_extractor(settings, registry)
     _check_env(settings, models, registry)
     _check_replay(settings)
@@ -132,14 +132,15 @@ def _resolve_strategies(settings: AvalonSettings, registry: Registry) -> list[st
     return ["standard"] * settings.players
 
 
-def _resolve_models(settings: AvalonSettings, registry: Registry) -> list[str]:
-    """显式 --models 则逐个校验在册；否则在 provider 池里循环分配，座位多于模型数也能填满。"""
+def _resolve_models(settings: AvalonSettings, registry: Registry, rng: random.Random) -> list[str]:
+    """显式 --models 则逐个校验在册；否则从 provider 池里随机分配（放回抽样，可重复）。"""
     if settings.models is not None:
         for name in settings.models:
             if name not in registry.models:
                 raise SettingsError(f"未知模型: {name}（可选：{registry.model_names()}）")
         return settings.models
-    return list(islice(cycle(registry.model_names()), settings.players))
+    names = registry.model_names()
+    return [rng.choice(names) for _ in range(settings.players)]
 
 
 def _resolve_roles(settings: AvalonSettings, rng: random.Random) -> list[Role]:

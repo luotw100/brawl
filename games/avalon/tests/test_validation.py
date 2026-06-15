@@ -32,7 +32,7 @@ def test_role_pool_matches_rules_table(registry: Registry, players: int) -> None
     assert setup.roles.count(Role.SERVANT) == players - evil - 1
     assert len(setup.cast) == len(setup.models) == players
     assert all(pid in registry.personas for pid in setup.cast)
-    assert all(m in registry.models for m in setup.models)  # 缺省时在 provider 池里循环分配
+    assert all(m in registry.models for m in setup.models)  # 缺省时从 provider 池随机分配
     assert setup.strategies == ["standard"] * players  # 缺省全员中性基线
     assert 1 <= setup.first_leader <= players  # 座位号 1 起
 
