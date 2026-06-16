@@ -27,7 +27,12 @@ const ALL: string[] = [
 export function cuesFor(d: Directive, duration: number): Cue[] {
   switch (d.kind) {
     case "game_open": return [{ sfx: "open", at: 0 }];
-    case "deal": return [{ sfx: "deal", at: 0 }];
+    case "deal": {
+      // 逐张"咔"发牌；错峰与 Stage.tsx 的 --deal-stagger 同步（server/sfx.py 同此）
+      const n = d.seats.length;
+      const stagger = (duration * 0.8) / Math.max(n, 1);
+      return d.seats.map((_, i) => ({ sfx: "deal", at: i * stagger }));
+    }
     case "speech": return d.monologue ? [{ sfx: "think", at: 0 }] : [];
     case "vote_reveal": {
       // 逐票"啪"盖章 + 结果音；错峰节奏与 Stage.tsx 的 --vote-stagger 同步

@@ -10,7 +10,7 @@ export interface SeatInfo {
   model: string;
 }
 
-export interface GameOpen { kind: "game_open"; players: number; good: number; evil: number }
+export interface GameOpen { kind: "game_open"; players: number; good: number; evil: number; seats: SeatInfo[] }
 export interface Deal { kind: "deal"; seats: SeatInfo[]; leader_no: number; lady_holder: number | null }
 export interface Speech {
   kind: "speech";
@@ -72,6 +72,7 @@ export interface FeedItem { seq: number; directive: Directive; started_at: numbe
 
 export interface Scene {
   seats: SeatInfo[];
+  dealt: boolean;
   leader_no: number | null;
   lady_holder: number | null;
   quest_no: number;

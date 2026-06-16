@@ -98,7 +98,7 @@ function TopHud({ scene }: { scene: Scene }) {
   return (
     <div className="hud">
       <div className="hud-left">
-        <div className="brand"><span className="crest">⚜</span> AI 阿瓦隆 <span className="crest">⚜</span></div>
+        <div className="brand"><span className="crest">⚜</span> 赛博物种观察日记</div>
       </div>
       <div className="hud-center">
         <div className="mission-track">
@@ -219,8 +219,10 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem 
 function Seat({ s, scene, vote, card, dealing }: {
   s: SeatInfo; scene: Scene; vote?: boolean; card?: boolean; dealing: boolean;
 }) {
+  // 未发牌：身份面朝下（不染阵营色、不亮角色）。deal 那拍 dealt=true，角色牌逐张翻面（dealing 触发动画）。
+  const dealt = scene.dealt;
   const cls = [
-    "seat", s.side,
+    "seat", dealt ? s.side : "facedown",
     scene.speaking === s.no ? "speaking" : "",
     scene.team.includes(s.no) ? "on-team" : "",
     dealing ? "dealing" : "",
@@ -239,27 +241,23 @@ function Seat({ s, scene, vote, card, dealing }: {
       </div>
       <div className="seat-info">
         <div className="seat-name">{s.name}</div>
-        <div className={`seat-role ${s.side}`}>
-          <StageIcon name={roleIconName(s.role)} size={21} /> {roleLabel(s.role)}
-        </div>
+        {dealt ? (
+          <div className={`seat-role ${s.side}`}>
+            <StageIcon name={roleIconName(s.role)} size={21} /> {roleLabel(s.role)}
+          </div>
+        ) : (
+          <div className="seat-role facedown">🂠 待发牌</div>
+        )}
       </div>
     </div>
   );
 }
 
 function CenterStage({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem | undefined }) {
-  const d = last?.directive;
-  const tall = d?.kind === "game_over";
-  // 内心戏漂浮在发言面板【外面】上方，不挤占正文区；像从发言人脑子里冒出来的思考云。
-  const monologue = d?.kind === "speech" ? d.monologue : "";
+  const k = last?.directive.kind;
+  const tall = k === "game_over" || k === "assassination";
   return (
     <div className="center-wrap">
-      {monologue && (
-        <div className="thought" key={last!.seq}>
-          <span className="thought-tag">💭 思考</span>
-          <span className="thought-text">{monologue}</span>
-        </div>
-      )}
       <div className={`center-stage${tall ? " tall" : ""}`}>
         {last && <div className="stage-content" key={last.seq}><StageContent ch={ch} scene={scene} last={last} /></div>}
       </div>
@@ -283,11 +281,13 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fe
     case "deal":
       return (
         <Feature cls="feature-deal">
-          <div className="feature-icon"><StageIcon name="crown" size={64} /></div>
-          <div className="feature-title">发牌 · 身份揭晓</div>
-          <div className="feature-sub">
-            首任队长 {circ(d.leader_no)}号{d.lady_holder ? ` · 仙女 ${circ(d.lady_holder)}号` : ""}
+          {/* 中央牌叠：正面可见（god-view），顶牌咔咔甩出去——身份在各座位旁逐张翻开。 */}
+          <div className="deck">
+            <span className="deck-card s2" />
+            <span className="deck-card s1" />
+            <span className="deck-card top"><span className="deck-crest">⚜</span></span>
           </div>
+          <div className="feature-title">发牌 · 逐张亮身份</div>
         </Feature>
       );
     case "host":
@@ -302,34 +302,42 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fe
       const sp = seatOf(d.seat_no);
       return (
         <Spotlight ch={ch} item={last} seat={sp} no={d.seat_no}
-          tag={PHASE_LABEL[d.phase]} text={d.text} audio={d.audio_url}
+          tag={PHASE_LABEL[d.phase]} text={d.text} audio={d.audio_url} monologue={d.monologue}
           team={d.team ?? undefined}
           ladyNo={d.lady_target} ladyEvil={d.lady_truth === "evil"} />
       );
     }
     case "vote_reveal":
-      return <VoteView ch={ch} item={last} d={d} />;
+      return <VoteView ch={ch} scene={scene} item={last} d={d} />;
     case "quest_reveal":
       return (
-        <Feature cls={`feature-quest ${d.result === "success" ? "ok" : "bad"}`}>
-          <div className="feature-icon">
-            {d.result === "success" ? <StageIcon name="servant" size={64} /> : <StageIcon name="assassin" size={64} />}
-          </div>
-          <div className="feature-title">{d.result === "success" ? "任务成功" : "任务失败"}</div>
+        <div className={`reveal-view quest-view ${d.result === "success" ? "ok" : "bad"}`}>
+          <div className="vote-title">{d.result === "success" ? "任务成功" : "任务失败"}</div>
+          <RevealRow stagger={(last.duration * 0.5) / Math.max(d.cards.length, 1)}>
+            {d.cards.map((c, i) => (
+              <RevealAvatar key={c.seat_no} seat={seatOf(c.seat_no)} no={c.seat_no}
+                mark={c.success ? "yes" : "no"} label={c.success ? "成功" : "破坏"} idx={i} />
+            ))}
+          </RevealRow>
           <div className="feature-sub">第 {d.quest} 任务 · 破坏票 {d.fails}/{d.fails_required}</div>
-        </Feature>
+        </div>
       );
     case "assassination":
       return (
-        <Feature cls={`feature-assassin ${d.hit ? "hit" : "miss"}`}>
-          <div className="feature-icon"><StageIcon name="assassin" size={64} /></div>
-          <div className="feature-title">{circ(d.assassin_no)}号 刺向 {circ(d.target_no)}号</div>
+        <div className={`reveal-view assassin-view ${d.hit ? "hit" : "miss"}`}>
+          <div className="vote-title">刺杀</div>
+          <div className="vs-row">
+            <RevealAvatar seat={seatOf(d.assassin_no)} no={d.assassin_no} mark="no" label="刺客" idx={0} />
+            <span className="dagger"><StageIcon name="assassin" size={52} /></span>
+            <RevealAvatar seat={seatOf(d.target_no)} no={d.target_no}
+              mark={d.hit ? "no" : "yes"} label={d.hit ? "命中" : "幸存"} idx={1} />
+          </div>
           <div className="assassin-line">「{d.text}」</div>
           <div className={`verdict ${d.hit ? "bad" : "ok"}`}>
             {d.hit ? "正中梅林！红方翻盘！" : "刺空了！蓝方守住胜利！"}
           </div>
           <Audio ch={ch} item={last} url={d.audio_url} />
-        </Feature>
+        </div>
       );
     case "game_over":
       return (
@@ -354,9 +362,27 @@ function Feature({ cls, children }: { cls: string; children: ReactNode }) {
   return <div className={`feature ${cls}`}>{children}</div>;
 }
 
-function Spotlight({ ch, item, seat, no, tag, text, audio, team, ladyNo, ladyEvil }: {
+// 逐人揭示用的大头像 + 大盖章：表决/发车/刺杀都把"谁出了什么"放中央放大，不再只靠座位旁的小印章。
+function RevealAvatar({ seat, no, mark, label, idx }: {
+  seat: SeatInfo | undefined; no: number; mark: "yes" | "no"; label: string; idx: number;
+}) {
+  return (
+    <div className="rv" style={{ "--ri": idx } as CSSProperties}>
+      <div className="rv-ava" style={seat ? avatarStyle(seat.persona) : undefined}>{seat?.name.slice(0, 1) ?? "?"}</div>
+      <span className="rv-no">{circ(no)}</span>
+      <span className={`rv-stamp ${mark}`}>{label}</span>
+    </div>
+  );
+}
+
+// 错峰节奏由本拍 duration 反推（与发牌/亮票同源）；pace=0 时 duration→0、stagger→0，瞬间倾倒。
+function RevealRow({ stagger, children }: { stagger: number; children: ReactNode }) {
+  return <div className="reveal-row" style={{ "--rv-stagger": `${stagger}s` } as CSSProperties}>{children}</div>;
+}
+
+function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, ladyNo, ladyEvil }: {
   ch: Channel; item: FeedItem; seat: SeatInfo | undefined; no: number; tag: string;
-  text: string; audio: string | null;
+  text: string; audio: string | null; monologue: string;
   team?: number[]; ladyNo: number | null; ladyEvil: boolean;
 }) {
   return (
@@ -369,6 +395,13 @@ function Spotlight({ ch, item, seat, no, tag, text, audio, team, ladyNo, ladyEvi
             {tag}{seat ? <> · <StageIcon name={roleIconName(seat.role)} size={18} /> {roleLabel(seat.role)}</> : ""}
           </div>
         </div>
+        {/* 内心戏：头像右侧那块区域，纯排版（💭+斜体灰字）体现"脑子里的话"，不加框/底。 */}
+        {monologue && (
+          <div className="spot-think" key={item.seq}>
+            <span className="think-mark">💭</span>
+            <span className="think-text">{monologue}</span>
+          </div>
+        )}
       </div>
       {team && team.length > 0 && (
         <div className="team-chips">提队：{team.map((t) => <span key={t} className="chip">{circ(t)}</span>)}</div>
@@ -384,8 +417,8 @@ function Spotlight({ ch, item, seat, no, tag, text, audio, team, ladyNo, ladyEvi
   );
 }
 
-function VoteView({ ch, item, d }: {
-  ch: Channel; item: FeedItem;
+function VoteView({ ch, scene, item, d }: {
+  ch: Channel; scene: Scene; item: FeedItem;
   d: Extract<FeedItem["directive"], { kind: "vote_reveal" }>;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -401,9 +434,17 @@ function VoteView({ ch, item, d }: {
   const yes = shown.filter((v) => v.approve).length;
   const noCount = shown.length - yes;
   const settled = landed >= n;
+  const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
   return (
-    <div className={`vote-view ${settled ? (d.approved ? "ok" : "bad") : ""}`}>
+    <div className={`reveal-view vote-view ${settled ? (d.approved ? "ok" : "bad") : ""}`}>
       <div className="vote-title">{settled ? (d.approved ? "表决通过" : "表决被否") : "表决中…"}</div>
+      {/* 逐个亮票：shown 随时间增长，新头像逐个落入（JS 控时，stagger 给 0 不重复延时）。 */}
+      <RevealRow stagger={0}>
+        {shown.map((v) => (
+          <RevealAvatar key={v.seat_no} seat={seatOf(v.seat_no)} no={v.seat_no}
+            mark={v.approve ? "yes" : "no"} label={v.approve ? "赞成" : "反对"} idx={0} />
+        ))}
+      </RevealRow>
       <div className="tally">
         <span className="t-yes">赞成 {yes}</span>
         <div className="tally-bar">

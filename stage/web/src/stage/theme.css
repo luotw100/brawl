@@ -50,7 +50,7 @@
   --ts-soft:   0 2px 9px rgba(0,0,0,.85);
 
   /* —— 场景背景图（替换这一行即可换底图；留空则用程序化渐变兜底）—— */
-  --scene-url: none;   /* e.g. url("/assets/scene.jpg") */
+  --scene-url: url("/scene.png");   /* public/scene.png；留空(none)则用程序化渐变兜底 */
 }
 
 /* 字体引入：index.html <head> 里加（或 main.tsx 顶部 import）：
