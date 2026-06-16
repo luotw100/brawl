@@ -13,7 +13,6 @@ replay 里的 .opus 按拍偏移拼成音轨、与画面 mux 成 mp4。
 from __future__ import annotations
 
 import asyncio
-import logging
 import secrets
 import subprocess
 import sys
@@ -26,13 +25,29 @@ from pathlib import Path
 import uvicorn
 from playwright.async_api import async_playwright
 from pydantic import ValidationError
+from rich.console import Console
 
 from server.app import create_app
+from server.protocol import (
+    Assassination,
+    Deal,
+    Directive,
+    GameOpen,
+    GameOver,
+    HostSpeech,
+    Intermission,
+    QuestReveal,
+    SeatInfo,
+    Speech,
+    VoteReveal,
+)
 from server.record_settings import RENDER_DEVICE, RecordSettings
 from server.settings import StageSettings
 
 _VIEWPORT = {"width": 1080, "height": 1920}  # 竖屏，与 OBS 画布同口径
 _TAIL_SECONDS = 1.0  # 终局定格后多录一点，保证最后一帧落进视频文件
+
+_console = Console()  # 进度输出：录制节拍 + ffmpeg 步骤（与捕获/编码同一条命令行）
 
 
 @dataclass
@@ -42,6 +57,51 @@ class Beat:
     seq: int
     started_at: float
     audio_url: str | None
+
+
+# ---------------------------------------------------------------- 进度（节拍渲染）
+
+_PHASE = {"propose": "提案", "discuss": "讨论", "lady": "验人", "banter": "闲聊"}
+
+
+def _mmss(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def _snip(text: str, n: int = 36) -> str:
+    """台词压成一行预览：折叠空白、超长截断（节拍是进度而非全文）。"""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= n else flat[: n - 1] + "…"
+
+
+def _seat_name(seats: list[SeatInfo], seat_no: int) -> str:
+    return next((s.name for s in seats if s.no == seat_no), f"{seat_no}号")
+
+
+def _beat_summary(d: Directive, seats: list[SeatInfo]) -> tuple[str, str, str]:
+    """一拍 → (标签, 颜色, 详情)，给 rich 打成一行进度。"""
+    match d:
+        case GameOpen():
+            return "开局", "cyan", f"{d.players} 人 · 善 {d.good} / 恶 {d.evil}"
+        case Deal():
+            return "发牌", "cyan", f"队长 {d.leader_no} 号"
+        case HostSpeech():
+            return "主持", "yellow", f"{d.name}：{_snip(d.text)}"
+        case Speech():
+            return _PHASE.get(d.phase, d.phase), "green", f"{_seat_name(seats, d.seat_no)}：{_snip(d.text)}"
+        case VoteReveal():
+            return "表决", "magenta", f"{'通过' if d.approved else '否决'} · 第 {d.quest}.{d.attempt} 队"
+        case QuestReveal():
+            return "任务", "blue", f"第 {d.quest} 任务 {d.result}（{d.fails} 失败）"
+        case Assassination():
+            return "刺杀", "red", "命中" if d.hit else "落空"
+        case GameOver():
+            return "终局", "bold red", f"{d.winner} 胜 · {d.win_reason}"
+        case Intermission():
+            return "幕间", "dim", ""
+        case _:
+            return "?", "white", type(d).__name__
 
 
 # ---------------------------------------------------------------- 纯函数（可单测）
@@ -66,7 +126,7 @@ def audio_segments(beats: list[Beat], replay_root: Path, shift: float) -> list[t
 
 def ffmpeg_audio_cmd(segs: list[tuple[Path, float]], out_audio: Path) -> list[str]:
     """把各 .opus 按偏移 adelay 后 amix 成一条音轨。normalize=0：发言基本不重叠，不要自动压音量。"""
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
     for path, _ in segs:
         cmd += ["-i", str(path)]
     delays = [f"[{i}:a]adelay={int(off * 1000)}:all=1[a{i}]" for i, (_, off) in enumerate(segs)]
@@ -78,7 +138,7 @@ def ffmpeg_audio_cmd(segs: list[tuple[Path, float]], out_audio: Path) -> list[st
 
 def ffmpeg_mux_cmd(video: Path, audio: Path | None, lead: float, out: Path, encoder: str, fps: int) -> list[str]:
     """裁掉视频前 lead 秒（对齐到第一拍）+ 叠音轨 + 转码成 mp4。audio=None 时只转视频。"""
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
     if encoder == "vaapi":
         cmd += ["-vaapi_device", RENDER_DEVICE]
     cmd += ["-ss", f"{lead:.3f}", "-i", str(video)]
@@ -110,6 +170,11 @@ def _tap_engine(engine) -> list[Beat]:
             fi = feed[-1]
             seen.add(fi.seq)
             beats.append(Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None)))
+            elapsed = fi.started_at - beats[0].started_at  # 视频时间轴（以第一拍为零点）
+            tag, color, detail = _beat_summary(fi.directive, engine.scene.seats)
+            note = "[cyan]♪[/cyan]" if getattr(fi.directive, "audio_url", None) else " "
+            # 每拍固定一行：超宽（中文台词）裁切而非换行，进度日志更整齐
+            _console.print(f"[dim]{_mmss(elapsed)}[/dim] {note} [{color}]{tag}[/{color}] {detail}", no_wrap=True)
         await orig()
 
     engine._publish = tap
@@ -186,12 +251,16 @@ async def _capture(settings: RecordSettings, video_dir: Path) -> tuple[list[Beat
 # ---------------------------------------------------------------- 编排
 
 
-def _run(cmd: list[str]) -> None:
-    logging.info("$ %s", " ".join(cmd))
+def _run(cmd: list[str], desc: str) -> None:
+    """跑一步 ffmpeg：进度（-stats）直接继承终端实时刷出，不再吞掉。"""
+    _console.print(f"[bold]{desc}[/bold]")
     subprocess.run(cmd, check=True)
 
 
 async def _record(settings: RecordSettings) -> None:
+    limit = f" · 上限 {settings.limit_seconds:g}s" if settings.limit_seconds else ""
+    _console.rule(f"[bold]录制 {settings.dir.name}[/bold]")
+    _console.print(f"[dim]→ {settings.out} · 编码 {settings.encoder} · pace {settings.pace:g}{limit}[/dim]")
     with tempfile.TemporaryDirectory(prefix="stage-record-") as tmp:
         tmpdir = Path(tmp)
         beats, lead, video = await _capture(settings, tmpdir)
@@ -199,21 +268,21 @@ async def _record(settings: RecordSettings) -> None:
         audio: Path | None = None
         if segs:
             audio = tmpdir / "audio.m4a"
-            _run(ffmpeg_audio_cmd(segs, audio))
-        _run(ffmpeg_mux_cmd(video, audio, lead, settings.out, settings.encoder, settings.fps))
-    print(f"已生成：{settings.out}")
+            _run(ffmpeg_audio_cmd(segs, audio), f"拼接音轨（{len(segs)} 段语音）…")
+        _run(ffmpeg_mux_cmd(video, audio, lead, settings.out, settings.encoder, settings.fps), "编码视频…")
+    size_mb = settings.out.stat().st_size / 1e6
+    _console.print(f"[bold green]✓ 已生成[/bold green] {settings.out} [dim]({size_mb:.1f} MB)[/dim]")
 
 
 def main(argv: list[str]) -> int:
     """`stage-record` 的薄入口：argv 全交给 RecordSettings 的 CLI source。
 
     配置错误（坏参数 / 校验失败）只打友好消息、不甩 traceback（与 games/cli.py 同口径）。"""
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         settings = RecordSettings.load(cli_args=argv)
     except ValidationError as e:
         msg = "；".join(err["msg"].removeprefix("Value error, ") for err in e.errors())
-        print(f"配置错误: {msg}", file=sys.stderr)
+        _console.print(f"[red]配置错误:[/red] {msg}")
         return 1
     asyncio.run(_record(settings))
     return 0

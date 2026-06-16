@@ -39,6 +39,7 @@ def test_ffmpeg_audio_cmd_delays_and_mix():
     segs = [(Path("/x/a.opus"), 0.0), (Path("/x/b.opus"), 3.5)]
     cmd = ffmpeg_audio_cmd(segs, Path("/tmp/out.m4a"))
     assert cmd[:2] == ["ffmpeg", "-y"]
+    assert "-stats" in cmd  # 进度透传，不再吞掉 ffmpeg 输出
     assert cmd.count("-i") == 2
     filt = cmd[cmd.index("-filter_complex") + 1]
     assert "adelay=0:all=1[a0]" in filt
