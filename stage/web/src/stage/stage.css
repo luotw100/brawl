@@ -264,5 +264,11 @@
 .ov-marquee span { display: inline-block; white-space: nowrap; padding-left: 100%; color: var(--c-gold); text-shadow: var(--ts-strong); animation: marquee 14s linear infinite; }
 @keyframes marquee { to { transform: translateX(-100%); } }
 
+.audio-unlock { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+  border: none; cursor: pointer; color: var(--c-gold); font: inherit;
+  background: radial-gradient(ellipse at center, rgba(12,10,6,.82), rgba(8,6,2,.92)); }
+.audio-unlock-icon { font-size: 16vmin; line-height: 1; filter: drop-shadow(0 0 18px rgba(0,0,0,.6)); }
+.audio-unlock-text { font: 800 5vmin var(--f-display); letter-spacing: .06em; text-shadow: var(--ts-strong); }
+
 .conn-dot { position: absolute; top: 18px; right: 18px; width: 18px; height: 18px; border-radius: 50%; background: var(--c-evil); z-index: 20; }
 .paused-tag { position: absolute; top: 18px; left: 18px; z-index: 20; font: 700 22px var(--f-sans); color: var(--c-gold); background: rgba(0,0,0,.66); padding: 6px 16px; border-radius: 10px; }
