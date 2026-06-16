@@ -108,22 +108,25 @@ async def pregame_node(state: GameState, config: RunnableConfig) -> dict[str, An
     填进初始状态，这里不决定任何东西，只把它发上事件流。"""
     deps = _deps(config)
     s = deps.settings
-    emit("game_start", players=s.players, good=s.good, evil=s.evil)
-    emit(
-        "deal",
-        leader_no=state.leader,
-        lady_holder=state.lady_holder,  # None = 本局未启用湖中仙女
-        seats=[
-            {"no": x.no, "persona": x.persona_id, "strategy": x.strategy_id, "role": x.role.value, "side": x.role.side.value, "intel": x.intel, "model": x.model}
-            for x in state.seats
-        ],
-    )
+    seats_payload = [
+        {"no": x.no, "persona": x.persona_id, "strategy": x.strategy_id, "role": x.role.value, "side": x.role.side.value, "intel": x.intel, "model": x.model}
+        for x in state.seats
+    ]
     threads = _threads_copy(state)
     lineup = sorted((x.role for x in state.seats), key=tuple(Role).index)
+    # 开场节目单（事件调用顺序即 feed 顺序）：头像先就座（身份面朝下）→ 主持人念欢迎+阵容
+    # → 发牌逐张翻面亮身份 → 主持人念队长/仙女宣布开始。座位表挂在 game_start 上，头像开局即在场。
+    emit("game_start", players=s.players, good=s.good, evil=s.evil, seats=seats_payload)
     deps.host.announce(
         threads, "opening",
         prompts.line_host_opening(s.players, lineup, state.lady_holder is not None),
         quest=state.quest_no, attempt=state.attempt,
+    )
+    emit(
+        "deal",
+        leader_no=state.leader,
+        lady_holder=state.lady_holder,  # None = 本局未启用湖中仙女
+        seats=seats_payload,
     )
     deps.host.announce(
         threads, "deal",

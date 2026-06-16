@@ -58,12 +58,16 @@ async def test_host_events_cover_beats_and_schema(tmp_path) -> None:
 
 
 async def test_host_events_interleave_phases(tmp_path) -> None:
-    """host 事件穿插在各阶段之间：开场两拍在一切玩家事件之前，closing 是最后一个事件，
-    且每个结构化阶段事件（propose/vote_result/quest_result）都有同拍/配对 host 串场相伴。"""
+    """host 事件穿插在各阶段之间：开场两拍（opening、deal）按序在一切玩家事件之前——节目单
+    是 game_start → host:opening → deal → host:deal（头像先就座再翻牌）；closing 是最后一个
+    事件，且每个结构化阶段事件（propose/vote_result/quest_result）都有同拍/配对 host 串场相伴。"""
     _, events = await _run_with_events(tmp_path, "order", players=5, seed=4)
     types = [e["type"] for e in events]
+    host_beats = [e["beat"] for e in events if e["type"] == "host"]
+    # 开场前两拍 host 按序是 opening、deal（中间夹着 deal 游戏事件——头像先就座再翻牌）
+    assert host_beats[0] == "opening" and host_beats[1] == "deal"
+    # 第一个 host 之前只可能有 game_start / deal 游戏事件
     first_host = types.index("host")
-    assert events[first_host]["beat"] == "opening" and events[first_host + 1]["beat"] == "deal"
     assert all(t in {"game_start", "deal"} for t in types[:first_host])
     assert events[-1]["type"] == "host" and events[-1]["beat"] == "closing"
     structural = {"propose": "propose_intro", "propose ": "team", "vote_result": "vote_result", "quest_result": "quest_result"}
