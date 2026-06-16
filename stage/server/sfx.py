@@ -29,7 +29,10 @@ def cues_for(directive: Directive, duration: float) -> list[tuple[str, float]]:
         case GameOpen():
             return [("open", 0.0)]
         case Deal():
-            return [("deal", 0.0)]
+            # 逐张"咔"发牌；错峰 = duration*0.8/n，与 Stage.tsx 的 --deal-stagger 同步
+            n = len(directive.seats)
+            stagger = duration * 0.8 / max(n, 1)
+            return [("deal", i * stagger) for i in range(n)]
         case Speech():
             return [("think", 0.0)] if directive.monologue else []
         case VoteReveal():

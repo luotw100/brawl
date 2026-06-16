@@ -99,33 +99,16 @@ _VOICED = {
 
 
 def is_broadcastable(replay_dir: Path) -> bool:
-    """这局能否进直播库：①对局跑完——events 里有 game_end（游戏逻辑只在真·终局发的，
-    比"没有 state.sqlite"强：半截崩溃同样没 game_end，一并拦住）；②配音齐——每条公开发言
-    都有 manifest 记录且 .opus 文件还在。两道独立闸，AND。
+    """这局能否进直播库：唯一闸是【对局跑完】——events 里有 game_end（游戏逻辑只在真·终局发的，
+    比"没有 state.sqlite"强：半截崩溃同样没 game_end，一并拦住）。
 
-    为什么"有 manifest.json"不算配齐：manifest 是 games/avalon/tts.py 逐条合成成功就增量
-    刷盘的，半截 TTS 也会留下部分 manifest——所以得照 tts 的差集逐条核对。这里**stat 文件**
-    （播放期刻意不 stat、唯 manifest 是真相）是因为换声工作流会"改 meta + 删产物 + 续转"，
-    manifest 留着记录而 .opus 已删，得统计出来判未齐。
+    TTS 柔性、不设闸：有配音就播、没有/缺张就静默（adapt 里 _audio_url 查不到就不带音频，
+    一拍节奏回退字数估算）——无声是有效状态，方便不烧 TTS 直接测画面。
 
     残缺/损坏一律判否：这是边界过滤，library 拿到的都是真能播的，扫描自身绝不因坏目录崩。"""
     try:
         events = load_events(replay_dir)
-        if not any(e.get("type") == "game_end" for e in events):
-            return False
-        tts = load_tts(replay_dir)
-        tts_dir = replay_dir / "tts"
-        for ev in events:
-            spec = _VOICED.get(ev["type"])
-            if spec is None:
-                continue
-            cid_field, text_field = spec
-            if not (ev.get(text_field) or "").strip():
-                continue  # 空发言 tts 不合成，这里也不要求
-            entry = tts.get(ev.get(cid_field) or "")
-            if entry is None or not (tts_dir / entry["file"]).is_file():
-                return False
-        return True
+        return any(e.get("type") == "game_end" for e in events)
     except (OSError, json.JSONDecodeError, KeyError):
         return False
 
@@ -146,7 +129,10 @@ def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any
             audio_url=_audio_url(replay_id, event.get("call_id"), tts),
         )
     if t == "game_start":
-        return GameOpen(players=event["players"], good=event["good"], evil=event["evil"])
+        return GameOpen(
+            players=event["players"], good=event["good"], evil=event["evil"],
+            seats=[_seat(s, names) for s in event.get("seats", [])],  # 老 replay 无 seats → 空
+        )
     if t == "deal":
         return Deal(
             seats=[_seat(s, names) for s in event["seats"]],
@@ -218,8 +204,9 @@ def apply(scene: Scene, item: FeedItem) -> None:
 
     match directive:
         case GameOpen():
-            # 新局开场：清掉上一局残留
-            scene.seats = []
+            # 新局开场：清掉上一局残留。头像就座但身份面朝下（dealt=False），seats 可空（老 replay）。
+            scene.seats = directive.seats
+            scene.dealt = False
             scene.leader_no = None
             scene.lady_holder = None
             scene.quest_no = 1
@@ -232,6 +219,7 @@ def apply(scene: Scene, item: FeedItem) -> None:
             scene.timeline = []
         case Deal():
             scene.seats = directive.seats
+            scene.dealt = True  # 发牌翻面：身份亮出（此后整局常亮）
             scene.leader_no = directive.leader_no
             scene.lady_holder = directive.lady_holder
         case Speech():

@@ -33,12 +33,15 @@ class SeatInfo(BaseModel):
 
 
 class GameOpen(BaseModel):
-    """开局横幅：人数与阵营配比（不带 replay 目录名——那是导播台的事）。"""
+    """开局横幅：人数与阵营配比（不带 replay 目录名——那是导播台的事）。
+    seats 让头像开局即就座（身份面朝下，发牌时翻开）；老 replay 的 game_start 无 seats → 空列表，
+    退回"deal 才出头像"的旧行为，不破坏旧录像。"""
 
     kind: Literal["game_open"] = "game_open"
     players: int
     good: int
     evil: int
+    seats: list[SeatInfo] = Field(default_factory=list)
 
 
 class Deal(BaseModel):
@@ -208,6 +211,7 @@ class Scene(BaseModel):
     """舞台快照（唯一的 source of truth，engine 持有并折叠）。"""
 
     seats: list[SeatInfo] = Field(default_factory=list)
+    dealt: bool = False  # 身份是否已发牌翻开（game_start 置 False=面朝下，deal 置 True=亮身份）
     leader_no: int | None = None
     lady_holder: int | None = None
     quest_no: int = 1

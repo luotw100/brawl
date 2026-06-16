@@ -79,7 +79,7 @@ class Engine:
     # ---------------------------------------------------------------- 对外状态
 
     def library(self) -> list[str]:
-        """replay_root 下所有可播的局（边界过滤：跑完且配音齐，详见 scene.is_broadcastable）。"""
+        """replay_root 下所有可播的局（边界过滤：对局跑完即可；TTS 柔性，详见 scene.is_broadcastable）。"""
         return sorted(d.name for d in self._root.iterdir() if d.is_dir() and avalon.is_broadcastable(d))
 
     def public_scene(self) -> Scene:

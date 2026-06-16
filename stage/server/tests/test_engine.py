@@ -130,21 +130,21 @@ async def test_queue_precedes_pool(settings):
 
 
 def test_library_only_lists_broadcastable_replays(settings):
-    """进库闸：只列"跑完且配音齐"的局，挡住裸目录/没配音/没跑完三类残局。"""
+    """进库闸只剩"对局跑完"这一道：裸目录/没跑完挡住；没配音的局照进（TTS 柔性，无声照常播）。"""
     (settings.replay_root / "junk").mkdir()  # 没有 events.jsonl 的目录不算片
-    write_replay(settings.replay_root, "silent", voiced=False)  # 跑完但 TTS 没生成
+    write_replay(settings.replay_root, "silent", voiced=False)  # 跑完但 TTS 没生成 → 仍可播
     unfinished = [e for e in EVENTS if e["type"] != "game_end"]  # 缺终局事件 = 没跑完
     write_replay(settings.replay_root, "running", events=unfinished)
     engine, _ = make_engine(settings)
-    assert engine.library() == ["game1"]
+    assert engine.library() == ["game1", "silent"]
 
 
-def test_library_excludes_replay_with_missing_audio_file(settings):
-    """配音齐的判据 stat 到文件：manifest 留着记录但 .opus 被删（换声/搬运掉了），判未齐。"""
+def test_library_includes_replay_with_missing_audio_file(settings):
+    """TTS 柔性：manifest 留着记录但 .opus 被删（换声/搬运掉了），这局照样进库——缺张就那拍静默。"""
     game = write_replay(settings.replay_root, "holey")
     next(game.joinpath("tts").glob("*.opus")).unlink()
     engine, _ = make_engine(settings)
-    assert "holey" not in engine.library()
+    assert "holey" in engine.library()
 
 
 def test_public_scene_respects_feed_window(settings):
