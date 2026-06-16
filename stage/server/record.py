@@ -137,7 +137,11 @@ def ffmpeg_audio_cmd(segs: list[tuple[Path, float]], out_audio: Path) -> list[st
 
 
 def ffmpeg_mux_cmd(video: Path, audio: Path | None, lead: float, out: Path, encoder: str, fps: int) -> list[str]:
-    """裁掉视频前 lead 秒（对齐到第一拍）+ 叠音轨 + 转码成 mp4。audio=None 时只转视频。"""
+    """裁掉视频前 lead 秒（对齐到第一拍）+ 叠音轨 + 转码成 mp4。audio=None 时只转视频。
+
+    输出长度恒等于视频长度（视频是权威时间轴）：apad 把音轨用静音补到无限长，再 -shortest
+    钳到视频末尾。两头都对——音频短于视频（如无声的终局揭晓）静音补满、不砍画面；音频长于
+    视频（如 --limit-seconds 中途截断）则截到视频末尾。"""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
     if encoder == "vaapi":
         cmd += ["-vaapi_device", RENDER_DEVICE]
@@ -150,7 +154,7 @@ def ffmpeg_mux_cmd(video: Path, audio: Path | None, lead: float, out: Path, enco
         cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"]
     cmd += ["-r", str(fps), "-map", "0:v:0"]
     if audio is not None:
-        cmd += ["-map", "1:a:0", "-c:a", "aac", "-b:a", "160k", "-shortest"]
+        cmd += ["-map", "1:a:0", "-af", "apad", "-c:a", "aac", "-b:a", "160k", "-shortest"]
     cmd += [str(out)]
     return cmd
 

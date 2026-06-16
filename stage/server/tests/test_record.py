@@ -55,7 +55,7 @@ def test_ffmpeg_mux_cmd_vaapi_with_audio():
     assert "h264_vaapi" in cmd
     assert cmd[cmd.index("-ss") + 1] == "2.000"  # 裁前导留白
     assert "1:a:0" in cmd  # 叠了音轨
-    assert "-shortest" in cmd
+    assert "apad" in cmd and "-shortest" in cmd  # 输出长度恒等于视频：静音补齐 + 钳到视频末尾
     assert cmd[-1] == "/o.mp4"
 
 
