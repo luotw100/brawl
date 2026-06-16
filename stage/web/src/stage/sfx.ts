@@ -8,7 +8,6 @@
 // 免得一进来糊一脸历史音效。
 
 import { useEffect } from "react";
-import type { Player } from "./audio";
 import type { Directive, FeedItem } from "../protocol";
 import { type Channel, elapsedOf } from "../useChannel";
 
@@ -51,7 +50,7 @@ export function cuesFor(d: Directive, duration: number): Cue[] {
 }
 
 // 每当切到新一拍，按 cue 表排程这拍的音效。挂在 Stage 顶层，跟随 last.seq 重置。
-export function useSfx(ch: Channel, last: FeedItem | undefined, player: Player): void {
+export function useSfx(ch: Channel, last: FeedItem | undefined): void {
   useEffect(() => {
     for (const name of ALL) fetch(`${SFX_BASE}${name}.opus`).catch(() => {});
   }, []);
@@ -66,10 +65,12 @@ export function useSfx(ch: Channel, last: FeedItem | undefined, player: Player):
       const delay = c.at - elapsed;
       if (delay < -LATE_GRACE) return []; // 已过去太久，不补放
       return [window.setTimeout(() => {
-        player.play(`${SFX_BASE}${c.sfx}.opus`, { volume: SFX_VOLUME });
+        const el = new window.Audio(`${SFX_BASE}${c.sfx}.opus`);
+        el.volume = SFX_VOLUME;
+        el.play().catch(() => {});
       }, Math.max(delay, 0) * 1000)];
     });
     return () => { for (const t of timers) window.clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seq, player]);
+  }, [seq]);
 }

@@ -3,7 +3,6 @@ import type {
   FeedItem, Intermission, ProposalLog, QuestLog, Scene, SeatInfo,
 } from "../protocol";
 import { type Channel, elapsedOf, useChannel } from "../useChannel";
-import { AudioUnlock, PlayerContext, useAudioGate, usePlayer } from "./audio";
 import { useSfx } from "./sfx";
 import { StageIcon, roleIconName } from "./StageIcon";
 import "./stage.css";
@@ -58,17 +57,14 @@ export default function Stage() {
     }
   }, [state?.prefetch]);
 
-  const { player, needGesture, unlock } = useAudioGate();
-  useSfx(ch, last, player);
+  useSfx(ch, last);
 
   if (!state) return <div className="viewport" />;
   const flashKind = last && ["vote_reveal", "quest_reveal", "assassination", "game_over"].includes(last.directive.kind)
     ? last.directive.kind : null;
 
   return (
-    <PlayerContext.Provider value={player}>
     <div className="viewport">
-      {needGesture && <AudioUnlock onUnlock={unlock} />}
       <div className="canvas" style={{ width: W, height: H, transform: `scale(${scale})` }}>
         <div className="bg" />
         {flashKind && <div key={last!.seq} className={`flash flash-${flashKind}`} />}
@@ -88,7 +84,6 @@ export default function Stage() {
         {state.paused && <div className="paused-tag">⏸ 暂停中</div>}
       </div>
     </div>
-    </PlayerContext.Provider>
   );
 }
 
@@ -476,12 +471,13 @@ function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: strin
 }
 
 function Audio({ ch, item, url }: { ch: Channel; item: FeedItem; url: string | null | undefined }) {
-  const player = usePlayer();
   useEffect(() => {
     if (!url) return;
-    const el = player.play(url, { currentTime: elapsedOf(ch, item.started_at, Date.now()) });
+    const el = new window.Audio(url);
+    el.currentTime = Math.max(elapsedOf(ch, item.started_at, Date.now()), 0);
+    el.play().catch(() => {});
     return () => el.pause();
-  }, [url, item.seq, player]);
+  }, [url, item.seq]);
   return null;
 }
 
