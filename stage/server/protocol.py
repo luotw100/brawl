@@ -232,7 +232,6 @@ class StateMsg(BaseModel):
     type: Literal["state"] = "state"
     ts: float = Field(default_factory=time.time)  # 服务端当前时刻（客户端对钟用）
     phase: Literal["idle", "playing", "intermission"]
-    paused: bool
     scene: Scene
     overlays: list[OverlayItem]
     prefetch: list[str] = Field(default_factory=list)  # 接下来几拍的音频 URL，页面提前预热免得起拍才拉、尾部被截

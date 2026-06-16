@@ -60,12 +60,9 @@ function Panel({ token }: { token: string }) {
           <div className="row">
             <span className="pill">{st.phase}</span>
             <span>{st.replay_id ?? "—"}</span>
-            {st.paused && <span className="pill bad">已暂停</span>}
           </div>
           <div className="row">
-            <button onClick={() => act("POST", "/api/playback", { action: st.paused ? "resume" : "pause" })}>
-              {st.paused ? "▶ 继续" : "⏸ 暂停"}
-            </button>
+            <button onClick={() => act("POST", "/api/playback", { action: "step" })}>⏭ 下一拍</button>
             <button onClick={() => act("POST", "/api/playback", { action: "skip" })}>⏭ 跳下一局</button>
           </div>
           <h2>节奏</h2>

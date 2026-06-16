@@ -36,7 +36,7 @@ def test_api_requires_console_token(client):
 def test_console_state_includes_ops_info(client):
     state = client.get(f"/api/state{API}").json()
     assert state["library"] == ["game1"]
-    assert {"phase", "paused", "scene", "overlays", "queue", "knobs", "replay_id"} <= state.keys()
+    assert {"phase", "scene", "overlays", "queue", "knobs", "replay_id"} <= state.keys()
     assert state["knobs"]["feed_window"] == 2
 
 
@@ -56,7 +56,7 @@ def test_ws_sends_state_and_never_leaks_replay_names(client):
         raw = ws.receive_text()
         msg = json.loads(raw)
         assert msg["type"] == "state"
-        assert {"ts", "phase", "paused", "scene", "overlays", "prefetch"} <= msg.keys()
+        assert {"ts", "phase", "scene", "overlays", "prefetch"} <= msg.keys()
         # 隐私边界：公开频道不出现队列与 replay 目录名
         assert "queue" not in msg and "library" not in msg and "replay_id" not in msg
         assert "game1" not in raw
@@ -83,7 +83,7 @@ def test_queue_rejects_unknown_replay(client):
 
 
 def test_playback_and_knobs_validation(client):
-    assert client.post(f"/api/playback{API}", json={"action": "pause"}).status_code == 200
+    assert client.post(f"/api/playback{API}", json={"action": "step"}).status_code == 200
     assert client.post(f"/api/playback{API}", json={"action": "warp"}).status_code == 422
     assert client.post(f"/api/knobs{API}", json={"pace": 2.0}).status_code == 422
     assert client.post(f"/api/knobs{API}", json={"feed_window": 9}).status_code == 422

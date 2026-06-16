@@ -91,7 +91,6 @@ export interface StateMsg {
   type: "state";
   ts: number; // 服务端当前时刻（epoch 秒），客户端对钟用
   phase: "idle" | "playing" | "intermission";
-  paused: boolean;
   scene: Scene;
   overlays: OverlayItem[];
   prefetch: string[]; // 接下来几拍的音频 URL，提前预热进缓存

@@ -81,7 +81,6 @@ export default function Stage() {
           ))}
         </div>
         {!ch.connected && <div className="conn-dot" title="重连中" />}
-        {state.paused && <div className="paused-tag">⏸ 暂停中</div>}
       </div>
     </div>
   );

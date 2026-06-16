@@ -91,16 +91,22 @@ async def test_loop_pool_feeds_when_queue_empty(settings):
     assert engine.phase != "idle"
 
 
-async def test_pause_freezes_advance(settings):
-    settings = settings.model_copy(update={"pace": 1.0})  # 给暂停留出反应窗口
+async def test_step_advances_past_dwell(settings):
+    """下一拍：本拍停留还没走完就提前结束、推进到下一拍（不像跳局那样 break 整局）。"""
+    settings = settings.model_copy(update={"pace": 1.0})  # 长停留，确保不是自然走完
     engine, rec = make_engine(settings)
-    await engine.set_paused(True)
     await engine.set_queue(["game1"])
     task = asyncio.create_task(engine.run())
-    await asyncio.sleep(0.8)
-    task.cancel()
-    # 暂停下最多演出第一拍后冻结，绝不会播完
-    assert len(rec.kinds()) <= 1
+    try:
+        async with asyncio.timeout(5):
+            while not rec.kinds():  # 第一拍上台、正在它的长停留里
+                await asyncio.sleep(0.01)
+            await engine.step()
+            while len(rec.kinds()) < 2:  # 下一拍被提前推上来
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+    assert "game_open" in rec.kinds()  # 整局没被跳走，照常从开局拍开始往下推
 
 
 async def test_skip_jumps_to_intermission(settings):

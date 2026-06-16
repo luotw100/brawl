@@ -1,10 +1,10 @@
 """演出引擎：服务端唯一的"播放头"，也是舞台状态唯一的 source of truth。
 
 一个 asyncio task 循环：取下一局 → 逐事件演出（adapt → apply 折进 Scene → publish 全量
-状态 → 按时长停留）→ 幕间页 → 再取下一局。暂停/跳局/调速都是改这个 task 看的状态位。
+状态 → 按时长停留）→ 幕间页 → 再取下一局。下一拍/跳局/调速都是改这个 task 看的状态位。
 
 publish 是注入的回调（app 层把"当前完整状态"广播给所有页面）；任何状态变化（每一拍、
-暂停、旋钮、队列）都调一次 publish——客户端是纯渲染函数，收到什么画什么。
+旋钮、队列）都调一次 publish——客户端是纯渲染函数，收到什么画什么。
 
 节奏模型与 games/avalon/replay.py 同源：pace 0~1 线性缩放每字停顿与事件间气口。
 有离线 TTS 时（audio/durations.json），一拍时长取 max(文字估算, 音频时长+余量)，
@@ -39,7 +39,7 @@ from server.settings import StageSettings
 # pace=1 时的上限（与 replay.py 的口径一致）
 _MAX_CHAR_DELAY = 0.06
 _MAX_BEAT = 0.7
-_TICK = 0.2  # 状态位轮询粒度：暂停/跳局的最大响应延迟
+_TICK = 0.2  # 状态位轮询粒度：跳局/下一拍的最大响应延迟
 _AUDIO_MARGIN = 0.5  # 音频时长之外多留的气口（秒）：页面预热到位后只兜残余抖动，不再扛拉取延迟
 
 
@@ -62,7 +62,6 @@ class Engine:
         self._publish = publish
         self.scene = Scene()
         self.queue: list[str] = []
-        self.paused = False
         self.pace = settings.pace
         self.intermission_seconds = settings.intermission_seconds
         self.loop_pool = settings.loop_pool
@@ -73,6 +72,7 @@ class Engine:
         self.prefetch: list[str] = []  # 当前拍之后待播的音频 URL，进 StateMsg 让页面提前预热
         self._seq = 0
         self._skip = False
+        self._step = False  # 下一拍：提前结束本拍停留、推进到下一拍（区别于 _skip 的整局跳走）
         self._pool_pick: str | None = None  # 取局缓存：保证"下一局已就绪"的判断与实际取局一致
         self._durations: dict[str, float] = {}  # 当前局的音频时长表（audio_url → 秒）
 
@@ -88,12 +88,11 @@ class Engine:
 
     # ---------------------------------------------------------------- 导播台控制
 
-    async def set_paused(self, paused: bool) -> None:
-        self.paused = paused
-        await self._publish()
-
     async def skip(self) -> None:
         self._skip = True
+
+    async def step(self) -> None:
+        self._step = True
 
     async def set_knobs(self, *, pace: float | None = None, intermission_seconds: float | None = None,
                         loop_pool: bool | None = None, feed_window: int | None = None) -> None:
@@ -193,7 +192,7 @@ class Engine:
         await self._publish()
 
     async def _dwell(self, seconds: float) -> bool:
-        """这一拍在台上停留：暂停时冻结倒计时，跳局立即返回 False。
+        """这一拍在台上停留：跳局立即返回 False（break 整局），下一拍提前结束返回 True（推进下一拍）。
 
         pace=0 时时长为 0，也必须让出一次事件循环——否则引擎独占线程，
         WS 广播、控制 API 全部饿死（实测会把内存吃爆）。"""
@@ -203,9 +202,9 @@ class Engine:
             if self._skip:
                 self._skip = False
                 return False
-            if self.paused:
-                await asyncio.sleep(_TICK)
-                continue
+            if self._step:
+                self._step = False
+                return True  # 本拍不等了，立刻推进到下一拍
             step = min(remaining, _TICK)
             await asyncio.sleep(step)
             remaining -= step

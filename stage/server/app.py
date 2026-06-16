@@ -30,7 +30,7 @@ _FAIL_LIMIT = 30  # 窗口内允许的错 token 尝试数
 
 
 class PlaybackAction(BaseModel):
-    action: str  # pause | resume | skip
+    action: str  # skip | step
 
 
 class Knobs(BaseModel):
@@ -48,7 +48,7 @@ def create_app(settings: StageSettings) -> FastAPI:
     hub = Hub()
 
     def state_msg() -> StateMsg:
-        return StateMsg(phase=engine.phase, paused=engine.paused,
+        return StateMsg(phase=engine.phase,
                         scene=engine.public_scene(), overlays=overlays.items(),
                         prefetch=engine.prefetch)
 
@@ -135,12 +135,10 @@ def create_app(settings: StageSettings) -> FastAPI:
     @app.post("/api/playback", dependencies=guarded)
     async def post_playback(payload: PlaybackAction) -> dict:
         match payload.action:
-            case "pause":
-                await engine.set_paused(True)
-            case "resume":
-                await engine.set_paused(False)
             case "skip":
                 await engine.skip()
+            case "step":
+                await engine.step()
             case _:
                 raise HTTPException(status_code=422, detail=f"未知动作：{payload.action}")
         return {"ok": True}
