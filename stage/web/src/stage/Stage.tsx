@@ -3,6 +3,7 @@ import type {
   FeedItem, Intermission, ProposalLog, QuestLog, Scene, SeatInfo,
 } from "../protocol";
 import { type Channel, elapsedOf, useChannel } from "../useChannel";
+import { useSfx } from "./sfx";
 import { StageIcon, roleIconName } from "./StageIcon";
 import "./stage.css";
 
@@ -55,6 +56,8 @@ export default function Stage() {
       if (!warmed.current.has(url)) { warmed.current.add(url); fetch(url).catch(() => {}); }
     }
   }, [state?.prefetch]);
+
+  useSfx(ch, last);
 
   if (!state) return <div className="viewport" />;
   const flashKind = last && ["vote_reveal", "quest_reveal", "assassination", "game_over"].includes(last.directive.kind)

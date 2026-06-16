@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import uvicorn
@@ -42,6 +42,7 @@ from server.protocol import (
     VoteReveal,
 )
 from server.record_settings import RENDER_DEVICE, RecordSettings
+from server.sfx import SFX_VOLUME, cues_for
 from server.settings import StageSettings
 
 _VIEWPORT = {"width": 1080, "height": 1920}  # 竖屏，与 OBS 画布同口径
@@ -52,11 +53,13 @@ _console = Console()  # 进度输出：录制节拍 + ffmpeg 步骤（与捕获/
 
 @dataclass
 class Beat:
-    """一拍的录制时间线条目：seq 去重，started_at 定位偏移，audio_url 指向待拼的音频。"""
+    """一拍的录制时间线条目：seq 去重，started_at 定位偏移，audio_url 指向待拼的人声，
+    cues 是这拍要叠的音效（名字 + 拍内偏移秒，tap 时由 cues_for 算好）。"""
 
     seq: int
     started_at: float
     audio_url: str | None
+    cues: list[tuple[str, float]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------- 进度（节拍渲染）
@@ -107,31 +110,37 @@ def _beat_summary(d: Directive, seats: list[SeatInfo]) -> tuple[str, str, str]:
 # ---------------------------------------------------------------- 纯函数（可单测）
 
 
-def audio_segments(beats: list[Beat], replay_root: Path, shift: float) -> list[tuple[Path, float]]:
-    """有声拍 → (opus 文件路径, 在视频里的起始秒)。以第一拍为零点；偏移加 shift 后下钳到 0。
+def audio_segments(
+    beats: list[Beat], replay_root: Path, sfx_dir: Path, shift: float
+) -> list[tuple[Path, float, float]]:
+    """各拍 → (opus 文件路径, 在视频里的起始秒, 增益)。人声增益 1.0；音效压在 SFX_VOLUME。
+    以第一拍为零点；偏移加 shift 后下钳到 0。音效偏移在拍起点上再加 cue 的拍内偏移。
 
     audio_url 形如 /replays/<id>/tts/<file>，剥掉 /replays/ 前缀即 replay_root 下的相对路径
-    （与 app.py 的 get_audio 静态路由同一套构造，反过来落回文件系统）。"""
+    （与 app.py 的 get_audio 静态路由同一套构造，反过来落回文件系统）；音效在 sfx_dir/<name>.opus。"""
     if not beats:
         return []
     t0 = beats[0].started_at
-    segs: list[tuple[Path, float]] = []
+    segs: list[tuple[Path, float, float]] = []
     for b in beats:
-        if not b.audio_url:
-            continue
-        path = replay_root / b.audio_url.removeprefix("/replays/")
-        segs.append((path, max(0.0, b.started_at - t0 + shift)))
+        base = b.started_at - t0 + shift
+        if b.audio_url:
+            segs.append((replay_root / b.audio_url.removeprefix("/replays/"), max(0.0, base), 1.0))
+        for name, at in b.cues:
+            segs.append((sfx_dir / f"{name}.opus", max(0.0, base + at), SFX_VOLUME))
     return segs
 
 
-def ffmpeg_audio_cmd(segs: list[tuple[Path, float]], out_audio: Path) -> list[str]:
-    """把各 .opus 按偏移 adelay 后 amix 成一条音轨。normalize=0：发言基本不重叠，不要自动压音量。"""
+def ffmpeg_audio_cmd(segs: list[tuple[Path, float, float]], out_audio: Path) -> list[str]:
+    """把各 .opus 按偏移 adelay、按增益 volume 后 amix 成一条音轨。normalize=0：发言基本不
+    重叠、音效已压低，不要自动压音量（否则人声会被错峰盖章拽下去）。"""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
-    for path, _ in segs:
+    for path, _, _ in segs:
         cmd += ["-i", str(path)]
-    delays = [f"[{i}:a]adelay={int(off * 1000)}:all=1[a{i}]" for i, (_, off) in enumerate(segs)]
+    parts = [f"[{i}:a]adelay={int(off * 1000)}:all=1,volume={gain}[a{i}]"
+             for i, (_, off, gain) in enumerate(segs)]
     labels = "".join(f"[a{i}]" for i in range(len(segs)))
-    filt = ";".join(delays) + ";" + labels + f"amix=inputs={len(segs)}:normalize=0:dropout_transition=0[aout]"
+    filt = ";".join(parts) + ";" + labels + f"amix=inputs={len(segs)}:normalize=0:dropout_transition=0[aout]"
     cmd += ["-filter_complex", filt, "-map", "[aout]", str(out_audio)]
     return cmd
 
@@ -173,7 +182,8 @@ def _tap_engine(engine) -> list[Beat]:
         if feed and feed[-1].seq not in seen:
             fi = feed[-1]
             seen.add(fi.seq)
-            beats.append(Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None)))
+            cues = cues_for(fi.directive, fi.duration)
+            beats.append(Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), cues))
             elapsed = fi.started_at - beats[0].started_at  # 视频时间轴（以第一拍为零点）
             tag, color, detail = _beat_summary(fi.directive, engine.scene.seats)
             note = "[cyan]♪[/cyan]" if getattr(fi.directive, "audio_url", None) else " "
@@ -268,11 +278,11 @@ async def _record(settings: RecordSettings) -> None:
     with tempfile.TemporaryDirectory(prefix="stage-record-") as tmp:
         tmpdir = Path(tmp)
         beats, lead, video = await _capture(settings, tmpdir)
-        segs = audio_segments(beats, settings.dir.parent, settings.audio_shift)
+        segs = audio_segments(beats, settings.dir.parent, settings.web_dist / "sfx", settings.audio_shift)
         audio: Path | None = None
         if segs:
             audio = tmpdir / "audio.m4a"
-            _run(ffmpeg_audio_cmd(segs, audio), f"拼接音轨（{len(segs)} 段语音）…")
+            _run(ffmpeg_audio_cmd(segs, audio), f"拼接音轨（{len(segs)} 段语音/音效）…")
         _run(ffmpeg_mux_cmd(video, audio, lead, settings.out, settings.encoder, settings.fps), "编码视频…")
     size_mb = settings.out.stat().st_size / 1e6
     _console.print(f"[bold green]✓ 已生成[/bold green] {settings.out} [dim]({size_mb:.1f} MB)[/dim]")

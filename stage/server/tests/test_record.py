@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from server.record import Beat, audio_segments, ffmpeg_audio_cmd, ffmpeg_mux_cmd
+from server.sfx import SFX_VOLUME
 
 ROOT = Path("/replays-root")
+SFX = Path("/sfx-root")
 
 
 def test_audio_segments_offsets_relative_to_first_beat():
@@ -14,10 +16,10 @@ def test_audio_segments_offsets_relative_to_first_beat():
         Beat(seq=1, started_at=100.0, audio_url="/replays/g/tts/a.opus"),
         Beat(seq=2, started_at=103.5, audio_url="/replays/g/tts/b.opus"),
     ]
-    segs = audio_segments(beats, ROOT, shift=0.0)
+    segs = audio_segments(beats, ROOT, SFX, shift=0.0)
     assert segs == [
-        (ROOT / "g/tts/a.opus", 0.0),  # 第一拍即零点
-        (ROOT / "g/tts/b.opus", 3.5),
+        (ROOT / "g/tts/a.opus", 0.0, 1.0),  # 第一拍即零点，人声增益 1.0
+        (ROOT / "g/tts/b.opus", 3.5, 1.0),
     ]
 
 
@@ -27,23 +29,39 @@ def test_audio_segments_skips_silent_and_applies_shift_clamped():
         Beat(seq=2, started_at=101.0, audio_url="/replays/g/tts/b.opus"),
     ]
     # shift=-2 把 b 的 1.0s 推到负，下钳到 0
-    segs = audio_segments(beats, ROOT, shift=-2.0)
-    assert segs == [(ROOT / "g/tts/b.opus", 0.0)]
+    segs = audio_segments(beats, ROOT, SFX, shift=-2.0)
+    assert segs == [(ROOT / "g/tts/b.opus", 0.0, 1.0)]
+
+
+def test_audio_segments_sfx_cues_offset_on_top_of_beat():
+    # cue 的拍内偏移叠在拍起点上；音效走 sfx_dir + 压低增益
+    beats = [
+        Beat(seq=1, started_at=100.0, audio_url=None),  # 仍是零点
+        Beat(seq=2, started_at=102.0, audio_url="/replays/g/tts/b.opus",
+             cues=[("stamp", 0.0), ("stamp", 0.5), ("vote-pass", 1.0)]),
+    ]
+    segs = audio_segments(beats, ROOT, SFX, shift=0.0)
+    assert segs == [
+        (ROOT / "g/tts/b.opus", 2.0, 1.0),  # 人声在拍起点
+        (SFX / "stamp.opus", 2.0, SFX_VOLUME),
+        (SFX / "stamp.opus", 2.5, SFX_VOLUME),
+        (SFX / "vote-pass.opus", 3.0, SFX_VOLUME),
+    ]
 
 
 def test_audio_segments_empty():
-    assert audio_segments([], ROOT, shift=0.0) == []
+    assert audio_segments([], ROOT, SFX, shift=0.0) == []
 
 
 def test_ffmpeg_audio_cmd_delays_and_mix():
-    segs = [(Path("/x/a.opus"), 0.0), (Path("/x/b.opus"), 3.5)]
+    segs = [(Path("/x/a.opus"), 0.0, 1.0), (Path("/x/b.opus"), 3.5, SFX_VOLUME)]
     cmd = ffmpeg_audio_cmd(segs, Path("/tmp/out.m4a"))
     assert cmd[:2] == ["ffmpeg", "-y"]
     assert "-stats" in cmd  # 进度透传，不再吞掉 ffmpeg 输出
     assert cmd.count("-i") == 2
     filt = cmd[cmd.index("-filter_complex") + 1]
-    assert "adelay=0:all=1[a0]" in filt
-    assert "adelay=3500:all=1[a1]" in filt  # 3.5s → 3500ms
+    assert "adelay=0:all=1,volume=1.0[a0]" in filt
+    assert f"adelay=3500:all=1,volume={SFX_VOLUME}[a1]" in filt  # 3.5s → 3500ms，音效压低
     assert "amix=inputs=2:normalize=0" in filt
     assert cmd[-1] == "/tmp/out.m4a"
 
