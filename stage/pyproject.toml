@@ -10,7 +10,11 @@ dependencies = [
     "pydantic-settings>=2.4.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
+    "playwright>=1.40",  # stage-record：无头 Chromium 录画面（浏览器二进制走 ~/.cache/ms-playwright）
 ]
+
+[project.scripts]
+stage-record = "server.record:main_cli"
 
 [dependency-groups]
 dev = [
