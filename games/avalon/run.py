@@ -112,6 +112,10 @@ async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Re
         lady_holder=setup.lady_holder,
         lady_used=[setup.lady_holder] if setup.lady_holder is not None else [],
     )
+    for seat in initial.seats:  # 开局一次性烧入各座位厂商 logo（无 --replay 时 NullRecorder 空操作）
+        src = registry.avatar_path(seat.model)
+        if src is not None:  # 该模型没配 avatar / 源文件缺失 → 不烧入，回放渲染走 hash 色回退
+            recorder.write_avatar(seat.no, src)
     if settings.replay is None:  # 无产物目录=不可续：纯内存跑，不挂 checkpointer/sidecar
         return await _drive(build_graph(), initial, _config(deps), recorder, renderer, run_dir=None)
     async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(settings.replay)) as saver:

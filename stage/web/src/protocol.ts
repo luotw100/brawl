@@ -8,6 +8,7 @@ export interface SeatInfo {
   role: string;
   side: "good" | "evil";
   model: string;
+  avatar_url?: string | null;  // 厂商 logo；缺则回退 hash 渐变 + 名字首字
 }
 
 export interface GameOpen { kind: "game_open"; players: number; good: number; evil: number; seats: SeatInfo[] }

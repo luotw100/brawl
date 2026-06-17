@@ -6,6 +6,7 @@ games 是"对局快照生成器"：跑一遍把一局冻成 replay，直播时�
     events.jsonl     god-view 事件时间线，驱动回放/画面（与 console.Renderer 同源）
     llm_calls.jsonl  每次模型调用一行（含离线 FakeBackend：它也走完整 LLMPlayer 链路，照常落盘）
     meta.json        本局配置快照 + 起始时间
+    avatars/<座位号>.png  各座位厂商 logo（开局一次性烧入，缺省=该座位无头像，渲染回退 hash 色）
 
 不给 --replay 时走 NullRecorder（空对象），调用方零分叉、只渲染不落盘、零开销。
 "目录已存在即报错——不覆盖、不加 --force，要重跑换个名"这条约束由 validation.py 在
@@ -15,6 +16,7 @@ games 是"对局快照生成器"：跑一遍把一局冻成 replay，直播时�
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -26,6 +28,7 @@ class Recorder(Protocol):
     用一个满足同样接口、方法全空的对象替代 None，把分支从所有调用点收进类型里）。"""
 
     def write_meta(self, meta: dict[str, Any]) -> None: ...
+    def write_avatar(self, seat_no: int, src: Path) -> None: ...
     def record_event(self, ev: dict[str, Any]) -> None: ...
     def record_llm_call(self, record: dict[str, Any]) -> None: ...
     def counts(self) -> tuple[int, int]: ...
@@ -69,6 +72,13 @@ class DirRecorder:
     def write_meta(self, meta: dict[str, Any]) -> None:
         (self.run_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def write_avatar(self, seat_no: int, src: Path) -> None:
+        """把座位 seat_no 的厂商 logo 源文件拷进 avatars/<seat_no><后缀>。开局一次性写，
+        回放渲染层据「该座位有没有头像文件」决定显真实头像还是 hash 色回退。"""
+        avatars = self.run_dir / "avatars"
+        avatars.mkdir(exist_ok=True)
+        shutil.copyfile(src, avatars / f"{seat_no}{src.suffix}")
+
     def record_event(self, ev: dict[str, Any]) -> None:
         with self._events_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
@@ -95,6 +105,7 @@ class NullRecorder:
     """不落盘：方法全是空操作。不给 --replay 时用它，调用方零分叉、零开销。"""
 
     def write_meta(self, meta: dict[str, Any]) -> None: ...
+    def write_avatar(self, seat_no: int, src: Path) -> None: ...
     def record_event(self, ev: dict[str, Any]) -> None: ...
     def record_llm_call(self, record: dict[str, Any]) -> None: ...
     def counts(self) -> tuple[int, int]:

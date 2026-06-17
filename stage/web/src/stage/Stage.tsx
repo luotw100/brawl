@@ -45,6 +45,13 @@ function avatarStyle(persona: string): CSSProperties {
   return { background: `linear-gradient(150deg, hsl(${hue} 55% 52%), hsl(${(hue + 36) % 360} 50% 30%))` };
 }
 
+// 头像三态共用（座位/揭示/聚光）：有厂商 logo 就铺 logo（深底 contain），否则回退 hash 渐变 + 名字首字。
+const avaClass = (base: string, seat: SeatInfo | undefined): string => (seat?.avatar_url ? `${base} has-img` : base);
+const avaBg = (seat: SeatInfo | undefined): CSSProperties | undefined => (seat && !seat.avatar_url ? avatarStyle(seat.persona) : undefined);
+function AvaFill({ seat }: { seat: SeatInfo | undefined }) {
+  return seat?.avatar_url ? <img className="ava-img" src={seat.avatar_url} alt="" /> : <>{seat?.name.slice(0, 1) ?? "?"}</>;
+}
+
 export default function Stage() {
   const ch = useChannel();
   const [scale, setScale] = useState(1);
@@ -238,8 +245,8 @@ function Seat({ s, scene, vote, card, dealing }: {
   return (
     <div className={cls} data-di={s.no - 1} style={{ "--di": s.no - 1 } as CSSProperties}>
       <div className="avatar-wrap">
-        <div className="avatar" style={avatarStyle(s.persona)}>
-          <span className="ava-init">{s.name.slice(0, 1)}</span>
+        <div className={avaClass("avatar", s)} style={avaBg(s)}>
+          <AvaFill seat={s} />
         </div>
         <span className="seat-no">{s.no}</span>
         {scene.leader_no === s.no && <span className="badge crown"><StageIcon name="crown" size={28} /></span>}
@@ -366,7 +373,7 @@ function RevealAvatar({ seat, no, mark, label, idx }: {
 }) {
   return (
     <div className="rv" style={{ "--ri": idx } as CSSProperties}>
-      <div className="rv-ava" style={seat ? avatarStyle(seat.persona) : undefined}>{seat?.name.slice(0, 1) ?? "?"}</div>
+      <div className={avaClass("rv-ava", seat)} style={avaBg(seat)}><AvaFill seat={seat} /></div>
       <span className="rv-no">{circ(no)}</span>
       <span className={`rv-stamp ${mark}`}>{label}</span>
     </div>
@@ -386,7 +393,7 @@ function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, lady
   return (
     <div className="spotlight">
       <div className="spot-head">
-        <div className="spot-avatar" style={seat ? avatarStyle(seat.persona) : undefined}>{seat?.name.slice(0, 1) ?? "?"}</div>
+        <div className={avaClass("spot-avatar", seat)} style={avaBg(seat)}><AvaFill seat={seat} /></div>
         <div className="spot-id">
           <div className="spot-name">{circ(no)} 号</div>
           <div className="spot-tag">

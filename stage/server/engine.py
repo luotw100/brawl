@@ -160,8 +160,9 @@ class Engine:
         self._durations = avalon.audio_durations(replay_id, tts)
         names = avalon.load_names(replay_dir)  # 显示名随各局 meta 自带：不同局可用不同人设/网名
         host_name = avalon.load_host_name(replay_dir)
+        avatars = avalon.avatar_urls(replay_id, replay_dir)  # 各座位厂商头像 URL，缺则前端回退 hash 色
         # 先把整局摊平：前瞻要看后面的拍，懒迭代给不了"下一拍是谁"。一局事件量很小，全量无妨。
-        beats = [avalon.adapt(event, replay_id=replay_id, tts=tts, names=names, host_name=host_name)
+        beats = [avalon.adapt(event, replay_id=replay_id, tts=tts, names=names, host_name=host_name, avatars=avatars)
                  for event in avalon.load_events(replay_dir)]
         last: GameOver | None = None
         for i, directive in enumerate(beats):

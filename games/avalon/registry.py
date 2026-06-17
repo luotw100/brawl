@@ -28,6 +28,7 @@ class ModelSpec(BaseModel):
     max_tokens: int | None = None  # None = 不设上限，由 timeout 兜底（开 thinking 后推理长，别截断）
     timeout: float = 60  # 单次调用客户端超时（秒）；超时直接抛错，不兜底
     extra_body: dict[str, Any] = Field(default_factory=dict)  # 透传给 API 的额外参数，如开/关思考
+    avatar: str | None = None  # 厂商 logo key，指向 data/avatars/<avatar>.png；录制时按座位烧进 replay（见 Registry.avatar_path）。缺省=该模型不带头像，渲染层走 hash 色回退
 
 
 class Persona(BaseModel):
@@ -55,6 +56,16 @@ class Registry:
     models: dict[str, ModelSpec]
     personas: dict[str, Persona]
     strategies: dict[str, Strategy]
+    avatars_dir: Path
+
+    def avatar_path(self, model_name: str | None) -> Path | None:
+        """该模型厂商 logo 的源文件（data/avatars/<avatar>.png）；模型不在池 / 没配 avatar /
+        文件缺失都返回 None——录制层据此决定烧不烧入（缺则回放渲染走 hash 色回退）。"""
+        spec = self.models.get(model_name) if model_name is not None else None
+        if spec is None or not spec.avatar:
+            return None
+        path = self.avatars_dir / f"{spec.avatar}.png"
+        return path if path.is_file() else None
 
     def model_names(self) -> list[str]:
         return list(self.models)
@@ -74,4 +85,4 @@ def load_registry(data_dir: Path = DATA_DIR) -> Registry:
     models = {m["name"]: ModelSpec(**m) for m in models_raw["models"]}
     personas = {p["id"]: Persona(**p) for p in cast_raw["personas"]}
     strategies = {s["id"]: Strategy(**s) for s in strategies_raw["strategies"]}
-    return Registry(models=models, personas=personas, strategies=strategies)
+    return Registry(models=models, personas=personas, strategies=strategies, avatars_dir=data_dir / "avatars")

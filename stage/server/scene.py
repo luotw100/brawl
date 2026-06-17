@@ -76,6 +76,18 @@ def _audio_url(replay_id: str, call_id: str | None, tts: dict[str, dict[str, Any
     return f"/replays/{replay_id}/tts/{entry['file']}" if entry else None
 
 
+def avatar_urls(replay_id: str, replay_dir: Path) -> dict[int, str]:
+    """各座位的厂商头像 URL（avatars/<座位号>.png → /replays/<id>/avatars/<file>）。
+
+    录制时按座位把厂商 logo 烧进 avatars/；这个目录就是头像存在性的唯一真相（不另读 meta）：
+    烧入了就有、没有就缺。缺则前端回退 hash 色块。没有 avatars/ 目录（老 replay）→ 空表。"""
+    avatars = replay_dir / "avatars"
+    if not avatars.is_dir():
+        return {}
+    return {int(f.stem): f"/replays/{replay_id}/avatars/{f.name}"
+            for f in avatars.iterdir() if f.is_file() and f.stem.isdigit()}
+
+
 def audio_durations(replay_id: str, tts: dict[str, dict[str, Any]]) -> dict[str, float]:
     """audio_url → 时长（秒）。键就是指令上的 audio_url（复用 _audio_url 同一套构造）：
     引擎据此让一拍停满音频。刻意不让引擎自己从 raw event 捞 call_id——多数事件一拍一次
@@ -120,8 +132,9 @@ def load_host_name(replay_dir: Path) -> str:
 
 
 def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any]], names: dict[str, str],
-          host_name: str = "主持人") -> Directive | None:
+          host_name: str = "主持人", avatars: dict[int, str] | None = None) -> Directive | None:
     """一条 replay 事件 → 一条舞台指令。未知事件类型直接抛——契约变了要立刻暴露，不静默吞。"""
+    avatars = avatars or {}
     t = event["type"]
     if t == "host":
         return HostSpeech(
@@ -131,11 +144,11 @@ def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any
     if t == "game_start":
         return GameOpen(
             players=event["players"], good=event["good"], evil=event["evil"],
-            seats=[_seat(s, names) for s in event.get("seats", [])],  # 老 replay 无 seats → 空
+            seats=[_seat(s, names, avatars) for s in event.get("seats", [])],  # 老 replay 无 seats → 空
         )
     if t == "deal":
         return Deal(
-            seats=[_seat(s, names) for s in event["seats"]],
+            seats=[_seat(s, names, avatars) for s in event["seats"]],
             leader_no=event["leader_no"],
             lady_holder=event["lady_holder"],
         )
@@ -178,7 +191,7 @@ def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any
     if t == "game_end":
         return GameOver(
             winner=event["winner"], win_reason=event["win_reason"],
-            seats=[_seat(s, names) for s in event["seats"]],
+            seats=[_seat(s, names, avatars) for s in event["seats"]],
         )
     if t == "banter":
         return Speech(
@@ -188,10 +201,11 @@ def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any
     raise ValueError(f"未知事件类型：{t}（events 契约变了，adapter 要跟上）")
 
 
-def _seat(s: dict[str, Any], names: dict[str, str]) -> SeatInfo:
+def _seat(s: dict[str, Any], names: dict[str, str], avatars: dict[int, str]) -> SeatInfo:
     return SeatInfo(
         no=s["no"], name=names.get(s["persona"], s["persona"]), persona=s["persona"],
         role=s["role"], side=s["side"], model=s.get("model", ""),
+        avatar_url=avatars.get(s["no"]),
     )
 
 

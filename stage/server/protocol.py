@@ -30,6 +30,7 @@ class SeatInfo(BaseModel):
     role: str  # god-view：观众全程看得到底牌
     side: Literal["good", "evil"]
     model: str
+    avatar_url: str | None = None  # 厂商 logo（录制时烧进 replay/avatars/）；缺=该座位无头像，前端回退 hash 色
 
 
 class GameOpen(BaseModel):

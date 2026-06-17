@@ -94,7 +94,7 @@ def test_host_cast_defaults_resolved_and_validated(registry: Registry) -> None:
 def test_explicit_strategies_and_models_kept_and_validated(registry: Registry) -> None:
     """显式 --strategies/--models 照用；未知 id 在边界就炸。"""
     strategies = ["standard"] * 5
-    models = ["deepseek-v4-flash"] * 5
+    models = ["oc-deepseek-v4-flash"] * 5
     setup = resolve_and_validate(AvalonSettings(player="random", players=5, strategies=strategies, models=models), registry, random.Random(0))
     assert (setup.strategies, setup.models) == (strategies, models)
 
@@ -124,6 +124,7 @@ def test_not_enough_personas_raises(registry: Registry) -> None:
         models=registry.models,
         personas={p: Persona(id=p, name=p, voice="x") for p in ("a", "b", "c")},
         strategies=registry.strategies,
+        avatars_dir=registry.avatars_dir,
     )
     with pytest.raises(SettingsError):
         resolve_and_validate(AvalonSettings(player="random", players=5), tiny, random.Random(0))

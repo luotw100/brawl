@@ -8,6 +8,9 @@
 # 要求公开输出（含 monologue）简短——monologue 是给观众看的内心戏、不是模型的草稿纸。开思考
 # 后单次更慢，timeout 给到 120s；不设 max_tokens（=None，由 timeout 兜底）以免推理长被截断。
 #
+# avatar 指向厂商 logo（data/avatars/<avatar>.png）：录制时按座位把对应 logo 烧进 replay，
+# 直播渲染层据此显真实厂商头像；缺省=不带头像，渲染层回退 hash 色块。同厂商多款共用一张。
+#
 # opencode go（https://opencode.ai/zen/go/v1）是聚合端点，单把 OPENCODE_API_KEY。
 # 2026-06-12 实测 /models 共 18 款，逐个打 /chat/completions：17 款通；qwen3.7-max
 # 报 "not supported for format oa-compat"（不走 OpenAI 兼容格式），不收录。
@@ -40,6 +43,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: minimax
 
   - name: oc-minimax-m2.7
     base_url: https://opencode.ai/zen/go/v1
@@ -47,6 +51,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: minimax
 
   - name: oc-minimax-m2.5
     base_url: https://opencode.ai/zen/go/v1
@@ -54,6 +59,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: minimax
 
   - name: oc-kimi-k2.6
     base_url: https://opencode.ai/zen/go/v1
@@ -61,6 +67,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: kimi
 
   - name: oc-kimi-k2.5
     base_url: https://opencode.ai/zen/go/v1
@@ -68,6 +75,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: kimi
 
   - name: oc-glm-5.1
     base_url: https://opencode.ai/zen/go/v1
@@ -75,6 +83,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: zhipu
 
   - name: oc-glm-5
     base_url: https://opencode.ai/zen/go/v1
@@ -82,6 +91,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: zhipu
 
   - name: oc-deepseek-v4-pro
     base_url: https://opencode.ai/zen/go/v1
@@ -89,6 +99,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: deepseek
 
   - name: oc-deepseek-v4-flash
     base_url: https://opencode.ai/zen/go/v1
@@ -96,6 +107,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: deepseek
 
   - name: oc-qwen3.7-plus
     base_url: https://opencode.ai/zen/go/v1
@@ -103,6 +115,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: qwen
 
   - name: oc-qwen3.6-plus
     base_url: https://opencode.ai/zen/go/v1
@@ -110,6 +123,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: qwen
 
   - name: oc-qwen3.5-plus
     base_url: https://opencode.ai/zen/go/v1
@@ -117,6 +131,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: qwen
 
   - name: oc-mimo-v2.5-pro
     base_url: https://opencode.ai/zen/go/v1
@@ -124,6 +139,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: mimo
 
   - name: oc-mimo-v2.5
     base_url: https://opencode.ai/zen/go/v1
@@ -131,6 +147,7 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: mimo
 
   - name: oc-hy3-preview
     base_url: https://opencode.ai/zen/go/v1
@@ -138,3 +155,4 @@ models:
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
     timeout: 120
+    avatar: hunyuan

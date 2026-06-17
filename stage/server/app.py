@@ -183,6 +183,15 @@ def create_app(settings: StageSettings) -> FastAPI:
         # call_id 唯一、内容永不变：长缓存 + immutable，页面预取后正式播放零网络往返。
         return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
+    # 厂商头像：录制时按座位烧进 avatars/<座位号>.png。同 tts，扩展名白名单 + 不存在即 404；
+    # 内容随该局固定不变，长缓存 + immutable。
+    @app.get("/replays/{replay_id}/avatars/{filename}")
+    async def get_avatar(replay_id: str, filename: str) -> FileResponse:
+        path = settings.replay_root / replay_id / "avatars" / filename
+        if not (filename.endswith((".png", ".webp", ".jpg", ".jpeg")) and path.is_file()):
+            raise HTTPException(status_code=404)
+        return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
     if settings.web_dist is not None:
         index_html = settings.web_dist / "index.html"
 
