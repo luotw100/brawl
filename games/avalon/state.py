@@ -41,11 +41,11 @@ class Role(StrEnum):
 
 class Seat(BaseModel):
     """桌上一个参与者的数据快照：几号位、什么角色、夜晚看到了谁。阿瓦隆没人出局。
-    persona_id 已接线（嗓音进 prompt）；strategy_id 是流派占位——当前 prompt 不接线。"""
+    persona_id（腔调）与 strategy_id（打法）均已接线，分别进 prompt。"""
 
     no: int  # 座位号，1..N
-    persona_id: str
-    strategy_id: str = "standard"  # 流派 id；入图前由边界(validation→run._build_seats)填好
+    persona_id: str  # 人设 id；入图前由边界(validation→run._build_seats)填好
+    strategy_id: str  # 流派 id；同上由边界填好（无中性默认，必由 setup 指定）
     model: str | None = None  # 逻辑模型名（llm 后端用）；random 后端为 None 也无妨
     role: Role = Role.SERVANT  # 入图前由边界(validation→run._build_seats)摇定填好；默认仅为占位
     # 夜晚情报（座位号列表，不含自己），含义随角色——可见性规则全在 rules.night_intel。

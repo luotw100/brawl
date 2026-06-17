@@ -32,7 +32,7 @@ def test_cast_length_must_match_players() -> None:
 
 def test_strategies_and_models_length_must_match_players() -> None:
     with pytest.raises(ValidationError):
-        AvalonSettings(players=5, strategies=["standard"])
+        AvalonSettings(players=5, strategies=["prudent"])
     with pytest.raises(ValidationError):
         AvalonSettings(players=5, models=["a", "b"])
 

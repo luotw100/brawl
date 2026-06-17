@@ -33,7 +33,7 @@ from avalon.state import (
 
 
 def _seat(no: int, role: Role = Role.SERVANT) -> Seat:
-    return Seat(no=no, persona_id="fox", role=role)
+    return Seat(no=no, persona_id="fox", strategy_id="prudent", role=role)
 
 
 def _seats(*roles: Role) -> list[Seat]:

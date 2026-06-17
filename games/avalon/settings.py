@@ -72,7 +72,8 @@ class AvalonSettings(BaseSettings):
     lady: bool = False
 
     # 座位映射:cast[i] = 第 i 号座位的人设 id;strategies[i] = 流派 id;models[i] = 逻辑模型名。
-    # 三者独立、长度均为 players;None 表示由边界用 registry 默认值补齐(流派默认全 standard)。
+    # 三者独立、长度均为 players;None=由边界随机采样补齐(均受 --seed 复现):cast 无放回(各座位
+    # 人设互异,免撞音色/网名),strategies/models 有放回(可多座位共享)。详见 validation 的解析器。
     cast: list[str] | None = None
     strategies: list[str] | None = None
     models: list[str] | None = None

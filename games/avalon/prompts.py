@@ -9,11 +9,14 @@
 公开/私密边界靠标签行：「发言：」的内容会一字不差公布上桌，标签外的自由发挥与「内心戏：」
 只在自己线程与观众侧，绝不上桌。结构化解析交给固定轻量模型 extractor（见文件末尾）。
 
-人设(persona)已接线：嗓音文本（cast.yaml 的 voice）作为 system 首段（PlayerView.voice，
-由 nodes._ask_view 从 registry 取），并在每轮 human 提问尾部重复一次风格提醒——长局里
-system 开头的人设会被几十条历史发言稀释，全员风格塌缩成同一种分析腔（06121655 局实测），
-把提醒放在距生成位置最近的回合尾部对冲这一点。人设的网名（cast.yaml 的 name）只给直播
-渲染层用，绝不进 prompt——玩家和主持人视角里只有座位号。流派(strategy)暂不接线。
+人设(persona)与流派(strategy)都已接线，分管两件事：
+- 腔调 tone（cast.yaml 的 tone，玩家各写各的，当前全员同一句中性）：只管"怎么说话"，作为
+  system 首段（PlayerView.tone），并在每轮 human 提问尾部重复一次风格提醒——长局里 system
+  开头的腔调会被几十条历史发言稀释、全员塌缩成同一种分析腔（06121655 局实测），把提醒放在距
+  生成位置最近的回合尾部对冲这一点。腔调差异留给将来的戏子层（届时逐个改 cast.yaml 的 tone）。
+- 流派 strategy（strategies.yaml 的 system，PlayerView.strategy）：只管"怎么赢"（风险偏好与
+  主动性），作为 system 的一段，会真的改变投票/组队/任务取舍——这是平衡旋钮，与腔调解耦。
+人设的网名（cast.yaml 的 name）只给直播渲染层用，绝不进 prompt——玩家和主持人视角里只有座位号。
 
 发给模型的所有文本一律一句一行写满、句中绝不折行——源码里为行宽手动折行的 \\n 会原样
 进入 API 消息、把句子从中间撕开（卧底曾实测污染了全部对局）。段落之间的空行（\\n\\n）
@@ -100,10 +103,11 @@ def _lineup_block(view: PlayerView) -> str:
 def system_text(view: PlayerView) -> str:
     """整局固定的 system：规则 + 本局构成 + 该席位的身份与夜晚情报。整局逐字不变（缓存前缀）。"""
     return (
-        f"你是一名《阿瓦隆》玩家。{view.voice}\n\n"
+        f"你是一名《阿瓦隆》玩家。{view.tone}\n\n"
         f"{RULES}\n\n"
         f"本局共 {view.players} 人，座位号 1~{view.players}。{_lineup_block(view)}\n\n"
-        f"你是 {view.seat_no} 号。{_role_brief(view)}"
+        f"你是 {view.seat_no} 号。{_role_brief(view)}\n\n"
+        f"你的打法取向：{view.strategy}"
     )
 
 
@@ -231,12 +235,12 @@ def situation(view: PlayerView) -> str:
     )
 
 
-def human_message(events: list[str], context: str, ask: str, voice: str = "", mimicry_guard: bool = True) -> str:
+def human_message(events: list[str], context: str, ask: str, tone: str = "", mimicry_guard: bool = True) -> str:
     """一条 human 消息 = 公开事件块（可空）+ 局面/私密信息（可空）+ 风格提醒 + 提问。
 
     风格提醒每轮重申：人设在 system 开头会被长局历史稀释，放到距生成位置近的尾部对冲；
     但提问必须压轴——标签行格式要求是最末位的锚，实测把提醒放在提问之后会顶掉格式锚，
-    模型照着提醒的括号体例回话、不出标签行。voice 为空时退化成纯风格提醒，零分叉。
+    模型照着提醒的括号体例回话、不出标签行。tone 为空时退化成纯风格提醒，零分叉。
 
     mimicry_guard：对局中默认开（反从众，挡长局风格塌缩——别被前人句式带跑）；赛后复盘关掉，
     那里恰恰要互相接话（接梗/回怼/帮腔），只保留"用自己的腔调"、不再叫人绕开前面发言者。"""
@@ -246,7 +250,7 @@ def human_message(events: list[str], context: str, ask: str, voice: str = "", mi
     if context:
         parts.append(context)
     guard = "别被前面发言者的句式和开场带着走" if mimicry_guard else "该接梗接梗、该回怼回怼，别自说自话"
-    parts.append(f"（风格提醒：{voice}保持你自己的腔调，{guard}。）")
+    parts.append(f"（风格提醒：{tone}保持你自己的腔调，{guard}。）")
     parts.append(ask)
     return "\n\n".join(parts)
 

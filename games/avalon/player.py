@@ -69,9 +69,11 @@ class PlayerView:
     # 湖中仙女（私密部分，仅 lady_announce 阶段非空）：自己刚查验的对象与其真实阵营。
     lady_target: int | None = None
     lady_seen: str | None = None  # "good" | "evil"
-    # 人设嗓音文本（registry.Persona.voice，只管怎么说话）：进 system 首段，并在每轮
-    # 提问尾部重复一次（风格提醒，抗长局风格塌缩）。网名/name 绝不进 prompt。
-    voice: str = ""
+    # 人设腔调文本（registry.Persona.tone，只管怎么说话）：进 system 首段，并在每轮提问尾部
+    # 重复一次（风格提醒，抗长局风格塌缩）。网名/name 绝不进 prompt。
+    tone: str = ""
+    # 流派文本（registry.Strategy.system，只管怎么赢/风险偏好与主动性）：进 system，影响决策。
+    strategy: str = ""
     # 该席位的私有线程（human/assistant 交替，append-only）与节点拼好的本轮 human 提问。
     messages: list[ThreadMessage] = field(default_factory=list)
     prompt: str = ""

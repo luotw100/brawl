@@ -33,7 +33,7 @@ def test_role_pool_matches_rules_table(registry: Registry, players: int) -> None
     assert len(setup.cast) == len(setup.models) == players
     assert all(pid in registry.personas for pid in setup.cast)
     assert all(m in registry.models for m in setup.models)  # 缺省时从 provider 池随机分配
-    assert setup.strategies == ["standard"] * players  # 缺省全员中性基线
+    assert len(setup.strategies) == players and all(s in registry.strategies for s in setup.strategies)  # 缺省放回随机
     assert 1 <= setup.first_leader <= players  # 座位号 1 起
 
 
@@ -84,16 +84,18 @@ def test_host_cast_defaults_resolved_and_validated(registry: Registry) -> None:
     assert setup.host_cast == "herald"
     assert "host_cast" in setup.to_meta()
 
-    explicit = resolve_and_validate(AvalonSettings(player="random", players=5, host_cast="fox"), registry, random.Random(0))
-    assert explicit.host_cast == "fox"
+    explicit = resolve_and_validate(AvalonSettings(player="random", players=5, host_cast="herald"), registry, random.Random(0))
+    assert explicit.host_cast == "herald"
 
-    with pytest.raises(SettingsError):
-        resolve_and_validate(AvalonSettings(player="random", players=5, host_cast="没这个主持人"), registry, random.Random(0))
+    # 主持人库与玩家库分开：玩家人设不能当主持人（fox 是玩家），未知 id 同样炸。
+    for bad in ("fox", "没这个主持人"):
+        with pytest.raises(SettingsError):
+            resolve_and_validate(AvalonSettings(player="random", players=5, host_cast=bad), registry, random.Random(0))
 
 
 def test_explicit_strategies_and_models_kept_and_validated(registry: Registry) -> None:
     """显式 --strategies/--models 照用；未知 id 在边界就炸。"""
-    strategies = ["standard"] * 5
+    strategies = ["prudent"] * 5
     models = ["oc-deepseek-v4-flash"] * 5
     setup = resolve_and_validate(AvalonSettings(player="random", players=5, strategies=strategies, models=models), registry, random.Random(0))
     assert (setup.strategies, setup.models) == (strategies, models)
@@ -122,7 +124,8 @@ def test_not_enough_personas_raises(registry: Registry) -> None:
     """人设库坐不满又没显式 --cast → 开打前就炸。"""
     tiny = Registry(
         models=registry.models,
-        personas={p: Persona(id=p, name=p, voice="x") for p in ("a", "b", "c")},
+        personas={p: Persona(id=p, name=p, tone="x") for p in ("a", "b", "c")},
+        hosts=registry.hosts,
         strategies=registry.strategies,
         avatars_dir=registry.avatars_dir,
     )

@@ -72,9 +72,9 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
     """把 settings 解析成确定的 GameSetup（座位号即下标）：cast 缺省即用 registry 默认
     补齐，角色/首任队长用 rng 摇定。违规抛 SettingsError（被 cli 捕获、只打印消息
     不甩 traceback）。"""
-    cast = _resolve_cast(settings, registry)
+    cast = _resolve_cast(settings, registry, rng)
     host_cast = _resolve_host_cast(settings, registry)
-    strategies = _resolve_strategies(settings, registry)
+    strategies = _resolve_strategies(settings, registry, rng)
     models = _resolve_models(settings, registry, rng)
     _check_extractor(settings, registry)
     _check_env(settings, models, registry)
@@ -85,9 +85,9 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
         host_cast=host_cast,
         # 显示名与音色都随开局快照进 meta：replay 据此自圆，cast.yaml 之后再改不影响老 replay。
         names=[registry.personas[pid].name for pid in cast],
-        host_name=registry.personas[host_cast].name,
+        host_name=registry.hosts[host_cast].name,
         voices=[registry.personas[pid].voice_id for pid in cast],
-        host_voice=registry.personas[host_cast].voice_id,
+        host_voice=registry.hosts[host_cast].voice_id,
         strategies=strategies,
         models=models,
         roles=_resolve_roles(settings, rng),
@@ -97,8 +97,9 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
     )
 
 
-def _resolve_cast(settings: AvalonSettings, registry: Registry) -> list[str]:
-    """显式 --cast 则逐个校验在册；否则取人设库前 N 个（不够即报错）。"""
+def _resolve_cast(settings: AvalonSettings, registry: Registry, rng: random.Random) -> list[str]:
+    """显式 --cast 则逐个校验在册；否则从玩家人设池**无放回**随机抽 N 个（不够即报错）。
+    无放回是因为同一人设撞音色/网名——直播上等于两个一模一样的人；故各座位人设必互异。"""
     if settings.cast is not None:
         for pid in settings.cast:
             if pid not in registry.personas:
@@ -106,31 +107,34 @@ def _resolve_cast(settings: AvalonSettings, registry: Registry) -> list[str]:
         return settings.cast
     ids = registry.persona_ids()
     if len(ids) < settings.players:
-        raise SettingsError(f"人设库只有 {len(ids)} 个，不够 {settings.players} 个座位；请用 --cast 指定或补充 cast.yaml")
-    return ids[: settings.players]
+        raise SettingsError(f"玩家人设只有 {len(ids)} 个，不够 {settings.players} 个座位；请用 --cast 指定或补充 cast.yaml")
+    return rng.sample(ids, settings.players)
 
 
 def _resolve_host_cast(settings: AvalonSettings, registry: Registry) -> str:
-    """显式 --host-cast 则校验在册；否则用默认主持人 herald（必须在册）。"""
+    """显式 --host-cast 则按主持人库校验在册；否则用默认主持人 herald（必须在册）。
+    主持人库（hosts.yaml）与玩家库分开：玩家人设不能当主持人，反之亦然。"""
     if settings.host_cast is not None:
-        if settings.host_cast not in registry.personas:
-            raise SettingsError(f"未知主持人人设 id: {settings.host_cast}（可选：{registry.persona_ids()}）")
+        if settings.host_cast not in registry.hosts:
+            raise SettingsError(f"未知主持人人设 id: {settings.host_cast}（可选：{registry.host_ids()}）")
         return settings.host_cast
-    if "herald" not in registry.personas:
-        raise SettingsError("cast.yaml 缺少默认主持人人设 herald；请补上或显式指定 --host-cast")
+    if "herald" not in registry.hosts:
+        raise SettingsError("hosts.yaml 缺少默认主持人人设 herald；请补上或显式指定 --host-cast")
     return "herald"
 
 
-def _resolve_strategies(settings: AvalonSettings, registry: Registry) -> list[str]:
-    """显式 --strategies 则逐个校验在册；否则全员 standard（流派的中性基线，必须在册）。"""
+def _resolve_strategies(settings: AvalonSettings, registry: Registry, rng: random.Random) -> list[str]:
+    """显式 --strategies 则逐个校验在册；否则逐座位从流派库**放回**随机抽（可多座位共享同一
+    流派，不像 cast 会撞音色/网名）。流派库至少要有一个流派。"""
     if settings.strategies is not None:
         for sid in settings.strategies:
             if sid not in registry.strategies:
                 raise SettingsError(f"未知流派 id: {sid}（可选：{registry.strategy_ids()}）")
         return settings.strategies
-    if "standard" not in registry.strategies:
-        raise SettingsError("strategies.yaml 缺少默认流派 standard；请补上或显式指定 --strategies")
-    return ["standard"] * settings.players
+    sids = registry.strategy_ids()
+    if not sids:
+        raise SettingsError("strategies.yaml 没有任何流派；请补上至少一个或显式指定 --strategies")
+    return [rng.choice(sids) for _ in range(settings.players)]
 
 
 def _resolve_models(settings: AvalonSettings, registry: Registry, rng: random.Random) -> list[str]:

@@ -36,7 +36,8 @@ class Persona(BaseModel):
 
     id: str
     name: str
-    voice: str = ""  # 嗓音：语气/节奏/态度的二人称描述；主持人人设只需 id/name，故可缺省
+    tone: str = ""  # 腔调：语气/节奏/态度的二人称描述，进 prompt。玩家各写各的（当前全员同一句
+    #                 中性，将来戏子层要分化时逐个改）；主持人不发言、无 tone（hosts.yaml 不写）。
     voice_id: str = ""  # 阿里云 TTS 音色 id（brawl voice-forge 铸造），离线配音用，不进 prompt
     voice_design: str = ""  # 铸该音色用的 VD 嗓音描述（备份导线），不进 prompt
 
@@ -51,10 +52,12 @@ class Strategy(BaseModel):
 
 @dataclass
 class Registry:
-    """data/ 下三份可调内容的内存视图。"""
+    """data/ 下可调内容的内存视图。玩家人设(personas/cast.yaml)与主持人人设(hosts/hosts.yaml)
+    是两套独立集合——数据源头就分开，玩家池里绝不会混进主持人，核心无需过滤。"""
 
     models: dict[str, ModelSpec]
-    personas: dict[str, Persona]
+    personas: dict[str, Persona]  # 玩家人设（cast.yaml）
+    hosts: dict[str, Persona]  # 主持人人设（hosts.yaml）；只用 name/voice_id，不发言、无 tone
     strategies: dict[str, Strategy]
     avatars_dir: Path
 
@@ -73,6 +76,9 @@ class Registry:
     def persona_ids(self) -> list[str]:
         return list(self.personas)
 
+    def host_ids(self) -> list[str]:
+        return list(self.hosts)
+
     def strategy_ids(self) -> list[str]:
         return list(self.strategies)
 
@@ -80,9 +86,11 @@ class Registry:
 def load_registry(data_dir: Path = DATA_DIR) -> Registry:
     models_raw = yaml.safe_load((data_dir / "models.yaml").read_text(encoding="utf-8"))
     cast_raw = yaml.safe_load((data_dir / "cast.yaml").read_text(encoding="utf-8"))
+    hosts_raw = yaml.safe_load((data_dir / "hosts.yaml").read_text(encoding="utf-8"))
     strategies_raw = yaml.safe_load((data_dir / "strategies.yaml").read_text(encoding="utf-8"))
 
     models = {m["name"]: ModelSpec(**m) for m in models_raw["models"]}
     personas = {p["id"]: Persona(**p) for p in cast_raw["personas"]}
+    hosts = {h["id"]: Persona(**h) for h in hosts_raw["hosts"]}
     strategies = {s["id"]: Strategy(**s) for s in strategies_raw["strategies"]}
-    return Registry(models=models, personas=personas, strategies=strategies, avatars_dir=data_dir / "avatars")
+    return Registry(models=models, personas=personas, hosts=hosts, strategies=strategies, avatars_dir=data_dir / "avatars")

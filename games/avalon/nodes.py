@@ -75,7 +75,8 @@ def _ask_view(
     q = min(state.quest_no, rules.QUESTS)
     view = PlayerView(
         seat_no=seat.no,
-        voice=deps.registry.personas[seat.persona_id].voice,
+        tone=deps.registry.personas[seat.persona_id].tone,
+        strategy=deps.registry.strategies[seat.strategy_id].system,
         role=seat.role,
         intel=list(seat.intel),
         model=_model_spec(deps, seat),
@@ -96,7 +97,7 @@ def _ask_view(
         messages=list(threads[seat.no].messages),
     )
     context = prompts.situation(view) if with_situation else ""
-    view.prompt = prompts.human_message(list(threads[seat.no].inbox), context, ask, view.voice, mimicry_guard=mimicry_guard)
+    view.prompt = prompts.human_message(list(threads[seat.no].inbox), context, ask, view.tone, mimicry_guard=mimicry_guard)
     return view
 
 
