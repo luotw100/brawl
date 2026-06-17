@@ -1,0 +1,2 @@
+# 背景音乐走 Git LFS——二进制不进主仓库历史。改 BGM 只换同名 .opus。
+*.opus filter=lfs diff=lfs merge=lfs -text

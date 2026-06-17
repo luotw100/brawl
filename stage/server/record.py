@@ -41,6 +41,7 @@ from server.protocol import (
     Speech,
     VoteReveal,
 )
+from server.bgm import BGM_PLAYLIST, BGM_VOLUME
 from server.record_settings import RENDER_DEVICE, RecordSettings
 from server.sfx import SFX_VOLUME, cues_for
 from server.settings import StageSettings
@@ -145,25 +146,59 @@ def ffmpeg_audio_cmd(segs: list[tuple[Path, float, float]], out_audio: Path) -> 
     return cmd
 
 
-def ffmpeg_mux_cmd(video: Path, audio: Path | None, lead: float, out: Path, encoder: str, fps: int) -> list[str]:
-    """裁掉视频前 lead 秒（对齐到第一拍）+ 叠音轨 + 转码成 mp4。audio=None 时只转视频。
+def ffmpeg_bgm_concat_cmd(tracks: list[Path], out: Path) -> list[str]:
+    """把播放列表按固定顺序首尾相接拼成一条 bgm 床（opus）。顺序即 BGM_PLAYLIST——录屏循环
+    铺这一条，所以录出来的背景乐可复现。"""
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
+    for t in tracks:
+        cmd += ["-i", str(t)]
+    streams = "".join(f"[{i}:a]" for i in range(len(tracks)))
+    cmd += ["-filter_complex", f"{streams}concat=n={len(tracks)}:v=0:a=1[bgm]",
+            "-map", "[bgm]", "-c:a", "libopus", "-b:a", "96k", str(out)]
+    return cmd
 
-    输出长度恒等于视频长度（视频是权威时间轴）：apad 把音轨用静音补到无限长，再 -shortest
-    钳到视频末尾。两头都对——音频短于视频（如无声的终局揭晓）静音补满、不砍画面；音频长于
-    视频（如 --limit-seconds 中途截断）则截到视频末尾。"""
+
+def ffmpeg_mux_cmd(
+    video: Path, audio: Path | None, bgm: Path | None, lead: float, out: Path, encoder: str, fps: int
+) -> list[str]:
+    """裁掉视频前 lead 秒（对齐到第一拍）+ 叠音轨 + 转码成 mp4。
+
+    三种音源任意组合：人声/音效轨 audio（已含各拍语音+音效）、背景床 bgm。bgm 用 -stream_loop
+    -1 整段循环铺满，压在 BGM_VOLUME；两者都有则 amix 混在一起。都没有（audio 与 bgm 皆 None）
+    时只转视频、不出音轨。
+
+    输出长度恒等于视频长度（视频是权威时间轴）：-shortest 钳到视频末尾。bgm 在场时它循环到
+    无限长，正好托住人声短于视频的尾巴（替代旧的 apad 静音补齐）；--limit-seconds 中途截断时
+    同样截到视频末尾。"""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
     if encoder == "vaapi":
         cmd += ["-vaapi_device", RENDER_DEVICE]
     cmd += ["-ss", f"{lead:.3f}", "-i", str(video)]
+    # 输入编号：0=视频，随后依次是 audio、bgm（哪个在场哪个才占一位）
+    voice_idx = bgm_idx = None
+    idx = 1
     if audio is not None:
-        cmd += ["-i", str(audio)]
+        voice_idx = idx; cmd += ["-i", str(audio)]; idx += 1
+    if bgm is not None:
+        bgm_idx = idx; cmd += ["-stream_loop", "-1", "-i", str(bgm)]; idx += 1
+
     if encoder == "vaapi":
         cmd += ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-b:v", "6M"]
     else:
         cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"]
     cmd += ["-r", str(fps), "-map", "0:v:0"]
-    if audio is not None:
-        cmd += ["-map", "1:a:0", "-af", "apad", "-c:a", "aac", "-b:a", "160k", "-shortest"]
+
+    # 音轨：人声 + 背景床按在场情况拼 filter_complex；都不在则无音轨。
+    if voice_idx is not None and bgm_idx is not None:
+        filt = f"[{bgm_idx}:a]volume={BGM_VOLUME}[bg];[{voice_idx}:a][bg]amix=inputs=2:normalize=0:dropout_transition=0[aout]"
+    elif bgm_idx is not None:
+        filt = f"[{bgm_idx}:a]volume={BGM_VOLUME}[aout]"
+    elif voice_idx is not None:
+        filt = f"[{voice_idx}:a]apad[aout]"  # 无 bgm：靠 apad 静音补齐到视频长
+    else:
+        filt = None
+    if filt is not None:
+        cmd += ["-filter_complex", filt, "-map", "[aout]", "-c:a", "aac", "-b:a", "160k", "-shortest"]
     cmd += [str(out)]
     return cmd
 
@@ -271,6 +306,28 @@ def _run(cmd: list[str], desc: str) -> None:
     subprocess.run(cmd, check=True)
 
 
+def _build_bgm(settings: RecordSettings, tmpdir: Path) -> Path | None:
+    """按 BGM_PLAYLIST 拼一条 bgm 床；--no-bgm、播放列表为空、或素材缺失/拼接失败都优雅跳过
+    （只警告、不中断录制——背景乐是锦上添花，没了照样出片）。
+
+    缺失常见于 clone 时没装 git-lfs：bgm/*.opus 会是 LFS 指针文本而非真音频，concat 会报错，
+    这里兜住并提示。"""
+    if not settings.bgm or not BGM_PLAYLIST:
+        return None
+    tracks = [settings.web_dist / "bgm" / f"{n}.opus" for n in BGM_PLAYLIST]
+    missing = [t for t in tracks if not t.is_file()]
+    if missing:
+        _console.print(f"[yellow]⚠ 缺 BGM 素材，跳过背景乐：{', '.join(m.name for m in missing)}（git-lfs 没拉？）[/yellow]")
+        return None
+    bed = tmpdir / "bgm.opus"
+    try:
+        _run(ffmpeg_bgm_concat_cmd(tracks, bed), f"拼接 BGM 床（{len(tracks)} 首循环）…")
+    except subprocess.CalledProcessError:
+        _console.print("[yellow]⚠ BGM 拼接失败，跳过背景乐（素材可能是 LFS 指针而非真音频）[/yellow]")
+        return None
+    return bed
+
+
 async def _record(settings: RecordSettings) -> None:
     limit = f" · 上限 {settings.limit_seconds:g}s" if settings.limit_seconds else ""
     _console.rule(f"[bold]录制 {settings.dir.name}[/bold]")
@@ -283,7 +340,8 @@ async def _record(settings: RecordSettings) -> None:
         if segs:
             audio = tmpdir / "audio.m4a"
             _run(ffmpeg_audio_cmd(segs, audio), f"拼接音轨（{len(segs)} 段语音/音效）…")
-        _run(ffmpeg_mux_cmd(video, audio, lead, settings.out, settings.encoder, settings.fps), "编码视频…")
+        bgm = _build_bgm(settings, tmpdir)
+        _run(ffmpeg_mux_cmd(video, audio, bgm, lead, settings.out, settings.encoder, settings.fps), "编码视频…")
     size_mb = settings.out.stat().st_size / 1e6
     _console.print(f"[bold green]✓ 已生成[/bold green] {settings.out} [dim]({size_mb:.1f} MB)[/dim]")
 

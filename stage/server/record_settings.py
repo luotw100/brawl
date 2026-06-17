@@ -46,6 +46,7 @@ class RecordSettings(BaseSettings):
     fps: int = 30  # 输出帧率
     encoder: Literal["x264", "vaapi"] = "x264"  # 软件 x264（默认，开箱即用）/ 硬件 VAAPI（需 render 组）
     audio_shift: float = 0.0  # 音轨整体微调（秒，正=音频后移）：补 WS→渲染的常数延迟
+    bgm: bool = True  # 叠加背景音乐床（--no-bgm 录纯人声/音效）
     limit_seconds: float | None = None  # 录像时长上限（秒）：到点即停的安全阀，也便于先出片段试看；缺省录到终局
     headed: bool = False  # 调试用：起带头浏览器（默认无头）
 

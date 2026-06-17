@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from server.record import Beat, audio_segments, ffmpeg_audio_cmd, ffmpeg_mux_cmd
+from server.bgm import BGM_VOLUME
+from server.record import (
+    Beat,
+    audio_segments,
+    ffmpeg_audio_cmd,
+    ffmpeg_bgm_concat_cmd,
+    ffmpeg_mux_cmd,
+)
 from server.sfx import SFX_VOLUME
 
 ROOT = Path("/replays-root")
@@ -66,23 +73,57 @@ def test_ffmpeg_audio_cmd_delays_and_mix():
     assert cmd[-1] == "/tmp/out.m4a"
 
 
-def test_ffmpeg_mux_cmd_vaapi_with_audio():
-    cmd = ffmpeg_mux_cmd(Path("/v.webm"), Path("/a.m4a"), lead=2.0, out=Path("/o.mp4"),
+def test_ffmpeg_mux_cmd_vaapi_with_audio_no_bgm():
+    cmd = ffmpeg_mux_cmd(Path("/v.webm"), Path("/a.m4a"), None, lead=2.0, out=Path("/o.mp4"),
                          encoder="vaapi", fps=30)
     assert "-vaapi_device" in cmd
     assert "h264_vaapi" in cmd
     assert cmd[cmd.index("-ss") + 1] == "2.000"  # 裁前导留白
-    assert "1:a:0" in cmd  # 叠了音轨
-    assert "apad" in cmd and "-shortest" in cmd  # 输出长度恒等于视频：静音补齐 + 钳到视频末尾
+    filt = cmd[cmd.index("-filter_complex") + 1]
+    assert filt == "[1:a]apad[aout]"  # 无 bgm：人声靠 apad 静音补齐
+    assert "-map" in cmd and "[aout]" in cmd and "-shortest" in cmd
     assert cmd[-1] == "/o.mp4"
 
 
-def test_ffmpeg_mux_cmd_x264_no_audio():
-    cmd = ffmpeg_mux_cmd(Path("/v.webm"), None, lead=0.0, out=Path("/o.mp4"),
+def test_ffmpeg_mux_cmd_x264_no_audio_no_bgm():
+    cmd = ffmpeg_mux_cmd(Path("/v.webm"), None, None, lead=0.0, out=Path("/o.mp4"),
                          encoder="x264", fps=24)
     assert "libx264" in cmd
     assert "-vaapi_device" not in cmd
-    assert cmd.count("-i") == 1  # 没有音频输入
+    assert cmd.count("-i") == 1  # 只有视频输入
     assert "-shortest" not in cmd
-    assert "1:a:0" not in cmd
+    assert "-filter_complex" not in cmd  # 无音轨
     assert cmd[cmd.index("-r") + 1] == "24"
+
+
+def test_ffmpeg_mux_cmd_audio_plus_bgm_mixes():
+    cmd = ffmpeg_mux_cmd(Path("/v.webm"), Path("/a.m4a"), Path("/bgm.opus"), lead=1.0,
+                         out=Path("/o.mp4"), encoder="x264", fps=30)
+    # 输入：0=视频，1=人声，2=bgm（循环）
+    assert cmd.count("-i") == 3
+    assert "-stream_loop" in cmd and cmd[cmd.index("-stream_loop") + 1] == "-1"
+    filt = cmd[cmd.index("-filter_complex") + 1]
+    assert filt == f"[2:a]volume={BGM_VOLUME}[bg];[1:a][bg]amix=inputs=2:normalize=0:dropout_transition=0[aout]"
+    assert "-shortest" in cmd  # 循环 bgm 无限长，靠 -shortest 钳到视频末尾
+
+
+def test_ffmpeg_mux_cmd_bgm_only():
+    cmd = ffmpeg_mux_cmd(Path("/v.webm"), None, Path("/bgm.opus"), lead=0.0,
+                         out=Path("/o.mp4"), encoder="x264", fps=30)
+    assert cmd.count("-i") == 2  # 视频 + bgm
+    assert "-stream_loop" in cmd
+    filt = cmd[cmd.index("-filter_complex") + 1]
+    assert filt == f"[1:a]volume={BGM_VOLUME}[aout]"
+    assert "-shortest" in cmd
+
+
+def test_ffmpeg_bgm_concat_cmd_order_preserved():
+    tracks = [Path("/bgm/crusade.opus"), Path("/bgm/angevin.opus"), Path("/bgm/x.opus")]
+    cmd = ffmpeg_bgm_concat_cmd(tracks, Path("/tmp/bgm.opus"))
+    assert cmd.count("-i") == 3
+    # 输入顺序即播放顺序
+    assert cmd[cmd.index("-i") + 1] == "/bgm/crusade.opus"
+    filt = cmd[cmd.index("-filter_complex") + 1]
+    assert filt == "[0:a][1:a][2:a]concat=n=3:v=0:a=1[bgm]"
+    assert "libopus" in cmd
+    assert cmd[-1] == "/tmp/bgm.opus"
