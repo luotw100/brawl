@@ -143,8 +143,8 @@
 .badge.stamp.yes { color:#0c0a06; background: var(--c-good-bright); }
 .badge.stamp.no  { color:#fff;    background: var(--c-evil); }
 
-/* 发牌：身份牌逐张翻面亮出（头像开局即静态在场，不再整座飞入）；错峰由 --deal-stagger 反推。 */
-.seat.dealing .seat-role { transform-origin: top center; animation: flipReveal .55s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--di) * var(--deal-stagger, 0.12s)); }
+/* 发牌：身份牌在「飞牌抵达手中」那一刻翻面亮出——延时 = 该座位起飞错峰 + 单张飞行时长。 */
+.seat.dealing .seat-role { transform-origin: top center; animation: flipReveal .55s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--di) * var(--deal-stagger, 0.12s) + var(--deal-fly, 0s)); }
 @keyframes flipReveal { from { opacity: 0; transform: rotateX(90deg) translateY(-6px); } 55% { opacity: 1; } to { opacity: 1; transform: none; } }
 @keyframes stamp { from { opacity: 0; transform: scale(2.6) rotate(-22deg); } 70% { opacity: 1; transform: scale(.86) rotate(5deg); } to { opacity: 1; transform: scale(1); } }
 
@@ -204,23 +204,23 @@
 
 .feature-open .feature-title { color: var(--c-gold); }
 .feature-deal .feature-title { color: var(--c-gold); font-size: 40px; margin-top: 16px; }
-/* 中央牌叠：三张叠放的"正面"卡（god-view），顶牌循环甩向一侧=发牌态。 */
+/* 中央牌叠：正面可见（god-view）的叠放卡。牌叠高度=真实剩余张数，顶牌中央显剩余数字，发完亮 ✓。 */
 .deck { position: relative; width: 96px; height: 132px; margin: 6px auto 0; }
 .deck-card { position: absolute; inset: 0; border-radius: 12px;
   background: linear-gradient(160deg, #3a2a12, #20160a); border: 2px solid var(--c-gold-deep);
   box-shadow: 0 6px 16px rgba(0,0,0,.55); }
 .deck-card.s2 { transform: translate(10px, 10px) rotate(8deg); }
 .deck-card.s1 { transform: translate(5px, 5px) rotate(4deg); }
-.deck-card.top { display: grid; place-items: center; animation: dealOut 1s ease-in-out infinite; }
-.deck-crest { font: 900 46px var(--f-display); color: var(--c-gold); text-shadow: var(--ts-strong); }
-@keyframes dealOut {
-  0% { transform: translate(0,0) rotate(0); opacity: 1; }
-  50% { transform: translate(-130px,-24px) rotate(-18deg); opacity: 1; }
-  56% { opacity: 0; }
-  58% { transform: translate(0,0) rotate(0); opacity: 0; }
-  72% { opacity: 1; }
-  100% { transform: translate(0,0) rotate(0); opacity: 1; }
-}
+.deck-card.top { display: grid; place-items: center; }
+.deck-count { font: 900 54px var(--f-display); color: var(--c-gold); text-shadow: var(--ts-strong); animation: pop-icon .26s cubic-bezier(.2,1.5,.4,1) both; }
+.deck-done { display: grid; place-items: center; width: 96px; height: 132px; font: 900 70px var(--f-display); color: var(--c-good-bright); text-shadow: var(--ts-strong); animation: pop-icon .4s cubic-bezier(.2,1.5,.4,1) both; }
+
+/* 飞牌层：覆盖整张画布，逐帧 JS 定位（left/top + transform）的卡牌，从牌叠沿弧线飞入各座位手中。 */
+.deal-flight { position: absolute; inset: 0; pointer-events: none; z-index: 6; }
+.fly-card { position: absolute; width: 64px; height: 88px; border-radius: 10px; display: grid; place-items: center;
+  background: linear-gradient(160deg, #3a2a12, #20160a); border: 2px solid var(--c-gold-deep);
+  box-shadow: 0 10px 26px rgba(0,0,0,.6); will-change: left, top, transform; }
+.fly-crest { font: 900 30px var(--f-display); color: var(--c-gold); text-shadow: var(--ts-soft); }
 
 /* 揭示视图：表决/发车/刺杀共用——标题 + 一排大头像盖章（中央放大），不再只靠座位旁小印章。 */
 .reveal-view { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px 30px; text-align: center; }

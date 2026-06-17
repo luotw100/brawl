@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
   FeedItem, Intermission, ProposalLog, QuestLog, Scene, SeatInfo,
 } from "../protocol";
@@ -9,6 +9,15 @@ import "./stage.css";
 
 const W = 1920;
 const H = 1080;
+
+// 发牌节奏（全部按本拍 duration 反推，pace=0 时 duration→0 一切瞬时）：
+// 起飞错峰占 0.8·dur，单张飞行时长占 DEAL_FLY_FRAC·dur。
+const DEAL_FLY_FRAC = 0.28;
+// 从中央牌叠已飞出的张数：纯由时钟反推，发牌台与飞牌共用同一公式，保证两边张数一致。
+function dealtCount(elapsed: number, dur: number, n: number): number {
+  const stagger = (dur * 0.8) / Math.max(n, 1);
+  return Math.min(n, Math.max(0, Math.floor(elapsed / Math.max(stagger, 0.001))));
+}
 
 const ROLE: Record<string, string> = {
   merlin: "梅林", percival: "派西维尔", servant: "忠臣",
@@ -195,7 +204,11 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem 
     ? Object.fromEntries(d.cards.map((c) => [c.seat_no, c.success])) : {};
   const dealing = d?.kind === "deal";
   const vars: CSSProperties = {};
-  if (dealing && n) (vars as Record<string, string>)["--deal-stagger"] = `${(dur * 0.8) / n}s`;
+  if (dealing && n) {
+    // 身份牌的翻面落在「该座位的飞牌抵达手中」那一刻：起飞错峰 + 飞行时长。
+    (vars as Record<string, string>)["--deal-stagger"] = `${(dur * 0.8) / n}s`;
+    (vars as Record<string, string>)["--deal-fly"] = `${DEAL_FLY_FRAC * dur}s`;
+  }
   if (d?.kind === "vote_reveal" && d.votes.length)
     (vars as Record<string, string>)["--vote-stagger"] = `${(dur * 0.62) / d.votes.length}s`;
   const seat = (s: SeatInfo) => (
@@ -206,6 +219,7 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem 
       <div className="col left">{scene.seats.slice(0, half).map(seat)}</div>
       <div className="col right">{scene.seats.slice(half).map(seat)}</div>
       <CenterStage ch={ch} scene={scene} last={last} />
+      {dealing && last && <DealFlight ch={ch} item={last} scene={scene} />}
     </div>
   );
 }
@@ -222,7 +236,7 @@ function Seat({ s, scene, vote, card, dealing }: {
     dealing ? "dealing" : "",
   ].join(" ");
   return (
-    <div className={cls} style={{ "--di": s.no - 1 } as CSSProperties}>
+    <div className={cls} data-di={s.no - 1} style={{ "--di": s.no - 1 } as CSSProperties}>
       <div className="avatar-wrap">
         <div className="avatar" style={avatarStyle(s.persona)}>
           <span className="ava-init">{s.name.slice(0, 1)}</span>
@@ -273,17 +287,7 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fe
         </Feature>
       );
     case "deal":
-      return (
-        <Feature cls="feature-deal">
-          {/* 中央牌叠：正面可见（god-view），顶牌咔咔甩出去——身份在各座位旁逐张翻开。 */}
-          <div className="deck">
-            <span className="deck-card s2" />
-            <span className="deck-card s1" />
-            <span className="deck-card top"><span className="deck-crest">⚜</span></span>
-          </div>
-          <div className="feature-title">发牌 · 逐张亮身份</div>
-        </Feature>
-      );
+      return <DealDeck ch={ch} item={last} n={scene.seats.length} />;
     case "host":
       return (
         <div className="host-stage">
@@ -450,6 +454,84 @@ function VoteView({ ch, scene, item, d }: {
       {settled && !d.approved && <div className="vote-warn">连续否决 {d.rejections}/5 · 满 5 红方直接获胜</div>}
     </div>
   );
+}
+
+// 中央发牌台：牌叠按真实剩余张数缩短（n→…→0），数字随飞牌实时递减。
+function DealDeck({ ch, item, n }: { ch: Channel; item: FeedItem; n: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 50);
+    return () => window.clearInterval(t);
+  }, [item.seq]);
+  const remaining = n - dealtCount(elapsedOf(ch, item.started_at, now), item.duration, n);
+  return (
+    <Feature cls="feature-deal">
+      <div className="deck">
+        {remaining >= 3 && <span className="deck-card s2" />}
+        {remaining >= 2 && <span className="deck-card s1" />}
+        {remaining >= 1
+          ? <span className="deck-card top"><span className="deck-count" key={remaining}>{remaining}</span></span>
+          : <span className="deck-done">✓</span>}
+      </div>
+      <div className="feature-title">{remaining > 0 ? `发牌 · 剩 ${remaining} 张` : "发牌完毕"}</div>
+    </Feature>
+  );
+}
+
+// 飞牌层：每张牌从中央牌叠沿真实弧线飞到对应座位的头像（手中），位置纯由时钟逐帧反推。
+// 起飞错峰与发牌台同源（dealtCount），抵达即触发该座位身份牌翻面（CSS 延时 = 错峰 + 飞行）。
+function DealFlight({ ch, item, scene }: { ch: Channel; item: FeedItem; scene: Scene }) {
+  const n = scene.seats.length;
+  const [now, setNow] = useState(() => Date.now());
+  const [geo, setGeo] = useState<{ ox: number; oy: number; targets: Map<number, { x: number; y: number }> } | null>(null);
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 33);
+    return () => window.clearInterval(t);
+  }, [item.seq]);
+  // 量出牌叠中心与各头像中心，换算到 1920×1080 画布坐标系（getBoundingClientRect 拿到的是缩放后屏幕坐标，除以 scale 还原）。
+  useLayoutEffect(() => {
+    const canvas = document.querySelector(".canvas") as HTMLElement | null;
+    const deck = document.querySelector(".deck") as HTMLElement | null;
+    if (!canvas || !deck) { setGeo(null); return; }
+    const cr = canvas.getBoundingClientRect();
+    const s = cr.width / W || 1;
+    const toCanvas = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      return { x: (r.left + r.width / 2 - cr.left) / s, y: (r.top + r.height / 2 - cr.top) / s };
+    };
+    const o = toCanvas(deck);
+    const targets = new Map<number, { x: number; y: number }>();
+    document.querySelectorAll(".seat[data-di]").forEach((seat) => {
+      const ava = seat.querySelector(".avatar-wrap");
+      if (ava) targets.set(Number((seat as HTMLElement).dataset.di), toCanvas(ava));
+    });
+    setGeo({ ox: o.x, oy: o.y, targets });
+  }, [item.seq, n]);
+
+  if (!geo) return null;
+  const stagger = (item.duration * 0.8) / Math.max(n, 1);
+  const flyDur = Math.max(DEAL_FLY_FRAC * item.duration, 0.0001);
+  const elapsed = elapsedOf(ch, item.started_at, now);
+  const cards: ReactNode[] = [];
+  for (let di = 0; di < n; di++) {
+    const tgt = geo.targets.get(di);
+    if (!tgt) continue;
+    const p = (elapsed - di * stagger) / flyDur;
+    if (p <= 0 || p >= 1) continue; // 仍在牌叠 / 已入手（交给座位翻面）
+    const e = 1 - Math.pow(1 - p, 3); // easeOutCubic：抛出后减速落入手中
+    const x = geo.ox + (tgt.x - geo.ox) * e;
+    const y = geo.oy + (tgt.y - geo.oy) * e - 90 * Math.sin(Math.PI * p); // sin 抬一个抛物线弧顶
+    const scale = 1 - 0.45 * p;
+    const rot = (di % 2 ? 1 : -1) * 16 * (1 - p);
+    const op = Math.min(1, p * 6) * Math.min(1, (1 - p) * 6); // 起飞/落手两端快速淡入淡出
+    cards.push(
+      <span key={di} className="fly-card"
+        style={{ left: x, top: y, opacity: op, transform: `translate(-50%,-50%) scale(${scale}) rotate(${rot}deg)` }}>
+        <span className="fly-crest">⚜</span>
+      </span>,
+    );
+  }
+  return <div className="deal-flight">{cards}</div>;
 }
 
 function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: string }) {
