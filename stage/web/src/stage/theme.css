@@ -39,10 +39,10 @@
   --f-sans:    'Noto Sans SC', system-ui, sans-serif;   /* 前情提要 / 状态 / 标签 */
 
   /* —— 中央毛玻璃面板 —— */
-  --panel-bg:     linear-gradient(180deg, rgba(20,15,9,.60), rgba(10,8,4,.66));
+  --panel-bg:     linear-gradient(180deg, rgba(20,15,9,.40), rgba(10,8,4,.46));
   --panel-border: 1px solid rgba(240,208,137,.30);
   --panel-radius: 20px;
-  --panel-blur:   blur(16px);
+  --panel-blur:   blur(9px);
   --panel-shadow: 0 30px 80px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.07);
 
   /* —— 文字阴影（无框浮层在场景图上的可读性靠它，不靠边框）—— */

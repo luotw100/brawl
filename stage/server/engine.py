@@ -161,8 +161,10 @@ class Engine:
         names = avalon.load_names(replay_dir)  # 显示名随各局 meta 自带：不同局可用不同人设/网名
         host_name = avalon.load_host_name(replay_dir)
         avatars = avalon.avatar_urls(replay_id, replay_dir)  # 各座位厂商头像 URL，缺则前端回退 hash 色
+        model_labels = avalon.load_model_labels(replay_dir)  # 逻辑名→对外展示名，缺则座位不显模型名
         # 先把整局摊平：前瞻要看后面的拍，懒迭代给不了"下一拍是谁"。一局事件量很小，全量无妨。
-        beats = [avalon.adapt(event, replay_id=replay_id, tts=tts, names=names, host_name=host_name, avatars=avatars)
+        beats = [avalon.adapt(event, replay_id=replay_id, tts=tts, names=names, host_name=host_name,
+                              avatars=avatars, model_labels=model_labels)
                  for event in avalon.load_events(replay_dir)]
         last: GameOver | None = None
         for i, directive in enumerate(beats):
@@ -239,7 +241,7 @@ class Engine:
             case GameOpen():
                 content = unit * 4.0
             case Deal():
-                content = unit * (len(directive.seats) * 1.5 + 1.0)  # 逐张发牌 ~1.5s/张
+                content = unit * (len(directive.seats) * 0.75 + 0.5)  # 逐张发牌 ~0.75s/张（2x 加速，前端 stagger/fly 由 dur 反推自动跟随）
             case VoteReveal():
                 content = unit * (len(directive.votes) * 0.8 + 2.5)  # 逐个亮票 + 判定 hold
             case QuestReveal():

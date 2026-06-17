@@ -22,12 +22,11 @@ def test_simple_beats_one_cue_at_zero():
     assert cues_for(GameOpen(players=6, good=4, evil=2), 1.0) == [("open", 0.0)]
 
 
-def test_deal_staggered_one_cue_per_card():
+def test_deal_has_no_sfx():
+    # 发牌不配音效（"咔咔"声刺耳）——画面照常飞牌，但无任何 cue；sfx.ts 同此。
     seats = [SeatInfo(no=i, name=f"P{i}", persona=f"p{i}", role="servant", side="good", model="m") for i in range(1, 4)]
-    cues = cues_for(Deal(seats=seats, leader_no=1, lady_holder=None), 9.0)
-    stagger = 9.0 * 0.8 / 3  # 2.4s
-    assert cues == [("deal", 0.0), ("deal", stagger), ("deal", 2 * stagger)]
-    assert cues_for(Deal(seats=[], leader_no=1, lady_holder=None), 1.0) == []  # 无座位 → 无咔
+    assert cues_for(Deal(seats=seats, leader_no=1, lady_holder=None), 9.0) == []
+    assert cues_for(Deal(seats=[], leader_no=1, lady_holder=None), 1.0) == []
 
 
 def test_quest_and_game_over_branch_on_outcome():

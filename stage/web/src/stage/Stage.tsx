@@ -265,6 +265,7 @@ function Seat({ s, scene, vote, card, dealing }: {
         ) : (
           <div className="seat-role facedown">🂠 待发牌</div>
         )}
+        {s.model_display && <div className="seat-model">{s.model_display}</div>}
       </div>
     </div>
   );
@@ -273,8 +274,13 @@ function Seat({ s, scene, vote, card, dealing }: {
 function CenterStage({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem | undefined }) {
   const k = last?.directive.kind;
   const tall = k === "game_over" || k === "assassination";
+  // 复盘横幅：胜负已分（scene.winner）且过了 game_over 大揭示那拍——复盘吐槽期间在发言区上方挂结果。
+  const showResult = scene.winner && k !== "game_over";
   return (
     <div className="center-wrap">
+      {showResult && (
+        <div className={`result-banner ${scene.winner}`}>{scene.winner === "good" ? "蓝方胜利" : "红方胜利"}</div>
+      )}
       <div className={`center-stage${tall ? " tall" : ""}`}>
         {last && <div className="stage-content" key={last.seq}><StageContent ch={ch} scene={scene} last={last} /></div>}
       </div>

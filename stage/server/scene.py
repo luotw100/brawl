@@ -54,6 +54,18 @@ def _setup(replay_dir: Path) -> dict[str, Any]:
     return json.loads(meta.read_text(encoding="utf-8")).get("setup", {})
 
 
+def load_model_labels(replay_dir: Path) -> dict[str, str]:
+    """逻辑模型名 → 对外展示名（meta.model_labels，录制时按 models.yaml 的 display 烧入）。
+
+    座位事件带的是逻辑名（如 oc-deepseek-v4-pro），stage 据此查这表显成 "DeepSeek v4 Pro"
+    （与 load_names 同套路：自包含、不读 games 配置）。缺 meta / 老 replay 无此键 → 空表，
+    座位不显模型名（优雅降级）。"""
+    meta = replay_dir / "meta.json"
+    if not meta.is_file():
+        return {}
+    return json.loads(meta.read_text(encoding="utf-8")).get("model_labels", {})
+
+
 def load_events(replay_dir: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in (replay_dir / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -132,9 +144,11 @@ def load_host_name(replay_dir: Path) -> str:
 
 
 def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any]], names: dict[str, str],
-          host_name: str = "主持人", avatars: dict[int, str] | None = None) -> Directive | None:
+          host_name: str = "主持人", avatars: dict[int, str] | None = None,
+          model_labels: dict[str, str] | None = None) -> Directive | None:
     """一条 replay 事件 → 一条舞台指令。未知事件类型直接抛——契约变了要立刻暴露，不静默吞。"""
     avatars = avatars or {}
+    model_labels = model_labels or {}
     t = event["type"]
     if t == "host":
         return HostSpeech(
@@ -144,11 +158,11 @@ def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any
     if t == "game_start":
         return GameOpen(
             players=event["players"], good=event["good"], evil=event["evil"],
-            seats=[_seat(s, names, avatars) for s in event.get("seats", [])],  # 老 replay 无 seats → 空
+            seats=[_seat(s, names, avatars, model_labels) for s in event.get("seats", [])],  # 老 replay 无 seats → 空
         )
     if t == "deal":
         return Deal(
-            seats=[_seat(s, names, avatars) for s in event["seats"]],
+            seats=[_seat(s, names, avatars, model_labels) for s in event["seats"]],
             leader_no=event["leader_no"],
             lady_holder=event["lady_holder"],
         )
@@ -191,7 +205,7 @@ def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any
     if t == "game_end":
         return GameOver(
             winner=event["winner"], win_reason=event["win_reason"],
-            seats=[_seat(s, names, avatars) for s in event["seats"]],
+            seats=[_seat(s, names, avatars, model_labels) for s in event["seats"]],
         )
     if t == "banter":
         return Speech(
@@ -201,11 +215,13 @@ def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any
     raise ValueError(f"未知事件类型：{t}（events 契约变了，adapter 要跟上）")
 
 
-def _seat(s: dict[str, Any], names: dict[str, str], avatars: dict[int, str]) -> SeatInfo:
+def _seat(s: dict[str, Any], names: dict[str, str], avatars: dict[int, str],
+          model_labels: dict[str, str]) -> SeatInfo:
     return SeatInfo(
         no=s["no"], name=names.get(s["persona"], s["persona"]), persona=s["persona"],
         role=s["role"], side=s["side"], model=s.get("model", ""),
         avatar_url=avatars.get(s["no"]),
+        model_display=model_labels.get(s.get("model") or ""),
     )
 
 

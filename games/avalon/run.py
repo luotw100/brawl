@@ -104,6 +104,13 @@ async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Re
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "player": settings.player,  # 用哪个后端跑的——推不出来，留着；其余 settings 字段都被 setup 覆盖或可派生
         "setup": setup.to_meta(),  # 这一局的确定性方案：角色/首任队长都已摇定，复盘唯一真源
+        # 逻辑名→对外展示名：烧进 meta 让回放自包含（stage 据座位 model 查这表显在头像下，
+        # 与 names 同套路）。缺 display 的模型不收，stage 那边查不到就不显。
+        "model_labels": {
+            m: registry.models[m].display
+            for m in dict.fromkeys(setup.models)  # 去重保序
+            if m and m in registry.models and registry.models[m].display
+        },
     })
     deps = _make_deps(settings, registry, recorder, rng)
     initial = GameState(

@@ -10,6 +10,8 @@
 #
 # avatar 指向厂商 logo（data/avatars/<avatar>.png）：录制时按座位把对应 logo 烧进 replay，
 # 直播渲染层据此显真实厂商头像；缺省=不带头像，渲染层回退 hash 色块。同厂商多款共用一张。
+# display 是对外展示的模型名（不带厂商名——头像已表明厂商）：录制时把"逻辑名→display"映射
+# 烧进 meta.model_labels，直播在座位头像下显这行小字。
 #
 # opencode go（https://opencode.ai/zen/go/v1）是聚合端点，单把 OPENCODE_API_KEY。
 # 2026-06-12 实测 /models 共 18 款，逐个打 /chat/completions：17 款通；qwen3.7-max
@@ -44,6 +46,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: minimax
+    display: MiniMax M3
 
   - name: oc-minimax-m2.7
     base_url: https://opencode.ai/zen/go/v1
@@ -52,6 +55,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: minimax
+    display: MiniMax M2.7
 
   - name: oc-minimax-m2.5
     base_url: https://opencode.ai/zen/go/v1
@@ -60,6 +64,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: minimax
+    display: MiniMax M2.5
 
   - name: oc-kimi-k2.6
     base_url: https://opencode.ai/zen/go/v1
@@ -68,6 +73,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: kimi
+    display: Kimi K2.6
 
   - name: oc-kimi-k2.5
     base_url: https://opencode.ai/zen/go/v1
@@ -76,6 +82,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: kimi
+    display: Kimi K2.5
 
   - name: oc-glm-5.1
     base_url: https://opencode.ai/zen/go/v1
@@ -84,6 +91,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: zhipu
+    display: GLM-5.1
 
   - name: oc-glm-5
     base_url: https://opencode.ai/zen/go/v1
@@ -92,6 +100,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: zhipu
+    display: GLM-5
 
   - name: oc-deepseek-v4-pro
     base_url: https://opencode.ai/zen/go/v1
@@ -100,6 +109,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: deepseek
+    display: DeepSeek v4 Pro
 
   - name: oc-deepseek-v4-flash
     base_url: https://opencode.ai/zen/go/v1
@@ -108,6 +118,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: deepseek
+    display: DeepSeek v4 Flash
 
   - name: oc-qwen3.7-plus
     base_url: https://opencode.ai/zen/go/v1
@@ -116,6 +127,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: qwen
+    display: Qwen3.7 Plus
 
   - name: oc-qwen3.6-plus
     base_url: https://opencode.ai/zen/go/v1
@@ -124,6 +136,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: qwen
+    display: Qwen3.6 Plus
 
   - name: oc-qwen3.5-plus
     base_url: https://opencode.ai/zen/go/v1
@@ -132,6 +145,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: qwen
+    display: Qwen3.5 Plus
 
   - name: oc-mimo-v2.5-pro
     base_url: https://opencode.ai/zen/go/v1
@@ -140,6 +154,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: mimo
+    display: MiMo v2.5 Pro
 
   - name: oc-mimo-v2.5
     base_url: https://opencode.ai/zen/go/v1
@@ -148,6 +163,7 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: mimo
+    display: MiMo v2.5
 
   - name: oc-hy3-preview
     base_url: https://opencode.ai/zen/go/v1
@@ -156,3 +172,4 @@ models:
     temperature: 0.7
     timeout: 120
     avatar: hunyuan
+    display: Hunyuan 3 Preview

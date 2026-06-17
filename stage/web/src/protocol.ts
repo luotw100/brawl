@@ -9,6 +9,7 @@ export interface SeatInfo {
   side: "good" | "evil";
   model: string;
   avatar_url?: string | null;  // 厂商 logo；缺则回退 hash 渐变 + 名字首字
+  model_display?: string | null;  // 对外展示的模型名；头像下半透明白小字，缺则不显
 }
 
 export interface GameOpen { kind: "game_open"; players: number; good: number; evil: number; seats: SeatInfo[] }

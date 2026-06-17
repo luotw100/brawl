@@ -19,19 +19,14 @@ export interface Cue { sfx: string; at: number } // at = 拍内偏移秒
 
 // 用到的全部音效名（中途进场时一次性预热进 HTTP 缓存，避免首次触发的网络抖动）
 const ALL: string[] = [
-  "open", "deal", "think", "stamp", "vote-pass", "vote-fail",
+  "open", "think", "stamp", "vote-pass", "vote-fail",
   "quest-success", "quest-fail", "assassin-hit", "assassin-miss", "win-good", "win-evil",
 ];
 
 export function cuesFor(d: Directive, duration: number): Cue[] {
   switch (d.kind) {
     case "game_open": return [{ sfx: "open", at: 0 }];
-    case "deal": {
-      // 逐张"咔"发牌；错峰与 Stage.tsx 的 --deal-stagger 同步（server/sfx.py 同此）
-      const n = d.seats.length;
-      const stagger = (duration * 0.8) / Math.max(n, 1);
-      return d.seats.map((_, i) => ({ sfx: "deal", at: i * stagger }));
-    }
+    case "deal": return [];  // 发牌不配音效（"咔咔"声刺耳）——画面照常飞牌，server/sfx.py 同此
     case "speech": return d.monologue ? [{ sfx: "think", at: 0 }] : [];
     case "vote_reveal": {
       // 逐票"啪"盖章 + 结果音；错峰节奏与 Stage.tsx 的 --vote-stagger 同步
