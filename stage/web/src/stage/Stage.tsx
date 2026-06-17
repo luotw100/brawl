@@ -28,7 +28,17 @@ const ROLE: Record<string, string> = {
 const PHASE_LABEL: Record<string, string> = {
   propose: "提队", discuss: "发言", lady: "湖中仙女", banter: "赛后复盘",
 };
+const WIN_REASON: Record<string, [string, string]> = {
+  quests: ["蓝方完成 3 个成功任务", "红方破坏满 3 个任务"],
+  rejections: ["连续 5 次否决组队", "连续 5 次否决组队"],
+  assassination: ["刺客落空", "刺客命中梅林"],
+};
 const roleLabel = (r: string) => ROLE[r] ?? r;
+const winReasonLabel = (winner: string, reason: string) => {
+  const pair = WIN_REASON[reason];
+  if (!pair) return reason;
+  return winner === "good" ? pair[0] : pair[1];
+};
 
 const CIRC = "①②③④⑤⑥⑦⑧⑨⑩";
 const circ = (n: number) => CIRC[n - 1] ?? `${n}`;
@@ -356,7 +366,7 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fe
       return (
         <Feature cls={`feature-over ${d.winner}`}>
           <div className="feature-title big">{d.winner === "good" ? "蓝方胜利" : "红方胜利"}</div>
-          <div className="feature-sub">{d.win_reason}</div>
+          <div className="feature-sub">{winReasonLabel(d.winner, d.win_reason)}</div>
           <div className="reveal-grid">
             {d.seats.map((s, i) => (
               <div key={s.no} className={`reveal ${s.side}`} style={{ animationDelay: `${i * 0.1}s` }}>
@@ -585,7 +595,7 @@ function IntermissionCard({ d }: { d: Intermission }) {
   return (
     <div className="curtain dim">
       <div className="curtain-title">幕间休息</div>
-      {d.last_winner && <div className="curtain-sub">上局：{d.last_winner === "good" ? "蓝方胜" : "红方胜"}（{d.last_reason}）</div>}
+      {d.last_winner && <div className="curtain-sub">上局：{d.last_winner === "good" ? "蓝方胜" : "红方胜"}（{d.last_reason ? winReasonLabel(d.last_winner, d.last_reason) : ""}）</div>}
       <div className="curtain-sub">{d.next_ready ? "下一局即将开始" : "下一局排片中…"}</div>
     </div>
   );

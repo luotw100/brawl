@@ -164,7 +164,7 @@
 /* 复盘结果横幅：绝对挂在发言区正上方（不挤动舞台），阵营色描边 + 辉光。 */
 .result-banner {
   position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 20px;
-  padding: 9px 44px; border-radius: 14px; white-space: nowrap;
+  padding: 9px 44px; border-radius: 14px; white-space: nowrap; text-align: center;
   font: 900 42px var(--f-display); letter-spacing: .1em; text-shadow: 0 2px 14px rgba(0,0,0,.6);
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); animation: contentFade .5s ease both;
 }
