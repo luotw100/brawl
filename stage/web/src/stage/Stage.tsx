@@ -580,7 +580,9 @@ function Audio({ ch, item, url }: { ch: Channel; item: FeedItem; url: string | n
   useEffect(() => {
     if (!url) return;
     const el = new window.Audio(url);
-    el.currentTime = Math.max(elapsedOf(ch, item.started_at, Date.now()), 0);
+    // 时间轴倍速：拍被压缩了 speed 倍，音频也按 speed 提速才放得进、对得齐（中途加入时音频位置同乘 speed）。
+    el.playbackRate = item.speed;
+    el.currentTime = Math.max(elapsedOf(ch, item.started_at, Date.now()) * item.speed, 0);
     el.play().catch(() => {});
     return () => el.pause();
   }, [url, item.seq]);

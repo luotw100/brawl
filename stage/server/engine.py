@@ -63,6 +63,7 @@ class Engine:
         self.scene = Scene()
         self.queue: list[str] = []
         self.pace = settings.pace
+        self.speed = settings.speed
         self.intermission_seconds = settings.intermission_seconds
         self.loop_pool = settings.loop_pool
         self.feed_window = settings.feed_window
@@ -94,10 +95,13 @@ class Engine:
     async def step(self) -> None:
         self._step = True
 
-    async def set_knobs(self, *, pace: float | None = None, intermission_seconds: float | None = None,
+    async def set_knobs(self, *, pace: float | None = None, speed: float | None = None,
+                        intermission_seconds: float | None = None,
                         loop_pool: bool | None = None, feed_window: int | None = None) -> None:
         if pace is not None:
             self.pace = pace
+        if speed is not None:
+            self.speed = speed
         if intermission_seconds is not None:
             self.intermission_seconds = intermission_seconds
         if loop_pool is not None:
@@ -191,7 +195,7 @@ class Engine:
 
     async def _emit(self, directive: Directive, duration: float) -> None:
         self._seq += 1
-        avalon.apply(self.scene, FeedItem(seq=self._seq, directive=directive, started_at=time.time(), duration=duration))
+        avalon.apply(self.scene, FeedItem(seq=self._seq, directive=directive, started_at=time.time(), duration=duration, speed=self.speed))
         await self._publish()
 
     async def _dwell(self, seconds: float) -> bool:
@@ -257,4 +261,6 @@ class Engine:
             content = max(content, audio + _AUDIO_MARGIN)
         # 尾部气口：有台词的拍之间留白，节奏从容；刺杀是终局炸点，留白要更狠
         tail = {Speech: 3.0, HostSpeech: 2.5, Assassination: 6.0}.get(type(directive), 0.0)
-        return content + unit * tail
+        # speed 是整条时间轴的除数：每拍（含音频地板）等比压缩 → 引擎少 sleep（原生快录/快播）。
+        # 音频另在播放侧按 speed 提速（直播 playbackRate / 录制 atempo）贴合压缩后的拍，音画仍齐。
+        return (content + unit * tail) / self.speed

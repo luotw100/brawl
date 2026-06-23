@@ -1,8 +1,11 @@
 """RecordSettings：`stage-record` 的参数面（settings 即 CLI，flag 自动派生，绝不手写 argparse）。
 
+节奏/画面旋钮（pace/speed/feed_window/prefetch_factor）继承自 EngineKnobs，与直播共享一份——
+新旋钮只在基类加一次、两侧自动都有，不再两套配置手抄同步（见 settings.py 的 EngineKnobs）。
+
 边界纪律：所有"合不合法"的校验在这里一次查清（replay 目录是真目录且含 events.jsonl、
-pace 范围、fps 正、web_dist 存在），并把可省字段（out / web_dist）的默认在此解析成确定值，
-下游（record.py）拿到的 settings 默认已合法、字段已就绪，零校验分叉。
+fps/画布尺寸正、web_dist 存在；旋钮范围归 EngineKnobs），并把可省字段（out / web_dist）的默认
+在此解析成确定值，下游（record.py）拿到的 settings 默认已合法、字段已就绪，零校验分叉。
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
+from server.settings import EngineKnobs
+
 # 演出层前端构建产物：默认相对 server 包向上找 web/dist（与 docker 里 web_dist 同一份）。
 _DEFAULT_WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 
@@ -27,7 +32,7 @@ _DEFAULT_WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 RENDER_DEVICE = "/dev/dri/renderD128"
 
 
-class RecordSettings(BaseSettings):
+class RecordSettings(EngineKnobs):
     """`stage-record <replay_dir>`：把一局 replay 离线录成视频文件。"""
 
     model_config = SettingsConfigDict(
@@ -42,7 +47,9 @@ class RecordSettings(BaseSettings):
     dir: CliPositionalArg[Path]  # replay 目录（含 events.jsonl + tts/）
     out: Path | None = None  # 输出 mp4；缺省落 <当前目录>/<replay 名>.mp4（在 _check 里解析）
     web_dist: Path | None = None  # 前端构建产物目录；缺省取 server 包旁的 web/dist
-    pace: float = 1.0  # 0~1 节奏旋钮：录像默认 1.0 跑足从容直播节奏（不同于直播默认 0.5）
+    pace: float = 1.0  # 覆写 EngineKnobs 默认：录像跑足从容直播节奏（直播默认 0.5）
+    width: int = 1920  # 录制画布宽：默认 16:9 横屏（舞台 layout 本就是横屏）；直播画面形状由 OBS/浏览器侧决定，不在此
+    height: int = 1080  # 录制画布高
     fps: int = 30  # 输出帧率
     encoder: Literal["x264", "vaapi"] = "x264"  # 软件 x264（默认，开箱即用）/ 硬件 VAAPI（需 render 组）
     audio_shift: float = 0.0  # 音轨整体微调（秒，正=音频后移）：补 WS→渲染的常数延迟
@@ -52,10 +59,11 @@ class RecordSettings(BaseSettings):
 
     @model_validator(mode="after")
     def _check(self) -> RecordSettings:
-        if not 0.0 <= self.pace <= 1.0:
-            raise ValueError(f"pace 必须在 0~1 之间，收到 {self.pace}")
+        # pace/speed/feed_window/prefetch 的范围校验在 EngineKnobs._check_knobs，这里只查录制专属。
         if self.fps <= 0:
             raise ValueError(f"fps 必须为正，收到 {self.fps}")
+        if self.width <= 0 or self.height <= 0:
+            raise ValueError(f"画布尺寸必须为正，收到 {self.width}×{self.height}")
         # 跨世界一致性：选了 VAAPI 就得真能访问核显设备，否则开工前就报清楚（别等 ffmpeg 深处崩）
         if self.encoder == "vaapi" and not os.access(RENDER_DEVICE, os.R_OK | os.W_OK):
             raise ValueError(f"VAAPI 设备不可访问：{RENDER_DEVICE}（把用户加进 render 组：sudo usermod -aG render $USER 后重登）；或用 --encoder x264")

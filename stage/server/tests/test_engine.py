@@ -177,6 +177,17 @@ async def test_audio_duration_overrides_text_estimate(settings):
     assert engine._duration(silent) == 0.0  # 无音频回退字数估算
 
 
+async def test_speed_compresses_beat_duration(settings):
+    # speed 是整条时间轴的除数：每拍时长等比缩短 → 引擎少 sleep、原生快录（音频另在播放侧提速贴合）
+    engine, _ = make_engine(settings)
+    engine._durations = {"/replays/game1/tts/a.opus": 9.0}
+    voiced = Speech(phase="propose", seat_no=2, text="我带3号。", monologue="稳一手。",
+                    audio_url="/replays/game1/tts/a.opus")
+    assert engine._duration(voiced) == 9.5  # speed=1.0 基准（9s 音频 + 0.5 余量）
+    engine.speed = 2.0
+    assert engine._duration(voiced) == 4.75  # 2× → 拍减半
+
+
 async def test_lady_audio_extends_dwell(settings):
     """仙女一拍压两次 LLM 调用（choose 私下决策 + announce 口播），事件用 announce_call_id
     标音频、无顶层 call_id。引擎按 adapt 拍板的 audio_url 取时长，整条 announce→audio_url→

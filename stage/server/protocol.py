@@ -207,6 +207,7 @@ class FeedItem(BaseModel):
     directive: Directive
     started_at: float  # 服务端 epoch 秒
     duration: float
+    speed: float = 1.0  # 时间轴倍速：duration 已按它压缩；播放侧据此把音频 playbackRate 提速贴合
 
 
 class Scene(BaseModel):

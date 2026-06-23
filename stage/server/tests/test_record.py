@@ -7,6 +7,7 @@ from pathlib import Path
 from server.bgm import BGM_VOLUME
 from server.record import (
     Beat,
+    _atempo_chain,
     audio_segments,
     ffmpeg_audio_cmd,
     ffmpeg_bgm_concat_cmd,
@@ -71,6 +72,32 @@ def test_ffmpeg_audio_cmd_delays_and_mix():
     assert f"adelay=3500:all=1,volume={SFX_VOLUME}[a1]" in filt  # 3.5s → 3500ms，音效压低
     assert "amix=inputs=2:normalize=0" in filt
     assert cmd[-1] == "/tmp/out.m4a"
+
+
+def test_ffmpeg_audio_cmd_default_speed_has_no_atempo():
+    # speed=1.0（默认）：行为与提速前完全一致，不掺 atempo
+    segs = [(Path("/x/a.opus"), 0.0, 1.0)]
+    filt = ffmpeg_audio_cmd(segs, Path("/tmp/out.m4a"))[
+        ffmpeg_audio_cmd(segs, Path("/tmp/out.m4a")).index("-filter_complex") + 1]
+    assert "atempo" not in filt
+    assert "[0:a]adelay=0:all=1,volume=1.0[a0]" in filt
+
+
+def test_ffmpeg_audio_cmd_speed_prepends_atempo_per_segment():
+    segs = [(Path("/x/a.opus"), 0.0, 1.0), (Path("/x/b.opus"), 3.5, SFX_VOLUME)]
+    cmd = ffmpeg_audio_cmd(segs, Path("/tmp/out.m4a"), speed=1.5)
+    filt = cmd[cmd.index("-filter_complex") + 1]
+    # 每段都先 atempo 再 adelay：音频提速贴合被压缩的拍
+    assert "[0:a]atempo=1.5,adelay=0:all=1,volume=1.0[a0]" in filt
+    assert f"[1:a]atempo=1.5,adelay=3500:all=1,volume={SFX_VOLUME}[a1]" in filt
+
+
+def test_atempo_chain():
+    assert _atempo_chain(1.0) == ""  # 不提速 → 空串（调用方据此省略）
+    assert _atempo_chain(1.5) == "atempo=1.5,"
+    assert _atempo_chain(2.0) == "atempo=2,"
+    assert _atempo_chain(2.5) == "atempo=2,atempo=1.25,"  # 越界拆连乘
+    assert _atempo_chain(0.4) == "atempo=0.5,atempo=0.8,"
 
 
 def test_ffmpeg_mux_cmd_vaapi_with_audio_no_bgm():

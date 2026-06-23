@@ -44,9 +44,8 @@ from server.protocol import (
 from server.bgm import BGM_PLAYLIST, BGM_VOLUME
 from server.record_settings import RENDER_DEVICE, RecordSettings
 from server.sfx import SFX_VOLUME, cues_for
-from server.settings import StageSettings
+from server.settings import EngineKnobs, StageSettings
 
-_VIEWPORT = {"width": 1080, "height": 1920}  # 竖屏，与 OBS 画布同口径
 _TAIL_SECONDS = 1.0  # 终局定格后多录一点，保证最后一帧落进视频文件
 
 _console = Console()  # 进度输出：录制节拍 + ffmpeg 步骤（与捕获/编码同一条命令行）
@@ -132,13 +131,34 @@ def audio_segments(
     return segs
 
 
-def ffmpeg_audio_cmd(segs: list[tuple[Path, float, float]], out_audio: Path) -> list[str]:
+def _atempo_chain(speed: float) -> str:
+    """speed → ffmpeg atempo 滤镜串（含尾逗号，可直接前缀拼接）。speed=1.0 返回空串（不提速）。
+
+    atempo 单次只支持 0.5~2.0，越界拆成连乘（如 2.5×→atempo=2.0,atempo=1.25）。atempo 保音高，
+    所以提速不公鸭嗓。"""
+    if speed == 1.0:
+        return ""
+    factors: list[float] = []
+    s = speed
+    while s > 2.0:
+        factors.append(2.0); s /= 2.0
+    while s < 0.5:
+        factors.append(0.5); s *= 2.0
+    factors.append(s)
+    return "".join(f"atempo={f:g}," for f in factors)
+
+
+def ffmpeg_audio_cmd(segs: list[tuple[Path, float, float]], out_audio: Path, speed: float = 1.0) -> list[str]:
     """把各 .opus 按偏移 adelay、按增益 volume 后 amix 成一条音轨。normalize=0：发言基本不
-    重叠、音效已压低，不要自动压音量（否则人声会被错峰盖章拽下去）。"""
+    重叠、音效已压低，不要自动压音量（否则人声会被错峰盖章拽下去）。
+
+    speed>1 时每段先 atempo 提速：拍时长已被引擎按 speed 压缩、偏移也随之收紧（见 audio_segments），
+    音频同步提速才放得进压缩后的拍、音画对齐。speed=1.0 时 atempo 串为空，行为与提速前完全一致。"""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
     for path, _, _ in segs:
         cmd += ["-i", str(path)]
-    parts = [f"[{i}:a]adelay={int(off * 1000)}:all=1,volume={gain}[a{i}]"
+    tempo = _atempo_chain(speed)
+    parts = [f"[{i}:a]{tempo}adelay={int(off * 1000)}:all=1,volume={gain}[a{i}]"
              for i, (_, off, gain) in enumerate(segs)]
     labels = "".join(f"[a{i}]" for i in range(len(segs)))
     filt = ";".join(parts) + ";" + labels + f"amix=inputs={len(segs)}:normalize=0:dropout_transition=0[aout]"
@@ -243,13 +263,15 @@ async def _wait(pred: Callable[[], bool], timeout: float, what: str) -> None:
 
 async def _capture(settings: RecordSettings, video_dir: Path) -> tuple[list[Beat], float, Path]:
     """起一次性 stage + Playwright 录这一局的画面。返回 (时间线, 视频前导留白秒, webm 路径)。"""
+    # 引擎旋钮按 EngineKnobs 字段名机械转移（pace/speed/feed_window/prefetch_factor）——
+    # 共享基类是唯一真源，新旋钮在那加一次这里自动带上，不再逐字段手抄（收分叉）。
     stage_settings = StageSettings(
         replay_root=settings.dir.parent,
         stage_token=secrets.token_urlsafe(8),
         console_token=secrets.token_urlsafe(8),
         web_dist=settings.web_dist,
-        pace=settings.pace,
         loop_pool=False,  # 只放队列里这一局，放完即转幕间，绝不自动补别的局
+        **{k: getattr(settings, k) for k in EngineKnobs.model_fields},
     )
     app = create_app(stage_settings)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
@@ -268,10 +290,11 @@ async def _capture(settings: RecordSettings, video_dir: Path) -> tuple[list[Beat
                 args=["--force-device-scale-factor=1", "--hide-scrollbars",
                       "--mute-audio", "--autoplay-policy=no-user-gesture-required"],
             )
+            viewport = {"width": settings.width, "height": settings.height}  # 默认 16:9 横屏（见 RecordSettings.width/height）
             context = await browser.new_context(
-                viewport=_VIEWPORT,
+                viewport=viewport,
                 record_video_dir=str(video_dir),
-                record_video_size=_VIEWPORT,
+                record_video_size=viewport,
             )
             page = await context.new_page()
             video = page.video
@@ -331,7 +354,8 @@ def _build_bgm(settings: RecordSettings, tmpdir: Path) -> Path | None:
 async def _record(settings: RecordSettings) -> None:
     limit = f" · 上限 {settings.limit_seconds:g}s" if settings.limit_seconds else ""
     _console.rule(f"[bold]录制 {settings.dir.name}[/bold]")
-    _console.print(f"[dim]→ {settings.out} · 编码 {settings.encoder} · pace {settings.pace:g}{limit}[/dim]")
+    speed = f" · speed {settings.speed:g}×" if settings.speed != 1.0 else ""
+    _console.print(f"[dim]→ {settings.out} · {settings.width}×{settings.height} · 编码 {settings.encoder} · pace {settings.pace:g}{speed}{limit}[/dim]")
     with tempfile.TemporaryDirectory(prefix="stage-record-") as tmp:
         tmpdir = Path(tmp)
         beats, lead, video = await _capture(settings, tmpdir)
@@ -339,7 +363,7 @@ async def _record(settings: RecordSettings) -> None:
         audio: Path | None = None
         if segs:
             audio = tmpdir / "audio.m4a"
-            _run(ffmpeg_audio_cmd(segs, audio), f"拼接音轨（{len(segs)} 段语音/音效）…")
+            _run(ffmpeg_audio_cmd(segs, audio, settings.speed), f"拼接音轨（{len(segs)} 段语音/音效）…")
         bgm = _build_bgm(settings, tmpdir)
         _run(ffmpeg_mux_cmd(video, audio, bgm, lead, settings.out, settings.encoder, settings.fps), "编码视频…")
     size_mb = settings.out.stat().st_size / 1e6

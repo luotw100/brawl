@@ -70,7 +70,7 @@ export interface QuestLog {
 }
 export type TimelineEntry = ProposalLog | QuestLog;
 
-export interface FeedItem { seq: number; directive: Directive; started_at: number; duration: number }
+export interface FeedItem { seq: number; directive: Directive; started_at: number; duration: number; speed: number }
 
 export interface Scene {
   seats: SeatInfo[];
@@ -103,5 +103,5 @@ export interface ConsoleState extends StateMsg {
   replay_id: string | null;
   queue: string[];
   library: string[];
-  knobs: { pace: number; intermission_seconds: number; loop_pool: boolean; feed_window: number };
+  knobs: { pace: number; speed: number; intermission_seconds: number; loop_pool: boolean; feed_window: number };
 }
