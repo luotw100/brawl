@@ -185,14 +185,12 @@ function buildItems(scene: Scene): ReactNode[] {
   const items: ReactNode[] = [
     <span><span className="rc-when">当前比分</span> <span className="ok">蓝 {good}</span> ： <span className="bad">红 {evil}</span></span>,
   ];
-  let proposals = 0;  // 全局组队序号：前情提要按时序连续编号（第1次组队、第2次组队……）
   scene.timeline.forEach((t) => {
     if (t.kind === "proposal") {
-      proposals += 1;
       // 投票不写"赞成/反对"，赞成染蓝、反对染红，靠颜色区分
       items.push(
         <span>
-          <span className="rc-when">第{cn(proposals)}次组队</span>
+          <span className="rc-when">第{cn(t.quest)}次发车 第{cn(t.attempt)}次组队</span>
           {"　"}{circ(t.leader_no)} 提 <span className="rc-team">{seatList(t.team)}</span>
           {"　"}<span className="ok">{seatList(t.approves)}</span>
           {t.rejects.length > 0 && <span className="bad rc-gap">{seatList(t.rejects)}</span>}
