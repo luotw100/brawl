@@ -167,9 +167,10 @@ class Engine:
         avatars = avalon.avatar_urls(replay_id, replay_dir)  # 各座位厂商头像 URL，缺则前端回退 hash 色
         model_labels = avalon.load_model_labels(replay_dir)  # 逻辑名→对外展示名，缺则座位不显模型名
         # 先把整局摊平：前瞻要看后面的拍，懒迭代给不了"下一拍是谁"。一局事件量很小，全量无妨。
-        beats = [avalon.adapt(event, replay_id=replay_id, tts=tts, names=names, host_name=host_name,
-                              avatars=avatars, model_labels=model_labels)
-                 for event in avalon.load_events(replay_dir)]
+        # adapt 返回 None 表示"这条事件不演"（如主持人复述身份的 reveal 拍），过滤掉不进时间线。
+        beats = [d for event in avalon.load_events(replay_dir)
+                 if (d := avalon.adapt(event, replay_id=replay_id, tts=tts, names=names, host_name=host_name,
+                                       avatars=avatars, model_labels=model_labels)) is not None]
         last: GameOver | None = None
         for i, directive in enumerate(beats):
             if isinstance(directive, GameOver):

@@ -151,6 +151,8 @@ def adapt(event: dict[str, Any], *, replay_id: str, tts: dict[str, dict[str, Any
     model_labels = model_labels or {}
     t = event["type"]
     if t == "host":
+        if event["beat"] == "reveal":
+            return None  # 上帝视角全程亮身份，主持人复述身份纯属多余——这一拍不演（其 TTS 也随之不播）
         return HostSpeech(
             name=host_name, beat=event["beat"], text=event["text"],
             audio_url=_audio_url(replay_id, event.get("call_id"), tts),

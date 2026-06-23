@@ -88,7 +88,8 @@ export default function Stage() {
   useBgm(state?.phase);
 
   if (!state) return <div className="viewport" />;
-  const flashKind = last && ["vote_reveal", "quest_reveal", "assassination", "game_over"].includes(last.directive.kind)
+  // 刺杀的闪屏不在起拍放（那会先于台词剧透生死），改由 AssassinView 在揭晓那一刻自己炸。
+  const flashKind = last && ["vote_reveal", "quest_reveal", "game_over"].includes(last.directive.kind)
     ? last.directive.kind : null;
 
   return (
@@ -265,6 +266,8 @@ function Seat({ s, scene, vote, card, dealing }: {
         {scene.lady_holder === s.no && <span className="badge lady"><StageIcon name="lady" size={16} /></span>}
         {vote !== undefined && <span className={`badge stamp ${vote ? "yes" : "no"}`}>{vote ? "赞" : "反"}</span>}
         {card !== undefined && <span className={`badge stamp ${card ? "yes" : "no"}`}>{card ? "成" : "破"}</span>}
+        {/* 复盘期（胜负已定）每个座位挂胜/负角标——表决/发车阶段 winner 为空，不与票章/牌章冲突 */}
+        {scene.winner && <span className={`badge result ${s.side === scene.winner ? "win" : "lose"}`}>{s.side === scene.winner ? "胜" : "负"}</span>}
       </div>
       <div className="seat-info">
         <div className="seat-name">{s.name}</div>
@@ -284,13 +287,8 @@ function Seat({ s, scene, vote, card, dealing }: {
 function CenterStage({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem | undefined }) {
   const k = last?.directive.kind;
   const tall = k === "game_over" || k === "assassination";
-  // 复盘横幅：胜负已分（scene.winner）且过了 game_over 大揭示那拍——复盘吐槽期间在发言区上方挂结果。
-  const showResult = scene.winner && k !== "game_over";
   return (
     <div className="center-wrap">
-      {showResult && (
-        <div className={`result-banner ${scene.winner}`}>{scene.winner === "good" ? "蓝方胜利" : "红方胜利"}</div>
-      )}
       <div className={`center-stage${tall ? " tall" : ""}`}>
         {last && <div className="stage-content" key={last.seq}><StageContent ch={ch} scene={scene} last={last} /></div>}
       </div>
@@ -346,36 +344,9 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fe
         </div>
       );
     case "assassination":
-      return (
-        <div className={`reveal-view assassin-view ${d.hit ? "hit" : "miss"}`}>
-          <div className="vote-title">刺杀</div>
-          <div className="vs-row">
-            <RevealAvatar seat={seatOf(d.assassin_no)} no={d.assassin_no} mark="no" label="刺客" idx={0} />
-            <span className="dagger"><StageIcon name="assassin" size={52} /></span>
-            <RevealAvatar seat={seatOf(d.target_no)} no={d.target_no}
-              mark={d.hit ? "no" : "yes"} label={d.hit ? "命中" : "幸存"} idx={1} />
-          </div>
-          <div className="assassin-line">「{d.text}」</div>
-          <div className={`verdict ${d.hit ? "bad" : "ok"}`}>
-            {d.hit ? "正中梅林！红方翻盘！" : "刺空了！蓝方守住胜利！"}
-          </div>
-          <Audio ch={ch} item={last} url={d.audio_url} />
-        </div>
-      );
+      return <AssassinView ch={ch} scene={scene} item={last} d={d} />;
     case "game_over":
-      return (
-        <Feature cls={`feature-over ${d.winner}`}>
-          <div className="feature-title big">{d.winner === "good" ? "蓝方胜利" : "红方胜利"}</div>
-          <div className="feature-sub">{winReasonLabel(d.winner, d.win_reason)}</div>
-          <div className="reveal-grid">
-            {d.seats.map((s, i) => (
-              <div key={s.no} className={`reveal ${s.side}`} style={{ animationDelay: `${i * 0.1}s` }}>
-                <b>{circ(s.no)}</b> <StageIcon name={roleIconName(s.role)} size={18} /> {roleLabel(s.role)}
-              </div>
-            ))}
-          </div>
-        </Feature>
-      );
+      return <OverView d={d} />;
     case "intermission":
       return null;
   }
@@ -387,13 +358,79 @@ function Feature({ cls, children }: { cls: string; children: ReactNode }) {
 
 // 逐人揭示用的大头像 + 大盖章：表决/发车/刺杀都把"谁出了什么"放中央放大，不再只靠座位旁的小印章。
 function RevealAvatar({ seat, no, mark, label, idx }: {
-  seat: SeatInfo | undefined; no: number; mark: "yes" | "no"; label: string; idx: number;
+  seat: SeatInfo | undefined; no: number; mark?: "yes" | "no"; label: string; idx: number;
 }) {
+  // mark 省略 = 尚未揭晓（如刺杀靶子在刺客说完之前）：盖一枚中性"待揭"印章。
   return (
     <div className="rv" style={{ "--ri": idx } as CSSProperties}>
       <div className={avaClass("rv-ava", seat)} style={avaBg(seat)}><AvaFill seat={seat} /></div>
       <span className="rv-no">{circ(no)}</span>
-      <span className={`rv-stamp ${mark}`}>{label}</span>
+      <span className={`rv-stamp ${mark ?? "pending"}`}>{label}</span>
+    </div>
+  );
+}
+
+// 刺杀：先演刺客出刀 + 台词打字机（与音频同步），台词念完才翻牌定生死——命中/幸存印章、
+// 判决文案、阵营色与红色闪屏全 gate 在"台词念完"之后（与 LiveText 同口径 duration*0.62）。
+function AssassinView({ ch, scene, item, d }: {
+  ch: Channel; scene: Scene; item: FeedItem;
+  d: Extract<FeedItem["directive"], { kind: "assassination" }>;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 60);
+    return () => window.clearInterval(t);
+  }, [item.seq]);
+  const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
+  const revealed = elapsedOf(ch, item.started_at, now) >= item.duration * 0.62;
+  return (
+    <div className={`reveal-view assassin-view ${revealed ? (d.hit ? "hit" : "miss") : ""}`}>
+      {revealed && <div key={item.seq} className="flash flash-assassination local" />}
+      <div className="vote-title">刺杀</div>
+      <div className="vs-row">
+        <RevealAvatar seat={seatOf(d.assassin_no)} no={d.assassin_no} mark="no" label="刺客" idx={0} />
+        <span className="dagger"><StageIcon name="assassin" size={52} /></span>
+        <RevealAvatar seat={seatOf(d.target_no)} no={d.target_no}
+          mark={revealed ? (d.hit ? "no" : "yes") : undefined}
+          label={revealed ? (d.hit ? "命中" : "幸存") : "梅林？"} idx={1} />
+      </div>
+      <div className="assassin-line">「<LiveText ch={ch} item={item} text={d.text} />」</div>
+      {d.monologue && (
+        <div className="assassin-think"><span className="think-mark">💭</span><span className="think-text">{d.monologue}</span></div>
+      )}
+      {revealed && (
+        <div className={`verdict ${d.hit ? "bad" : "ok"}`}>
+          {d.hit ? "正中梅林！红方翻盘！" : "刺空了！蓝方守住胜利！"}
+        </div>
+      )}
+      <Audio ch={ch} item={item} url={d.audio_url} />
+    </div>
+  );
+}
+
+// 结算：胜方一行、败方一行，各行左侧标"胜利/失败"（取代居中的"某方胜利"大字）。
+function OverView({ d }: { d: Extract<FeedItem["directive"], { kind: "game_over" }> }) {
+  const rows: { tag: string; cls: string; seats: SeatInfo[] }[] = [
+    { tag: "胜利", cls: "win", seats: d.seats.filter((s) => s.side === d.winner) },
+    { tag: "失败", cls: "lose", seats: d.seats.filter((s) => s.side !== d.winner) },
+  ];
+  return (
+    <div className={`over-view ${d.winner}`}>
+      {rows.map((r) => (
+        <div key={r.cls} className={`over-row ${r.cls}`}>
+          <span className={`over-tag ${r.cls}`}>{r.tag}</span>
+          <div className="over-seats">
+            {r.seats.map((s, i) => (
+              <div key={s.no} className={`over-seat ${s.side}`} style={{ animationDelay: `${i * 0.1}s` }}>
+                <div className={avaClass("over-ava", s)} style={avaBg(s)}><AvaFill seat={s} /></div>
+                <span className="over-no">{circ(s.no)}</span>
+                <div className="over-role"><StageIcon name={roleIconName(s.role)} size={16} /> {roleLabel(s.role)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      <div className="over-reason">{winReasonLabel(d.winner, d.win_reason)}</div>
     </div>
   );
 }

@@ -41,6 +41,14 @@ def test_adapt_unknown_event_raises(replay_root):
         avalon.adapt({"type": "nova"}, replay_id="g", tts={}, names={})
 
 
+def test_host_reveal_beat_not_staged(replay_root):
+    # 上帝视角全程亮身份，主持人复述身份的 reveal 拍不演 → adapt 返回 None（其余 host 拍照常出 directive）
+    reveal = {"type": "host", "beat": "reveal", "call_id": "5.1.host.reveal", "text": "现在公布全部身份：……"}
+    assert avalon.adapt(reveal, replay_id="g", tts={}, names={}) is None
+    closing = {"type": "host", "beat": "closing", "call_id": "5.1.host.closing", "text": "下一局再见。"}
+    assert avalon.adapt(closing, replay_id="g", tts={}, names={}) is not None
+
+
 def test_persona_names_resolved(replay_root):
     deal = _adapt_all(replay_root)[2]
     assert [s.name for s in deal.seats] == ["老狐狸", "社恐", "戏精", "阴阳师", "大姐头"]
