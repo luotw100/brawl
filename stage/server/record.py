@@ -1,19 +1,24 @@
 """stage-record：把一局 replay 离线录成视频文件（无人值守、自起自销）。
 
 与 live Docker 栈完全解耦——不连那个长跑频道，而是**自己起一个一次性 stage 引擎**：
-进程内起 uvicorn 到 127.0.0.1:<随机口> → Playwright 无头 Chromium 开 #/stage 录画面 →
-读 engine.phase 由 playing→intermission 判定本局放完即停 → 收每拍时间线 → ffmpeg 把
-replay 里的 .opus 按拍偏移拼成音轨、与画面 mux 成 mp4。
+进程内起 uvicorn 到 127.0.0.1:<随机口> → Xvfb 造一块虚拟屏（无需物理显示器，SSH 里照跑）→
+带头 Chromium kiosk 把 #/stage 真渲染进这块虚拟 framebuffer → **ffmpeg x11grab 实时抓裸帧、
+单趟硬编 HEVC（边播边编，编码藏进本就实时的播放里，无臃肿中间件、无"VP8→转码"的来回有损）**
+→ 读 engine.phase 由 playing→intermission 判定本局放完即停 → 收每拍时间线 → 把 replay 里的
+.opus 按拍偏移离线拼成音轨 → 与已编好的视频流 `-c:v copy` remux 成 mp4（瞬时）。
 
-音画对齐靠引擎的确定性：每拍时长由 engine._duration 算死、引擎实时 sleep 的就是这些时长，
-所以"按 started_at 折算的音频偏移"与"画面里这拍实际出现的时刻"天然对齐。以第一拍为零点，
-把视频前面的 idle 留白裁掉；残余的 WS→渲染常数延迟用 --audio-shift 微调。
+音画对齐靠引擎的确定性 + 抓屏的挂钟 PTS：x11grab 的帧 PTS 以"开抓那一刻"为零点，引擎随后
+实时 sleep 出每拍，所以"按 started_at 减开抓时刻折算的音频偏移"与"画面里这拍实际出现的 PTS"
+天然对齐（origin = 开抓时刻 = 视频零点）；残余的常数延迟用 --audio-shift 微调。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import secrets
+import signal
 import subprocess
 import sys
 import tempfile
@@ -47,6 +52,7 @@ from server.sfx import SFX_VOLUME, cues_for
 from server.settings import EngineKnobs, StageSettings
 
 _TAIL_SECONDS = 1.0  # 终局定格后多录一点，保证最后一帧落进视频文件
+_CAPTURE_WARMUP = 0.5  # 开抓后、入队前留一点让 x11grab 真正挂上画面，保证第一拍不黑帧（不影响 origin）
 
 _WEB_SRC = Path(__file__).resolve().parent.parent / "web"  # 前端源码目录（stage/web）：每次录制现构建
 
@@ -113,19 +119,17 @@ def _beat_summary(d: Directive, seats: list[SeatInfo]) -> tuple[str, str, str]:
 
 
 def audio_segments(
-    beats: list[Beat], replay_root: Path, sfx_dir: Path, shift: float
+    beats: list[Beat], replay_root: Path, sfx_dir: Path, shift: float, origin: float
 ) -> list[tuple[Path, float, float]]:
     """各拍 → (opus 文件路径, 在视频里的起始秒, 增益)。人声增益 1.0；音效压在 SFX_VOLUME。
-    以第一拍为零点；偏移加 shift 后下钳到 0。音效偏移在拍起点上再加 cue 的拍内偏移。
+    以 origin（= x11grab 开抓时刻 = 视频零点）为零点折算偏移：base = started_at − origin + shift，
+    下钳到 0。音效偏移在拍起点上再加 cue 的拍内偏移。
 
     audio_url 形如 /replays/<id>/tts/<file>，剥掉 /replays/ 前缀即 replay_root 下的相对路径
     （与 app.py 的 get_audio 静态路由同一套构造，反过来落回文件系统）；音效在 sfx_dir/<name>.opus。"""
-    if not beats:
-        return []
-    t0 = beats[0].started_at
     segs: list[tuple[Path, float, float]] = []
     for b in beats:
-        base = b.started_at - t0 + shift
+        base = b.started_at - origin + shift
         if b.audio_url:
             segs.append((replay_root / b.audio_url.removeprefix("/replays/"), max(0.0, base), 1.0))
         for name, at in b.cues:
@@ -180,22 +184,37 @@ def ffmpeg_bgm_concat_cmd(tracks: list[Path], out: Path) -> list[str]:
     return cmd
 
 
-def ffmpeg_mux_cmd(
-    video: Path, audio: Path | None, bgm: Path | None, lead: float, out: Path, encoder: str, fps: int
+def ffmpeg_capture_cmd(
+    display: str, width: int, height: int, fps: int, encoder: str, out_video: Path
 ) -> list[str]:
-    """裁掉视频前 lead 秒（对齐到第一拍）+ 叠音轨 + 转码成 mp4。
+    """x11grab 实时抓 Xvfb 那块虚拟屏的裸帧 → 单趟编码出视频（边播边编，无中间 webm、不二次压缩）。
 
-    三种音源任意组合：人声/音效轨 audio（已含各拍语音+音效）、背景床 bgm。bgm 用 -stream_loop
-    -1 整段循环铺满，压在 BGM_VOLUME；两者都有则 amix 混在一起。都没有（audio 与 bgm 皆 None）
-    时只转视频、不出音轨。
-
-    输出长度恒等于视频长度（视频是权威时间轴）：-shortest 钳到视频末尾。bgm 在场时它循环到
-    无限长，正好托住人声短于视频的尾巴（替代旧的 apad 静音补齐）；--limit-seconds 中途截断时
-    同样截到视频末尾。"""
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
+    encoder=vaapi 走核显硬编 HEVC（CQP qp26 + hvc1 标记，体积小、上传平台友好）；encoder=x264
+    走软编 H.264 veryfast（必须跟得上实时，软编 HEVC 在弱机上压不动 1080p30，故软编路径只给 264）。
+    抓的是 :display 屏左上 width×height 区域，光标不入画（-draw_mouse 0）。"""
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats",
+           "-f", "x11grab", "-draw_mouse", "0",
+           "-video_size", f"{width}x{height}", "-framerate", str(fps),
+           "-i", f":{display}.0+0,0"]
     if encoder == "vaapi":
-        cmd += ["-vaapi_device", RENDER_DEVICE]
-    cmd += ["-ss", f"{lead:.3f}", "-i", str(video)]
+        cmd += ["-vaapi_device", RENDER_DEVICE, "-vf", "format=nv12,hwupload",
+                "-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", "26", "-tag:v", "hvc1"]
+    else:
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
+    cmd += [str(out_video)]
+    return cmd
+
+
+def ffmpeg_mux_cmd(video: Path, audio: Path | None, bgm: Path | None, out: Path) -> list[str]:
+    """把已编好的视频流 `-c:v copy` 原样拷进 mp4 + 叠音轨（不二次编码视频，瞬时）。
+
+    视频在 capture 期间就已是成品 H.264/HEVC（x11grab 单趟编出），这里只换容器 + 拼音轨：
+    人声/音效轨 audio（已含各拍语音+音效）、背景床 bgm 任意组合。bgm 用 -stream_loop -1 整段
+    循环铺满、压在 BGM_VOLUME；两者都有则 amix 混在一起。都没有时只拷视频、不出音轨。
+
+    输出长度恒等于视频长度（视频是权威时间轴）：音轨侧恒为无限长（bgm 循环 / apad 补静音），
+    靠 -shortest 钳到视频末尾——人声短于视频不留空尾，--limit-seconds 中途截断也截到视频末尾。"""
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats", "-i", str(video)]
     # 输入编号：0=视频，随后依次是 audio、bgm（哪个在场哪个才占一位）
     voice_idx = bgm_idx = None
     idx = 1
@@ -204,11 +223,7 @@ def ffmpeg_mux_cmd(
     if bgm is not None:
         bgm_idx = idx; cmd += ["-stream_loop", "-1", "-i", str(bgm)]; idx += 1
 
-    if encoder == "vaapi":
-        cmd += ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-b:v", "6M"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"]
-    cmd += ["-r", str(fps), "-map", "0:v:0"]
+    cmd += ["-map", "0:v:0", "-c:v", "copy"]
 
     # 音轨：人声 + 背景床按在场情况拼 filter_complex；都不在则无音轨。
     if voice_idx is not None and bgm_idx is not None:
@@ -260,11 +275,30 @@ async def _wait(pred: Callable[[], bool], timeout: float, what: str) -> None:
         await asyncio.sleep(0.05)
 
 
-# ---------------------------------------------------------------- 采集（起栈 + 录屏）
+# ---------------------------------------------------------------- 采集（起栈 + 抓屏）
 
 
-async def _capture(settings: RecordSettings, web_dist: Path, video_dir: Path) -> tuple[list[Beat], float, Path]:
-    """起一次性 stage + Playwright 录这一局的画面。返回 (时间线, 视频前导留白秒, webm 路径)。"""
+def _free_display() -> int:
+    """挑一个没被占的 X display 号（看 /tmp 下的锁文件 / 套接字）。"""
+    for d in range(99, 160):
+        if not Path(f"/tmp/.X{d}-lock").exists() and not Path(f"/tmp/.X11-unix/X{d}").exists():
+            return d
+    raise RuntimeError("找不到空闲 X display（:99~:159 都被占）")
+
+
+def _stop_capture(proc: subprocess.Popen) -> None:
+    """给 x11grab ffmpeg 发 SIGINT 优雅收尾（写完 moov、出完整可播 mp4）；逾时再硬杀兜底。"""
+    proc.send_signal(signal.SIGINT)
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tuple[list[Beat], float, Path]:
+    """起一次性 stage + Xvfb 虚拟屏 + 带头 Chromium，x11grab 实时抓屏单趟编码。
+    返回 (时间线, origin=开抓时刻=视频零点, 视频 mp4 路径)。"""
     # 引擎旋钮按 EngineKnobs 字段名机械转移（pace/speed/feed_window/prefetch_factor）——
     # 共享基类是唯一真源，新旋钮在那加一次这里自动带上，不再逐字段手抄（收分叉）。
     stage_settings = StageSettings(
@@ -278,8 +312,24 @@ async def _capture(settings: RecordSettings, web_dist: Path, video_dir: Path) ->
     app = create_app(stage_settings)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
     server_task = asyncio.create_task(server.serve())
+
+    # 显示源在边界一次定下：默认起一块 Xvfb 虚拟屏（无头服务器照跑）；--headed 复用现有 $DISPLAY
+    # （带屏机本地调试）。下游统一拿一个 display 号；xvfb 进程为 None 即"无需收尾"的空对象。
+    if settings.headed:
+        display = os.environ["DISPLAY"].lstrip(":").split(".")[0]
+        xvfb: subprocess.Popen | None = None
+    else:
+        dnum = _free_display()
+        xvfb = subprocess.Popen(
+            ["Xvfb", f":{dnum}", "-screen", "0", f"{settings.width}x{settings.height}x24", "-nolisten", "tcp"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        display = str(dnum)
+
     try:
         await _wait(lambda: server.started, timeout=30, what="服务启动")
+        if xvfb is not None:
+            await _wait(lambda: Path(f"/tmp/.X11-unix/X{display}").exists(), timeout=10, what="Xvfb 启动")
         port = server.servers[0].sockets[0].getsockname()[1]
         engine = app.state.engine
         beats = _tap_engine(engine)
@@ -287,39 +337,59 @@ async def _capture(settings: RecordSettings, web_dist: Path, video_dir: Path) ->
         url = f"http://127.0.0.1:{port}/?token={stage_settings.stage_token}#/stage"
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=not settings.headed,
-                args=["--force-device-scale-factor=1", "--hide-scrollbars",
+            # 用 persistent_context（单一窗口）而非 launch+new_context：后者会另开一个窗口，无窗管时
+            # x11grab 在 0,0 抓到的是带浏览器外壳的那个默认窗，画面被标签栏/地址栏挤偏。单窗 + --kiosk
+            # 才是无边框全幅（实测 launch+new_context 怎么 kiosk 都去不掉外壳，persistent+kiosk 干净）。
+            profile = tmpdir / "chrome-profile"
+            (profile / "Default").mkdir(parents=True, exist_ok=True)
+            # 关掉"翻译此页"气泡：中文页会触发它、飘在右上角入画。命令行 --disable-features 会被
+            # Playwright 自己的那份盖掉，所以落到 profile 偏好里（与 arg 顺序无关，最稳）。
+            (profile / "Default" / "Preferences").write_text(json.dumps({"translate": {"enabled": False}}))
+            context = await pw.chromium.launch_persistent_context(
+                str(profile),
+                headless=False,  # x11grab 抓的是真窗口：必须带头把画面渲染进 Xvfb 那块屏
+                env={**os.environ, "DISPLAY": f":{display}"},
+                no_viewport=True,  # 用真窗口尺寸（kiosk 占满 = 屏尺寸），不套 Playwright 默认视口
+                ignore_default_args=["--enable-automation"],  # 去掉"自动化控制"信息条
+                args=["--kiosk", "--window-position=0,0", f"--window-size={settings.width},{settings.height}",
+                      "--force-device-scale-factor=1", "--hide-scrollbars", "--disable-infobars",
+                      "--lang=zh-CN",  # UI 语言对齐中文页，进一步压住翻译提示
                       "--mute-audio", "--autoplay-policy=no-user-gesture-required"],
             )
-            viewport = {"width": settings.width, "height": settings.height}  # 默认 16:9 横屏（见 RecordSettings.width/height）
-            context = await browser.new_context(
-                viewport=viewport,
-                record_video_dir=str(video_dir),
-                record_video_size=viewport,
-            )
-            page = await context.new_page()
-            video = page.video
-            t_origin = time.time()  # 视频时间轴起点（context/page 创建 ≈ 此刻）
+            page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(url)
 
-            engine.queue = [replay_id]  # 入队这一局，主循环 1s 内拾起
-            await _wait(lambda: engine.phase == "playing", timeout=60, what="开局")
-            # 主停录信号：终局（phase 离开 playing）；次级兜底：到时长上限即停
-            cap = time.monotonic() + settings.limit_seconds if settings.limit_seconds else None
-            await _wait(lambda: engine.phase != "playing" or (cap is not None and time.monotonic() >= cap),
-                        timeout=3600, what="终局")
-            await asyncio.sleep(_TAIL_SECONDS)
+            # 开抓：x11grab 实时录这块屏 → 单趟编码出成品视频流。origin 即开抓时刻 = 视频零点。
+            cap_out = tmpdir / "capture.mp4"
+            cap_proc = subprocess.Popen(
+                ffmpeg_capture_cmd(display, settings.width, settings.height, settings.fps, settings.encoder, cap_out),
+                stdin=subprocess.DEVNULL,
+            )
+            origin = time.time()
+            try:
+                await asyncio.sleep(_CAPTURE_WARMUP)  # 让 x11grab 真挂上画面，第一拍不黑帧（不挪 origin）
+                engine.queue = [replay_id]  # 入队这一局，主循环 1s 内拾起
+                await _wait(lambda: engine.phase == "playing", timeout=60, what="开局")
+                # 主停录信号：终局（phase 离开 playing）；次级兜底：到时长上限即停
+                cap = time.monotonic() + settings.limit_seconds if settings.limit_seconds else None
+                await _wait(lambda: engine.phase != "playing" or (cap is not None and time.monotonic() >= cap),
+                            timeout=3600, what="终局")
+                await asyncio.sleep(_TAIL_SECONDS)
+            finally:
+                _stop_capture(cap_proc)  # 无论正常终局还是异常，都把录制收成完整 mp4
 
-            await context.close()  # 落盘视频文件
-            video_path = Path(await video.path())
-            await browser.close()
+            await context.close()  # persistent_context.close() 一并关掉浏览器
 
-        lead = max(0.0, beats[0].started_at - t_origin) if beats else 0.0
-        return beats, lead, video_path
+        return beats, origin, cap_out
     finally:
         server.should_exit = True
         await server_task
+        if xvfb is not None:
+            xvfb.terminate()
+            try:
+                xvfb.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                xvfb.kill()
 
 
 # ---------------------------------------------------------------- 编排
@@ -373,14 +443,14 @@ async def _record(settings: RecordSettings) -> None:
     with tempfile.TemporaryDirectory(prefix="stage-record-") as tmp:
         tmpdir = Path(tmp)
         web_dist = _build_web(tmpdir)  # 每局现构建前端，永远录最新（无 --web-dist、无旧 dist 地雷）
-        beats, lead, video = await _capture(settings, web_dist, tmpdir)
-        segs = audio_segments(beats, settings.dir.parent, web_dist / "sfx", settings.audio_shift)
+        beats, origin, video = await _capture(settings, web_dist, tmpdir)  # 视频已是成品 H.264/HEVC（边播边编）
+        segs = audio_segments(beats, settings.dir.parent, web_dist / "sfx", settings.audio_shift, origin)
         audio: Path | None = None
         if segs:
             audio = tmpdir / "audio.m4a"
             _run(ffmpeg_audio_cmd(segs, audio, settings.speed), f"拼接音轨（{len(segs)} 段语音/音效）…")
         bgm = _build_bgm(settings, web_dist, tmpdir)
-        _run(ffmpeg_mux_cmd(video, audio, bgm, lead, settings.out, settings.encoder, settings.fps), "编码视频…")
+        _run(ffmpeg_mux_cmd(video, audio, bgm, settings.out), "封装视频（视频流拷贝 + 音轨）…")
     size_mb = settings.out.stat().st_size / 1e6
     _console.print(f"[bold green]✓ 已生成[/bold green] {settings.out} [dim]({size_mb:.1f} MB)[/dim]")
 

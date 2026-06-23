@@ -50,11 +50,11 @@ class RecordSettings(EngineKnobs):
     width: int = 1920  # 录制画布宽：默认 16:9 横屏（舞台 layout 本就是横屏）；直播画面形状由 OBS/浏览器侧决定，不在此
     height: int = 1080  # 录制画布高
     fps: int = 30  # 输出帧率
-    encoder: Literal["x264", "vaapi"] = "x264"  # 软件 x264（默认，开箱即用）/ 硬件 VAAPI（需 render 组）
-    audio_shift: float = 0.0  # 音轨整体微调（秒，正=音频后移）：补 WS→渲染的常数延迟
+    encoder: Literal["x264", "vaapi"] = "x264"  # 软件 H.264 veryfast（默认，开箱即用、跟得上实时）/ 硬件 VAAPI 单趟 HEVC（需 render 组，体积更小、上传平台友好）
+    audio_shift: float = 0.0  # 音轨整体微调（秒，正=音频后移）：补开抓→首帧的常数延迟
     bgm: bool = True  # 叠加背景音乐床（--no-bgm 录纯人声/音效）
     limit_seconds: float | None = None  # 录像时长上限（秒）：到点即停的安全阀，也便于先出片段试看；缺省录到终局
-    headed: bool = False  # 调试用：起带头浏览器（默认无头）
+    headed: bool = False  # 复用现有 $DISPLAY（带屏机本地可视调试）；默认起 Xvfb 虚拟屏（无头服务器照跑）
 
     @model_validator(mode="after")
     def _check(self) -> RecordSettings:
@@ -66,6 +66,9 @@ class RecordSettings(EngineKnobs):
         # 跨世界一致性：选了 VAAPI 就得真能访问核显设备，否则开工前就报清楚（别等 ffmpeg 深处崩）
         if self.encoder == "vaapi" and not os.access(RENDER_DEVICE, os.R_OK | os.W_OK):
             raise ValueError(f"VAAPI 设备不可访问：{RENDER_DEVICE}（把用户加进 render 组：sudo usermod -aG render $USER 后重登）；或用 --encoder x264")
+        # 跨世界一致性：--headed 要复用现有屏，就必须真有 $DISPLAY（无头默认起 Xvfb，不需要）
+        if self.headed and not os.environ.get("DISPLAY"):
+            raise ValueError("--headed 需要现成的 $DISPLAY（带屏机才有）；无头服务器去掉 --headed，会自动起 Xvfb 虚拟屏")
         if not self.dir.is_dir():
             raise ValueError(f"replay 目录不存在：{self.dir}")
         if not (self.dir / "events.jsonl").is_file():
