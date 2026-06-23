@@ -148,14 +148,6 @@
 }
 .badge.stamp.yes { color:#0c0a06; background: var(--c-good-bright); }
 .badge.stamp.no  { color:#fff;    background: var(--c-evil); }
-/* 复盘期常驻的胜/负角标：底部居中，胜=金、负=暗灰，淡入出现 */
-.badge.result {
-  bottom: -4px; left: 50%; transform: translateX(-50%);
-  font: 800 16px var(--f-sans); padding: 1px 10px; border-radius: 8px;
-  animation: contentFade .4s ease both;
-}
-.badge.result.win  { color:#0c0a06; background: var(--c-gold); box-shadow: 0 0 12px rgba(240,208,137,.6); }
-.badge.result.lose { color: var(--c-text-soft); background: rgba(255,255,255,.12); }
 
 /* 发牌：身份牌在「飞牌抵达手中」那一刻翻面亮出——延时 = 该座位起飞错峰 + 单张飞行时长。 */
 .seat.dealing .seat-role { transform-origin: top center; animation: flipReveal .55s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--di) * var(--deal-stagger, 0.12s) + var(--deal-fly, 0s)); }
@@ -244,7 +236,7 @@
 .rv-ava { width: 60px; height: 60px; border-radius: 50%; display: grid; place-items: center;
   font: 700 28px var(--f-serif); color: #fff; border: 2px solid var(--c-gold); box-shadow: 0 0 14px rgba(240,208,137,.45); }
 .rv-no { font: 800 17px var(--f-display); color: var(--c-text-soft); line-height: 1; }
-.rv-stamp { font: 800 18px var(--f-sans); padding: 2px 12px; border-radius: 8px; }
+.rv-stamp { font: 800 18px var(--f-sans); padding: 2px 12px; border-radius: 8px; white-space: nowrap; }
 .rv-stamp.yes { color: #0c0a06; background: var(--c-good-bright); }
 .rv-stamp.no  { color: #fff; background: var(--c-evil); }
 .rv-stamp.pending { color: var(--c-text-soft); background: rgba(255,255,255,.10); animation: pendingPulse 1.1s ease-in-out infinite; }
@@ -288,6 +280,13 @@
 .over-seat.good .over-role { color: var(--c-good-bright); }
 .over-seat.evil .over-role { color: var(--c-evil-bright); }
 .over-reason { text-align: center; font: 600 22px var(--f-sans); color: var(--c-text-soft); text-shadow: var(--ts-soft); }
+/* 复盘期底部字幕：当前发言者的吐槽，最多两行，居中（取代赛果原因行） */
+.over-banter {
+  text-align: center; font: 600 23px/1.45 var(--f-serif); color: var(--c-text); padding: 0 24px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  animation: contentFade .4s ease both;
+}
+.over-banter .ob-who { color: var(--c-gold); font-weight: 800; margin-right: 4px; }
 
 .vote-view { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px 30px; }
 .vote-title { font: 900 44px var(--f-display); letter-spacing: .04em; color: var(--c-text); text-shadow: var(--ts-strong); transition: color .3s; }

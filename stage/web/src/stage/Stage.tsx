@@ -185,12 +185,14 @@ function buildItems(scene: Scene): ReactNode[] {
   const items: ReactNode[] = [
     <span><span className="rc-when">当前比分</span> <span className="ok">蓝 {good}</span> ： <span className="bad">红 {evil}</span></span>,
   ];
+  let proposals = 0;  // 全局组队序号：前情提要按时序连续编号（第1次组队、第2次组队……）
   scene.timeline.forEach((t) => {
     if (t.kind === "proposal") {
+      proposals += 1;
       // 投票不写"赞成/反对"，赞成染蓝、反对染红，靠颜色区分
       items.push(
         <span>
-          <span className="rc-when">第{cn(t.quest)}任务·第{cn(t.attempt)}次组队</span>
+          <span className="rc-when">第{cn(proposals)}次组队</span>
           {"　"}{circ(t.leader_no)} 提 <span className="rc-team">{seatList(t.team)}</span>
           {"　"}<span className="ok">{seatList(t.approves)}</span>
           {t.rejects.length > 0 && <span className="bad rc-gap">{seatList(t.rejects)}</span>}
@@ -266,8 +268,6 @@ function Seat({ s, scene, vote, card, dealing }: {
         {scene.lady_holder === s.no && <span className="badge lady"><StageIcon name="lady" size={16} /></span>}
         {vote !== undefined && <span className={`badge stamp ${vote ? "yes" : "no"}`}>{vote ? "赞" : "反"}</span>}
         {card !== undefined && <span className={`badge stamp ${card ? "yes" : "no"}`}>{card ? "成" : "破"}</span>}
-        {/* 复盘期（胜负已定）每个座位挂胜/负角标——表决/发车阶段 winner 为空，不与票章/牌章冲突 */}
-        {scene.winner && <span className={`badge result ${s.side === scene.winner ? "win" : "lose"}`}>{s.side === scene.winner ? "胜" : "负"}</span>}
       </div>
       <div className="seat-info">
         <div className="seat-name">{s.name}</div>
@@ -286,7 +286,19 @@ function Seat({ s, scene, vote, card, dealing }: {
 
 function CenterStage({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem | undefined }) {
   const k = last?.directive.kind;
-  const tall = k === "game_over" || k === "assassination";
+  // 终局起（game_over 大揭示 + 整个复盘期）常驻结算画面：胜负各一行头像不再被复盘发言顶掉。
+  // 不按 last.seq 重挂，故复盘逐句切换时头像不重新弹入；当前复盘发言作为底部字幕滚动。
+  if (scene.winner) {
+    const banter = last?.directive.kind === "speech" ? last : undefined;
+    return (
+      <div className="center-wrap">
+        <div className="center-stage tall">
+          <div className="stage-content"><OverView ch={ch} scene={scene} banter={banter} /></div>
+        </div>
+      </div>
+    );
+  }
+  const tall = k === "assassination";
   return (
     <div className="center-wrap">
       <div className={`center-stage${tall ? " tall" : ""}`}>
@@ -346,7 +358,7 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fe
     case "assassination":
       return <AssassinView ch={ch} scene={scene} item={last} d={d} />;
     case "game_over":
-      return <OverView d={d} />;
+      return null;  // 终局起结算画面由 CenterStage 常驻渲染（scene.winner 已定），这里不再单独出
     case "intermission":
       return null;
   }
@@ -408,14 +420,17 @@ function AssassinView({ ch, scene, item, d }: {
   );
 }
 
-// 结算：胜方一行、败方一行，各行左侧标"胜利/失败"（取代居中的"某方胜利"大字）。
-function OverView({ d }: { d: Extract<FeedItem["directive"], { kind: "game_over" }> }) {
+// 结算：胜方一行、败方一行，各行左侧标"胜利/失败"（取代居中的"某方胜利"大字）。终局起常驻，
+// 数据取自折好的 scene（不随某一拍 directive），复盘期把当前发言作为底部字幕滚动。
+function OverView({ ch, scene, banter }: { ch: Channel; scene: Scene; banter?: FeedItem }) {
+  const winner = scene.winner;
   const rows: { tag: string; cls: string; seats: SeatInfo[] }[] = [
-    { tag: "胜利", cls: "win", seats: d.seats.filter((s) => s.side === d.winner) },
-    { tag: "失败", cls: "lose", seats: d.seats.filter((s) => s.side !== d.winner) },
+    { tag: "胜利", cls: "win", seats: scene.seats.filter((s) => s.side === winner) },
+    { tag: "失败", cls: "lose", seats: scene.seats.filter((s) => s.side !== winner) },
   ];
+  const speech = banter?.directive.kind === "speech" ? banter.directive : undefined;
   return (
-    <div className={`over-view ${d.winner}`}>
+    <div className={`over-view ${winner}`}>
       {rows.map((r) => (
         <div key={r.cls} className={`over-row ${r.cls}`}>
           <span className={`over-tag ${r.cls}`}>{r.tag}</span>
@@ -430,7 +445,11 @@ function OverView({ d }: { d: Extract<FeedItem["directive"], { kind: "game_over"
           </div>
         </div>
       ))}
-      <div className="over-reason">{winReasonLabel(d.winner, d.win_reason)}</div>
+      {speech && banter
+        ? <div className="over-banter" key={banter.seq}>
+            <span className="ob-who">{circ(speech.seat_no)}号</span>「<LiveText ch={ch} item={banter} text={speech.text} />」
+          </div>
+        : <div className="over-reason">{winReasonLabel(winner ?? "good", scene.win_reason ?? "")}</div>}
     </div>
   );
 }
