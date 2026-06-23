@@ -159,7 +159,11 @@ def ffmpeg_audio_cmd(segs: list[tuple[Path, float, float]], out_audio: Path, spe
     重叠、音效已压低，不要自动压音量（否则人声会被错峰盖章拽下去）。
 
     speed>1 时每段先 atempo 提速：拍时长已被引擎按 speed 压缩、偏移也随之收紧（见 audio_segments），
-    音频同步提速才放得进压缩后的拍、音画对齐。speed=1.0 时 atempo 串为空，行为与提速前完全一致。"""
+    音频同步提速才放得进压缩后的拍、音画对齐。speed=1.0 时 atempo 串为空，行为与提速前完全一致。
+
+    末尾 asetpts=N/SR/TB 按样本数重建单调 PTS：没有任何一段从 0 起（各拍都带前导偏移，见
+    audio_segments 以开抓时刻为零点），amix 在 atempo 之后会吐出 NOPTS 初始 DTS、冲到 INT64_MAX
+    把 muxer 撞崩（仅提速时触发）。asetpts 只重标时间戳、不动样本，前导静音与各段对齐都原样保留。"""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats"]
     for path, _, _ in segs:
         cmd += ["-i", str(path)]
@@ -167,7 +171,8 @@ def ffmpeg_audio_cmd(segs: list[tuple[Path, float, float]], out_audio: Path, spe
     parts = [f"[{i}:a]{tempo}adelay={int(off * 1000)}:all=1,volume={gain}[a{i}]"
              for i, (_, off, gain) in enumerate(segs)]
     labels = "".join(f"[a{i}]" for i in range(len(segs)))
-    filt = ";".join(parts) + ";" + labels + f"amix=inputs={len(segs)}:normalize=0:dropout_transition=0[aout]"
+    filt = (";".join(parts) + ";" + labels
+            + f"amix=inputs={len(segs)}:normalize=0:dropout_transition=0,asetpts=N/SR/TB[aout]")
     cmd += ["-filter_complex", filt, "-map", "[aout]", str(out_audio)]
     return cmd
 

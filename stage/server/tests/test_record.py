@@ -73,7 +73,8 @@ def test_ffmpeg_audio_cmd_delays_and_mix():
     filt = cmd[cmd.index("-filter_complex") + 1]
     assert "adelay=0:all=1,volume=1.0[a0]" in filt
     assert f"adelay=3500:all=1,volume={SFX_VOLUME}[a1]" in filt  # 3.5s → 3500ms，音效压低
-    assert "amix=inputs=2:normalize=0" in filt
+    # amix 后接 asetpts 重建单调 PTS：无零起拍 + atempo 会让 amix 吐 NOPTS 撞崩 muxer
+    assert "amix=inputs=2:normalize=0:dropout_transition=0,asetpts=N/SR/TB[aout]" in filt
     assert cmd[-1] == "/tmp/out.m4a"
 
 
