@@ -431,25 +431,40 @@ function OverView({ ch, scene, banter }: { ch: Channel; scene: Scene; banter?: F
   const speech = banter?.directive.kind === "speech" ? banter.directive : undefined;
   return (
     <div className={`over-view ${winner}`}>
-      {rows.map((r) => (
-        <div key={r.cls} className={`over-row ${r.cls}`}>
-          <span className={`over-tag ${r.cls}`}>{r.tag}</span>
-          <div className="over-seats">
-            {r.seats.map((s, i) => (
-              <div key={s.no} className={`over-seat ${s.side}`} style={{ animationDelay: `${i * 0.1}s` }}>
-                <div className={avaClass("over-ava", s)} style={avaBg(s)}><AvaFill seat={s} /></div>
-                <span className="over-no">{circ(s.no)}</span>
-                <div className="over-role"><StageIcon name={roleIconName(s.role)} size={16} /> {roleLabel(s.role)}</div>
+      <div className="over-rows">
+        {rows.map((r) => (
+          <div key={r.cls} className={`over-row ${r.cls}`}>
+            <span className={`over-tag ${r.cls}`}>{r.tag}</span>
+            <div className="over-seats">
+              {r.seats.map((s, i) => (
+                <div key={s.no} className={`over-seat ${s.side}`} style={{ animationDelay: `${i * 0.1}s` }}>
+                  <div className={avaClass("over-ava", s)} style={avaBg(s)}><AvaFill seat={s} /></div>
+                  <span className="over-no">{circ(s.no)}</span>
+                  <div className="over-role"><StageIcon name={roleIconName(s.role)} size={16} /> {roleLabel(s.role)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* 下半区：复盘期播当前发言（打字机+TTS+内心戏），大揭示那拍还没发言时显赛果原因。 */}
+      <div className="over-talk">
+        {speech && banter ? (
+          <>
+            <div className="over-banter" key={banter.seq}>
+              <span className="ob-who">{circ(speech.seat_no)}号</span>「<LiveText ch={ch} item={banter} text={speech.text} />」
+            </div>
+            {speech.monologue && (
+              <div className="over-think" key={`m${banter.seq}`}>
+                <span className="think-mark">💭</span><span className="think-text">{speech.monologue}</span>
               </div>
-            ))}
-          </div>
-        </div>
-      ))}
-      {speech && banter
-        ? <div className="over-banter" key={banter.seq}>
-            <span className="ob-who">{circ(speech.seat_no)}号</span>「<LiveText ch={ch} item={banter} text={speech.text} />」
-          </div>
-        : <div className="over-reason">{winReasonLabel(winner ?? "good", scene.win_reason ?? "")}</div>}
+            )}
+            <Audio ch={ch} item={banter} url={speech.audio_url} />
+          </>
+        ) : (
+          <div className="over-reason">{winReasonLabel(winner ?? "good", scene.win_reason ?? "")}</div>
+        )}
+      </div>
     </div>
   );
 }
