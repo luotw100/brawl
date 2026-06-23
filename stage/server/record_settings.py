@@ -4,8 +4,11 @@
 新旋钮只在基类加一次、两侧自动都有，不再两套配置手抄同步（见 settings.py 的 EngineKnobs）。
 
 边界纪律：所有"合不合法"的校验在这里一次查清（replay 目录是真目录且含 events.jsonl、
-fps/画布尺寸正、web_dist 存在；旋钮范围归 EngineKnobs），并把可省字段（out / web_dist）的默认
-在此解析成确定值，下游（record.py）拿到的 settings 默认已合法、字段已就绪，零校验分叉。
+fps/画布尺寸正；旋钮范围归 EngineKnobs），并把可省字段（out）的默认在此解析成确定值，
+下游（record.py）拿到的 settings 默认已合法、字段已就绪，零校验分叉。
+
+前端构建产物不在这里配：每次录制都现构建到临时目录（见 record.py 的 _build_web），
+所以没有 --web-dist，也永远录不到旧 web——构建即新鲜，零地雷。
 """
 
 from __future__ import annotations
@@ -25,9 +28,6 @@ from pydantic_settings import (
 
 from server.settings import EngineKnobs
 
-# 演出层前端构建产物：默认相对 server 包向上找 web/dist（与 docker 里 web_dist 同一份）。
-_DEFAULT_WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
-
 # VAAPI 硬件编码设备（N100 核显）。要用得当前用户在 render 组（节点是 crw-rw---- root:render）。
 RENDER_DEVICE = "/dev/dri/renderD128"
 
@@ -46,7 +46,6 @@ class RecordSettings(EngineKnobs):
 
     dir: CliPositionalArg[Path]  # replay 目录（含 events.jsonl + tts/）
     out: Path | None = None  # 输出 mp4；缺省落 <当前目录>/<replay 名>.mp4（在 _check 里解析）
-    web_dist: Path | None = None  # 前端构建产物目录；缺省取 server 包旁的 web/dist
     pace: float = 1.0  # 覆写 EngineKnobs 默认：录像跑足从容直播节奏（直播默认 0.5）
     width: int = 1920  # 录制画布宽：默认 16:9 横屏（舞台 layout 本就是横屏）；直播画面形状由 OBS/浏览器侧决定，不在此
     height: int = 1080  # 录制画布高
@@ -72,10 +71,6 @@ class RecordSettings(EngineKnobs):
         if not (self.dir / "events.jsonl").is_file():
             raise ValueError(f"{self.dir} 不是 replay 目录（缺 events.jsonl）")
         # 解析可省字段的默认值：校验只查不改，填默认是另一回事，这里一次性补齐给下游确定值
-        if self.web_dist is None:
-            self.web_dist = _DEFAULT_WEB_DIST
-        if not self.web_dist.is_dir():
-            raise ValueError(f"web_dist 不存在（前端未构建？）：{self.web_dist}")
         if self.out is None:
             self.out = Path.cwd() / f"{self.dir.name}.mp4"
         return self

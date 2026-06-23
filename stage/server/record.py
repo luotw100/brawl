@@ -48,6 +48,8 @@ from server.settings import EngineKnobs, StageSettings
 
 _TAIL_SECONDS = 1.0  # 终局定格后多录一点，保证最后一帧落进视频文件
 
+_WEB_SRC = Path(__file__).resolve().parent.parent / "web"  # 前端源码目录（stage/web）：每次录制现构建
+
 _console = Console()  # 进度输出：录制节拍 + ffmpeg 步骤（与捕获/编码同一条命令行）
 
 
@@ -261,7 +263,7 @@ async def _wait(pred: Callable[[], bool], timeout: float, what: str) -> None:
 # ---------------------------------------------------------------- 采集（起栈 + 录屏）
 
 
-async def _capture(settings: RecordSettings, video_dir: Path) -> tuple[list[Beat], float, Path]:
+async def _capture(settings: RecordSettings, web_dist: Path, video_dir: Path) -> tuple[list[Beat], float, Path]:
     """起一次性 stage + Playwright 录这一局的画面。返回 (时间线, 视频前导留白秒, webm 路径)。"""
     # 引擎旋钮按 EngineKnobs 字段名机械转移（pace/speed/feed_window/prefetch_factor）——
     # 共享基类是唯一真源，新旋钮在那加一次这里自动带上，不再逐字段手抄（收分叉）。
@@ -269,7 +271,7 @@ async def _capture(settings: RecordSettings, video_dir: Path) -> tuple[list[Beat
         replay_root=settings.dir.parent,
         stage_token=secrets.token_urlsafe(8),
         console_token=secrets.token_urlsafe(8),
-        web_dist=settings.web_dist,
+        web_dist=web_dist,
         loop_pool=False,  # 只放队列里这一局，放完即转幕间，绝不自动补别的局
         **{k: getattr(settings, k) for k in EngineKnobs.model_fields},
     )
@@ -323,13 +325,25 @@ async def _capture(settings: RecordSettings, video_dir: Path) -> tuple[list[Beat
 # ---------------------------------------------------------------- 编排
 
 
-def _run(cmd: list[str], desc: str) -> None:
-    """跑一步 ffmpeg：进度（-stats）直接继承终端实时刷出，不再吞掉。"""
+def _run(cmd: list[str], desc: str, cwd: Path | None = None) -> None:
+    """跑一步外部命令（ffmpeg / npm）：进度直接继承终端实时刷出，不再吞掉。"""
     _console.print(f"[bold]{desc}[/bold]")
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, cwd=cwd)
 
 
-def _build_bgm(settings: RecordSettings, tmpdir: Path) -> Path | None:
+def _build_web(tmpdir: Path) -> Path:
+    """每次录制都现构建前端到临时目录，返回 dist 路径。
+
+    强制重构建（约 3.5s）换来"永远录不到旧 web"——不再有 npm run build 漏跑的地雷，
+    也没有 web/dist 这个易腐的常驻产物。产物落进本局的 tmpdir，录完随之清掉
+    （bgm/sfx 的 .opus 也由 vite 从 web/public 一并拷进来，下游照常按 dist/bgm、dist/sfx 取）。"""
+    dist = tmpdir / "web"
+    _run(["npm", "run", "build", "--", "--outDir", str(dist), "--emptyOutDir"],
+         "构建前端…", cwd=_WEB_SRC)
+    return dist
+
+
+def _build_bgm(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> Path | None:
     """按 BGM_PLAYLIST 拼一条 bgm 床；--no-bgm、播放列表为空、或素材缺失/拼接失败都优雅跳过
     （只警告、不中断录制——背景乐是锦上添花，没了照样出片）。
 
@@ -337,7 +351,7 @@ def _build_bgm(settings: RecordSettings, tmpdir: Path) -> Path | None:
     这里兜住并提示。"""
     if not settings.bgm or not BGM_PLAYLIST:
         return None
-    tracks = [settings.web_dist / "bgm" / f"{n}.opus" for n in BGM_PLAYLIST]
+    tracks = [web_dist / "bgm" / f"{n}.opus" for n in BGM_PLAYLIST]
     missing = [t for t in tracks if not t.is_file()]
     if missing:
         _console.print(f"[yellow]⚠ 缺 BGM 素材，跳过背景乐：{', '.join(m.name for m in missing)}（git-lfs 没拉？）[/yellow]")
@@ -358,13 +372,14 @@ async def _record(settings: RecordSettings) -> None:
     _console.print(f"[dim]→ {settings.out} · {settings.width}×{settings.height} · 编码 {settings.encoder} · pace {settings.pace:g}{speed}{limit}[/dim]")
     with tempfile.TemporaryDirectory(prefix="stage-record-") as tmp:
         tmpdir = Path(tmp)
-        beats, lead, video = await _capture(settings, tmpdir)
-        segs = audio_segments(beats, settings.dir.parent, settings.web_dist / "sfx", settings.audio_shift)
+        web_dist = _build_web(tmpdir)  # 每局现构建前端，永远录最新（无 --web-dist、无旧 dist 地雷）
+        beats, lead, video = await _capture(settings, web_dist, tmpdir)
+        segs = audio_segments(beats, settings.dir.parent, web_dist / "sfx", settings.audio_shift)
         audio: Path | None = None
         if segs:
             audio = tmpdir / "audio.m4a"
             _run(ffmpeg_audio_cmd(segs, audio, settings.speed), f"拼接音轨（{len(segs)} 段语音/音效）…")
-        bgm = _build_bgm(settings, tmpdir)
+        bgm = _build_bgm(settings, web_dist, tmpdir)
         _run(ffmpeg_mux_cmd(video, audio, bgm, lead, settings.out, settings.encoder, settings.fps), "编码视频…")
     size_mb = settings.out.stat().st_size / 1e6
     _console.print(f"[bold green]✓ 已生成[/bold green] {settings.out} [dim]({size_mb:.1f} MB)[/dim]")
