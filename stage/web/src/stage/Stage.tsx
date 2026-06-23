@@ -451,8 +451,8 @@ function OverView({ ch, scene, banter }: { ch: Channel; scene: Scene; banter?: F
       <div className="over-talk">
         {speech && banter ? (
           <>
-            <div className="over-banter" key={banter.seq}>
-              <span className="ob-who">{circ(speech.seat_no)}号</span>「<LiveText ch={ch} item={banter} text={speech.text} />」
+            <div className="over-banter live-scroll" key={banter.seq}>
+              <div className="over-banter-inner"><span className="ob-who">{circ(speech.seat_no)}号</span>「<LiveText ch={ch} item={banter} text={speech.text} />」</div>
             </div>
             {speech.monologue && (
               <div className="over-think" key={`m${banter.seq}`}>
@@ -505,7 +505,7 @@ function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, lady
           <StageIcon name="lady" size={16} /> 查验 {circ(ladyNo)}号 —— 真身是{ladyEvil ? "红方" : "蓝方"}
         </div>
       )}
-      <div className="spot-text"><div className="spot-text-inner"><LiveText ch={ch} item={item} text={text} /></div></div>
+      <div className="spot-text live-scroll"><div className="spot-text-inner"><LiveText ch={ch} item={item} text={text} /></div></div>
       <Audio ch={ch} item={item} url={audio} />
     </div>
   );
@@ -639,9 +639,9 @@ function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: strin
   }, [item.seq]);
   const budget = Math.max(item.duration * 0.62, 0.001);
   const n = Math.min(Math.floor((elapsedOf(ch, item.started_at, now) / budget) * text.length), text.length);
-  // 文字铺满发言框后，把滚动容器拉到底，让最新一行始终可见（顶上的旧字滚出去）。
+  // 文字铺满后把最近的滚动容器（.live-scroll：发言区/复盘字幕共用契约）拉到底，最新一行始终可见。
   useEffect(() => {
-    const box = ref.current?.closest(".spot-text");
+    const box = ref.current?.closest(".live-scroll");
     if (box) box.scrollTop = box.scrollHeight;
   });
   return <span ref={ref}>{text.slice(0, Math.max(n, 0))}{n < text.length && <span className="caret">▌</span>}</span>;

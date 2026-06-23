@@ -284,13 +284,11 @@
 /* 下半区：复盘发言区，占满头像下方所有剩余空间，居中。 */
 .over-talk { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 0 12px; }
 .over-reason { text-align: center; font: 600 22px var(--f-sans); color: var(--c-text-soft); text-shadow: var(--ts-soft); }
-/* 复盘期当前发言：原文打字机（含 TTS）最多三行，居中 */
-.over-banter {
-  text-align: center; font: 600 27px/1.5 var(--f-serif); color: var(--c-text); padding: 0 24px;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-  animation: contentFade .4s ease both;
-}
-.over-banter .ob-who { color: var(--c-gold); font-weight: 800; margin-right: 4px; }
+/* 复盘期当前发言：原文打字机（含 TTS）。与发言区 .spot-text 同款——溢出不裁，铺满后自动
+   滚到底、最新一行恒可见（.live-scroll 契约，LiveText 每帧把 scrollTop 拉到底）。 */
+.over-banter { flex: 1; min-height: 0; width: 100%; overflow: hidden; scroll-behavior: smooth; padding: 4px 28px; }
+.over-banter-inner { text-align: center; font: 600 27px/1.5 var(--f-serif); color: var(--c-text); }
+.over-banter-inner .ob-who { color: var(--c-gold); font-weight: 800; margin-right: 4px; }
 /* 复盘内心戏：💭 + 斜体灰字，居中，最多两行（与发言区独白同款，给观众的乐子不丢） */
 .over-think { display: flex; gap: 9px; align-items: baseline; justify-content: center; padding: 0 28px; animation: contentFade .4s ease both; }
 .over-think .think-text {
