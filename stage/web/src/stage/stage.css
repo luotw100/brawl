@@ -38,11 +38,11 @@
 .hud-center { justify-self: center; display: flex; flex-direction: column; align-items: center; gap: 13px; }
 .hud-right { justify-self: end; }
 
-.brand { font: 900 30px/1 var(--f-display); letter-spacing: .04em; color: var(--c-gold); text-shadow: var(--ts-strong); white-space: nowrap; }
+.brand { font: 900 40px/54px var(--f-display); letter-spacing: .04em; color: var(--c-gold); text-shadow: var(--ts-strong); white-space: nowrap; }
 .crest { color: var(--c-gold-deep); }
 
 .mission-track { display: flex; align-items: center; gap: 20px; }
-.track-score { font: 900 46px var(--f-display); text-shadow: var(--ts-strong); }
+.track-score { font: 900 46px/54px var(--f-display); text-shadow: var(--ts-strong); }
 .track-score.good { color: var(--c-good-bright); }
 .track-score.evil { color: var(--c-evil-bright); }
 .track-score i { font: 700 22px var(--f-sans); font-style: normal; opacity: .82; margin: 0 8px; vertical-align: 8px; }
