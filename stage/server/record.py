@@ -194,8 +194,9 @@ def ffmpeg_capture_cmd(
 ) -> list[str]:
     """x11grab 实时抓 Xvfb 那块虚拟屏的裸帧 → 单趟编码出视频（边播边编，无中间 webm、不二次压缩）。
 
-    encoder=vaapi 走核显硬编 HEVC（CQP qp26 + hvc1 标记，体积小、上传平台友好）；encoder=x264
-    走软编 H.264 veryfast（必须跟得上实时，软编 HEVC 在弱机上压不动 1080p30，故软编路径只给 264）。
+    encoder=vaapi 走核显硬编 HEVC（CQP qp18 + hvc1 标记，体积小、上传平台友好）；encoder=x264
+    走软编 H.264 veryfast crf16（必须跟得上实时，软编 HEVC 在弱机上压不动 1080p30，故软编路径只给 264）。
+    qp/crf 压到 18/16：舞台满屏文字（字幕/名片/HUD）对量化敏感，默认档会发糊，这俩值接近视觉无损。
     抓的是 :display 屏左上 width×height 区域，光标不入画（-draw_mouse 0）。"""
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning", "-stats",
            "-f", "x11grab", "-draw_mouse", "0",
@@ -203,9 +204,9 @@ def ffmpeg_capture_cmd(
            "-i", f":{display}.0+0,0"]
     if encoder == "vaapi":
         cmd += ["-vaapi_device", RENDER_DEVICE, "-vf", "format=nv12,hwupload",
-                "-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", "26", "-tag:v", "hvc1"]
+                "-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", "18", "-tag:v", "hvc1"]
     else:
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"]
     cmd += [str(out_video)]
     return cmd
 
