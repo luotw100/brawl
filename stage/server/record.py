@@ -73,11 +73,10 @@ class Beat:
 
 @dataclass
 class Timeline:
-    """录制时间线：逐拍条目 + 最后一拍的收尾挂钟时刻。
+    """录制时间线：逐拍条目 + 最后一拍的收尾挂钟时刻（信息用，停录判据是 phase 离开 playing）。
 
-    last_beat_ends_at = 每拍 started_at + duration（逐拍更新），停录以此为准、赶在幕间渲染前
-    收手。没有拍到任何拍（坏局/跳局/limit 截断）时为 None，停录回落到 phase 离开 playing 的
-    兜底信号。"""
+    last_beat_ends_at = 每拍 started_at + duration（逐拍更新），没有拍到任何拍时（坏局/跳局）
+    为 None。"""
 
     beats: list[Beat] = field(default_factory=list)
     last_beat_ends_at: float | None = None
@@ -264,8 +263,8 @@ def ffmpeg_mux_cmd(video: Path, audio: Path | None, bgm: Path | None, out: Path)
 
 def _tap_engine(engine) -> Timeline:
     """包住 engine._publish：每拍 emit 后顺手把时间线记下来（seq 去重，暂停/旋钮的重发不计）。
-    每拍都更新 last_beat_ends_at，确保停录以真正的最后一拍（复盘等 GameOver 之后的拍）为界，
-    而非停在 GameOver 定格结束那一刻。"""
+    每拍都更新 last_beat_ends_at（GameOver 之后的复盘 etc. 一并计入），但停录判据是 phase
+    离开 playing——拍间没有竞态。"""
     timeline = Timeline()
     seen: set[int] = set()
     orig = engine._publish
@@ -277,7 +276,7 @@ def _tap_engine(engine) -> Timeline:
             seen.add(fi.seq)
             cues = cues_for(fi.directive, fi.duration)
             timeline.beats.append(Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), cues))
-            timeline.last_beat_ends_at = fi.started_at + fi.duration  # 逐拍更新，确保以真正的最后一拍收尾
+            timeline.last_beat_ends_at = fi.started_at + fi.duration  # 逐拍更新（信息用，含 GameOver 之后的复盘等）
             elapsed = fi.started_at - timeline.beats[0].started_at  # 视频时间轴（以第一拍为零点）
             tag, color, detail = _beat_summary(fi.directive, engine.scene.seats)
             note = "[cyan]♪[/cyan]" if getattr(fi.directive, "audio_url", None) else " "
@@ -395,14 +394,12 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
             origin = time.time()
             try:
                 await asyncio.sleep(_CAPTURE_WARMUP)  # 让 x11grab 真挂上画面（画面已是开局静帧、不黑、不挪 origin）
-                # 主停录信号：最后一拍（含 GameOver 之后的复盘/收尾）演完即停，赶在幕间下发渲染前
-                # 收手；坏局/跳局没有拍到任何拍时回落到 phase 离开 playing 的兜底；次级安全阀：
-                # 到时长上限即停。
+                # 停录信号：phase 离开 playing（_play 返回 → _intermission 把 phase 切到
+                # intermission，但 Intermission 指令还没 emit/渲染，赶在幕间上屏前收手）；
+                # 次级安全阀：到时长上限即停。
                 cap = time.monotonic() + settings.limit_seconds if settings.limit_seconds else None
 
                 def _reached_end() -> bool:
-                    if timeline.last_beat_ends_at is not None and time.time() >= timeline.last_beat_ends_at:
-                        return True
                     if engine.phase != "playing":
                         return True
                     return cap is not None and time.monotonic() >= cap
