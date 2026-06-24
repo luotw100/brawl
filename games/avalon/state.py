@@ -16,7 +16,12 @@ import operator
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
+
+# 公开发言与内心戏的字段类型：去掉首尾空白后必须非空。这是"字段内在/形状校验"——声明式收在
+# 模型里随抽取一起完成，故 extractor 抽出"该有发言却空了 / 该有内心戏却空了"会直接 parse 失败
+# （抛 JsonParseError），由 LLMPlayer 的退避重试兜住，绝不让空发言静默上桌。
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class Side(StrEnum):
@@ -85,44 +90,44 @@ class Proposal(BaseModel):
     """组队阶段队长的结构化产出（extractor 从自由文本里抽取）。"""
 
     team: list[int]  # 公开：带谁上任务（座位号，人数须等于本任务队伍人数）
-    speech: str  # 公开：组队宣言
-    monologue: str  # 仅观众可见：内心独白
+    speech: NonEmptyStr  # 公开：组队宣言
+    monologue: NonEmptyStr  # 仅观众可见：内心独白
 
 
 class Statement(BaseModel):
     """讨论轮的结构化产出。"""
 
-    speech: str  # 公开：一句桌面发言
-    monologue: str  # 仅观众可见：内心独白
+    speech: NonEmptyStr  # 公开：一句桌面发言
+    monologue: NonEmptyStr  # 仅观众可见：内心独白
 
 
 class TeamVote(BaseModel):
     """组队表决的结构化产出。同时亮票：表态本身开牌后公开，独白只给观众。"""
 
     approve: bool
-    monologue: str
+    monologue: NonEmptyStr
 
 
 class QuestCard(BaseModel):
     """任务出牌的结构化产出。蓝方只能出成功（违者抛错）；谁出了什么永远保密。"""
 
     success: bool
-    monologue: str
+    monologue: NonEmptyStr
 
 
 class Assassination(BaseModel):
     """刺杀阶段刺客的结构化产出。"""
 
     target_no: int  # 公开：刺谁
-    speech: str  # 公开：指认宣言
-    monologue: str
+    speech: NonEmptyStr  # 公开：指认宣言
+    monologue: NonEmptyStr
 
 
 class LadyChoice(BaseModel):
     """湖中仙女持有者的查验选择。选谁是公开的；查验到的真实阵营只有持有者知道。"""
 
     target_no: int
-    monologue: str
+    monologue: NonEmptyStr
 
 
 class GameState(BaseModel):

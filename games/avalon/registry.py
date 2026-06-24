@@ -26,7 +26,7 @@ class ModelSpec(BaseModel):
     api_key_env: str
     temperature: float = 0.9
     max_tokens: int | None = None  # None = 不设上限，由 timeout 兜底（开 thinking 后推理长，别截断）
-    timeout: float = 60  # 单次调用客户端超时（秒）；超时直接抛错，不兜底
+    timeout: float = 180  # 单次调用客户端超时（秒）；开 thinking 后推理长，给足。超时算"不符预期"，由 player 层退避重试
     extra_body: dict[str, Any] = Field(default_factory=dict)  # 透传给 API 的额外参数，如开/关思考
     avatar: str | None = None  # 厂商 logo key，指向 data/avatars/<avatar>.png；录制时按座位烧进 replay（见 Registry.avatar_path）。缺省=该模型不带头像，渲染层走 hash 色回退
     display: str | None = None  # 对外展示的模型名（如 "DeepSeek v4 Pro"）；录制时把"逻辑名→display"映射烧进 meta.model_labels 供直播显在座位下。不带厂商名——头像已表明厂商

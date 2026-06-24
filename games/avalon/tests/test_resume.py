@@ -7,6 +7,11 @@
   （一次决策 = converse + 同 id 的 .extract，正好两条；若断点节点被重跑且没截干净，
   会冒出第三、四条）。
 
+注入的"崩溃"必须是 BaseException（这里用 _HardCrash）而非普通 Exception——后者会被
+LLMPlayer._act 当作"LLM 抽风"退避重试掉，根本不会传播；resume 兜的是进程级硬崩（OOM/被 kill/
+断电），正是 retry 故意不接的那一类。用 BaseException 既忠实模拟硬崩、又保持单次不重试，
+让"每个 call_id ≤ 2 条"的不变量成立。
+
 全程 --player random：零 key、零网络（FakeBackend 注入崩溃）。
 """
 
@@ -23,6 +28,10 @@ from avalon.run import run_game
 from avalon.settings import AvalonSettings
 
 
+class _HardCrash(BaseException):
+    """模拟进程级硬崩：BaseException，绕过 _act 的 retry（它只接 Exception）直接传播。"""
+
+
 async def test_resume_after_crash_completes_clean(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "g"
     orig_call = player_mod.FakeBackend.call
@@ -32,13 +41,13 @@ async def test_resume_after_crash_completes_clean(tmp_path, monkeypatch) -> None
         if state["armed"]:
             state["n"] += 1
             if state["n"] == state["boom_at"]:
-                raise RuntimeError("injected crash")
+                raise _HardCrash("injected crash")
         return await orig_call(self, phase, view, spec, messages)
 
     monkeypatch.setattr(player_mod.FakeBackend, "call", flaky)
 
     # 1) 新局跑到第 40 次模型调用时崩
-    with pytest.raises(RuntimeError, match="injected crash"):
+    with pytest.raises(_HardCrash, match="injected crash"):
         await run_game(AvalonSettings(player="random", players=5, seed=11, replay=run_dir))
 
     # 崩溃后：有可续水位，且盘上可能残留断点节点写了一半的脏行（events 行数 ≥ 水位）

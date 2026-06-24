@@ -6,7 +6,9 @@
 # DeepSeek 两款是混合思考模型，阿瓦隆本质是推理博弈，故 extra_body 开启 thinking（卧底实测
 # 显著提升玩得好不好）：真推理走隐藏的 reasoning 通道，resp.content 只剩干净 JSON，prompt
 # 要求公开输出（含 monologue）简短——monologue 是给观众看的内心戏、不是模型的草稿纸。开思考
-# 后单次更慢，timeout 给到 120s；不设 max_tokens（=None，由 timeout 兜底）以免推理长被截断。
+# 后单次更慢，故 timeout 默认拨到 180s（见 registry.ModelSpec，这里不再逐条覆盖）；不设
+# max_tokens（=None，由 timeout 兜底）以免推理长被截断。模型偶发不守格式/空字段由 player 层
+# 退避重试兜住（见 LLMPlayer），不靠调参消除。
 #
 # avatar 指向厂商 logo（data/avatars/<avatar>.png）：录制时按座位把对应 logo 烧进 replay，
 # 直播渲染层据此显真实厂商头像；缺省=不带头像，渲染层回退 hash 色块。同厂商多款共用一张。
@@ -23,7 +25,6 @@ models:
   #   model_id: deepseek-v4-flash
   #   api_key_env: DEEPSEEK_API_KEY
   #   temperature: 0.7
-  #   timeout: 120
   #   extra_body:
   #     thinking:
   #       type: enabled
@@ -33,7 +34,6 @@ models:
   #   model_id: deepseek-v4-pro
   #   api_key_env: DEEPSEEK_API_KEY
   #   temperature: 0.7
-  #   timeout: 120
   #   extra_body:
   #     thinking:
   #       type: enabled
@@ -44,7 +44,6 @@ models:
     model_id: minimax-m3
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: minimax
     display: MiniMax M3
 
@@ -53,7 +52,6 @@ models:
     model_id: minimax-m2.7
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: minimax
     display: MiniMax M2.7
 
@@ -62,7 +60,6 @@ models:
     model_id: minimax-m2.5
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: minimax
     display: MiniMax M2.5
 
@@ -71,7 +68,6 @@ models:
     model_id: kimi-k2.6
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: kimi
     display: Kimi K2.6
 
@@ -80,7 +76,6 @@ models:
     model_id: kimi-k2.5
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: kimi
     display: Kimi K2.5
 
@@ -89,7 +84,6 @@ models:
     model_id: glm-5.1
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: zhipu
     display: GLM-5.1
 
@@ -98,7 +92,6 @@ models:
     model_id: glm-5
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: zhipu
     display: GLM-5
 
@@ -107,7 +100,6 @@ models:
     model_id: deepseek-v4-pro
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: deepseek
     display: DeepSeek v4 Pro
 
@@ -116,7 +108,6 @@ models:
     model_id: deepseek-v4-flash
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: deepseek
     display: DeepSeek v4 Flash
 
@@ -125,7 +116,6 @@ models:
     model_id: qwen3.7-plus
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: qwen
     display: Qwen3.7 Plus
 
@@ -134,7 +124,6 @@ models:
     model_id: qwen3.6-plus
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: qwen
     display: Qwen3.6 Plus
 
@@ -143,7 +132,6 @@ models:
     model_id: qwen3.5-plus
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: qwen
     display: Qwen3.5 Plus
 
@@ -152,7 +140,6 @@ models:
     model_id: mimo-v2.5-pro
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: mimo
     display: MiMo v2.5 Pro
 
@@ -161,7 +148,6 @@ models:
     model_id: mimo-v2.5
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: mimo
     display: MiMo v2.5
 
@@ -170,6 +156,5 @@ models:
     model_id: hy3-preview
     api_key_env: OPENCODE_API_KEY
     temperature: 0.7
-    timeout: 120
     avatar: hunyuan
     display: Hunyuan 3 Preview

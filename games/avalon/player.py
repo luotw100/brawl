@@ -15,8 +15,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import random
+import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from time import perf_counter
@@ -202,6 +205,12 @@ def _render(base: str, d: BaseModel) -> str:
     return f"内心戏：{d.monologue}\n发言：{d.speech}"
 
 
+# 重试参数：只兜 LLM 这层外部不可控依赖。_MAX_ATTEMPTS 含首次（1 次正常 + 至多 4 次重试）。
+_MAX_ATTEMPTS = 5
+_BACKOFF_BASE = 1.0  # 秒：指数退避基数（第 n 次重试前等 base*2^(n-1)，封顶 _BACKOFF_CAP，叠抖动）
+_BACKOFF_CAP = 30.0  # 秒：单次等待上限
+
+
 class LLMPlayer:
     """玩家模型自由文本对话 + 固定轻量 extractor 解析校验（见 parsing.py）。模型调用本身下沉到
     ModelBackend——真模型走 LiveBackend，离线调试走 FakeBackend，本类对此**一无所知**。
@@ -209,8 +218,12 @@ class LLMPlayer:
     玩家模型不写 JSON（自由发挥不耗脑力在格式上）；extractor 是我们自己选定的单一模型，
     JSON 由它产出、parse_json 解析校验——跨厂商接玩家模型不会再踩 response_format 的坑。
 
-    无兜底：API 调用失败、超时、解析失败一律抛错（连同完整调用记录落盘），
-    让问题立刻暴露，绝不静默替换成占位/随机内容。
+    容错铁律分两层，区别只在"这东西可不可控"：
+    - **我们自己完全可控的代码**（核心逻辑、状态机、解析后的结构化数据）：严禁默认兜底——非法
+      态在边界就该被拦死，下游拿到的默认已合法，违例即大声崩溃，绝不静默替换成占位/随机内容。
+    - **LLM 调用这种外部不可控依赖**：必须鲁棒。模型偶发抽风（超时、网络抖动、不守格式、该有
+      发言/内心戏却空了）不是 bug 而是常态，对它要退避重试（见 _act），而非一次失败就让整局炸。
+      重试到顶仍不行，才回到上一条——大声抛错，不静默兜底。
     """
 
     def __init__(self, recorder: Recorder, extractor: ModelSpec, backend: ModelBackend) -> None:
@@ -239,7 +252,8 @@ class LLMPlayer:
         return await self._invoke(phase, view, spec, messages)
 
     async def _extract[T: BaseModel](self, phase: str, view: PlayerView, instruction: str, model_cls: type[T]) -> T:
-        """extractor：把玩家自由文本解析成结构化对象。失败即抛错，不重试、不兜底。"""
+        """extractor：把玩家自由文本解析成结构化对象。解析失败 / 字段不合法（含 NonEmptyStr 触发
+        的"发言或内心戏为空"）即抛 JsonParseError——交由外层 _act 退避重试，本层不兜底。"""
         messages: list[BaseMessage] = [SystemMessage(prompts.EXTRACT_SYSTEM), HumanMessage(instruction)]
         text = await self._invoke(f"{phase}.extract", view, self._extractor_spec, messages)
         try:
@@ -247,6 +261,31 @@ class LLMPlayer:
         except JsonParseError as e:
             self._record(f"{phase}.extract", view, self._extractor_spec, messages, text, None, 0, str(e))
             raise
+
+    async def _act[R](self, phase: str, view: PlayerView, once: Callable[[], Awaitable[R]]) -> R:
+        """对外部不可控依赖（LLM）的鲁棒性边界：跑一次完整决策（玩家发挥 → 抽取 → 校验），任何
+        环节"不符预期"都退避重试，最多 _MAX_ATTEMPTS 次。
+
+        哪些算"不符预期"——全在 once() 抛出的异常里，不需要本层逐一辨认：
+          · API 调用失败 / 超时（LiveBackend 抛）；
+          · extractor 抽不出合法 JSON、或字段不满足约束——含"该有发言/内心戏却空了"
+            （NonEmptyStr → ValidationError → JsonParseError）。
+        每次失败尝试都已在 _invoke/_extract 里落盘（ok=false），故重试不丢审计。连试到顶仍败，
+        才把最后一个异常抛出——回到"完全可控处不静默兜底"的铁律，让整局大声崩而非带病硬撑。"""
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                return await once()
+            except Exception as e:
+                if attempt == _MAX_ATTEMPTS:
+                    raise
+                delay = min(_BACKOFF_BASE * 2 ** (attempt - 1), _BACKOFF_CAP) + random.random()
+                print(
+                    f"[retry] 座位{view.seat_no} {phase} 第 {attempt}/{_MAX_ATTEMPTS} 次失败，"
+                    f"{delay:.1f}s 后重试：{e}",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable: 循环要么 return 要么在末次 raise")  # 纵深防御
 
     def _record(
         self,
@@ -278,37 +317,64 @@ class LLMPlayer:
             }
         )
 
+    # 八个决策动作：每个把"玩家发挥 → 抽取"包成一次 once()，交 _act 退避重试。retry 重跑的是
+    # 整次决策（含玩家发挥）——因为"发言为空"这类病在玩家原文里，只重抽取救不回来，得让玩家重答。
+
     async def propose(self, view: PlayerView) -> tuple[Proposal, str]:
-        raw = await self._converse("propose", view)
-        return await self._extract("propose", view, prompts.extract_propose(raw, view.team_size, view.players), Proposal), raw
+        async def once() -> tuple[Proposal, str]:
+            raw = await self._converse("propose", view)
+            return await self._extract("propose", view, prompts.extract_propose(raw, view.team_size, view.players), Proposal), raw
+
+        return await self._act("propose", view, once)
 
     async def discuss(self, view: PlayerView) -> tuple[Statement, str]:
-        raw = await self._converse("discuss", view)
-        return await self._extract("discuss", view, prompts.extract_statement(raw), Statement), raw
+        async def once() -> tuple[Statement, str]:
+            raw = await self._converse("discuss", view)
+            return await self._extract("discuss", view, prompts.extract_statement(raw), Statement), raw
+
+        return await self._act("discuss", view, once)
 
     async def vote_team(self, view: PlayerView) -> tuple[TeamVote, str]:
-        raw = await self._converse("team_vote", view)
-        return await self._extract("team_vote", view, prompts.extract_vote(raw), TeamVote), raw
+        async def once() -> tuple[TeamVote, str]:
+            raw = await self._converse("team_vote", view)
+            return await self._extract("team_vote", view, prompts.extract_vote(raw), TeamVote), raw
+
+        return await self._act("team_vote", view, once)
 
     async def play_quest(self, view: PlayerView) -> tuple[QuestCard, str]:
-        raw = await self._converse("quest", view)
-        return await self._extract("quest", view, prompts.extract_quest(raw), QuestCard), raw
+        async def once() -> tuple[QuestCard, str]:
+            raw = await self._converse("quest", view)
+            return await self._extract("quest", view, prompts.extract_quest(raw), QuestCard), raw
+
+        return await self._act("quest", view, once)
 
     async def assassinate(self, view: PlayerView) -> tuple[Assassination, str]:
-        raw = await self._converse("assassinate", view)
-        return await self._extract("assassinate", view, prompts.extract_assassinate(raw, view.good_suspects()), Assassination), raw
+        async def once() -> tuple[Assassination, str]:
+            raw = await self._converse("assassinate", view)
+            return await self._extract("assassinate", view, prompts.extract_assassinate(raw, view.good_suspects()), Assassination), raw
+
+        return await self._act("assassinate", view, once)
 
     async def lady_choose(self, view: PlayerView) -> tuple[LadyChoice, str]:
-        raw = await self._converse("lady_choose", view)
-        return await self._extract("lady_choose", view, prompts.extract_lady_choice(raw, view.lady_candidates()), LadyChoice), raw
+        async def once() -> tuple[LadyChoice, str]:
+            raw = await self._converse("lady_choose", view)
+            return await self._extract("lady_choose", view, prompts.extract_lady_choice(raw, view.lady_candidates()), LadyChoice), raw
+
+        return await self._act("lady_choose", view, once)
 
     async def lady_announce(self, view: PlayerView) -> tuple[Statement, str]:
-        raw = await self._converse("lady_announce", view)
-        return await self._extract("lady_announce", view, prompts.extract_statement(raw), Statement), raw
+        async def once() -> tuple[Statement, str]:
+            raw = await self._converse("lady_announce", view)
+            return await self._extract("lady_announce", view, prompts.extract_statement(raw), Statement), raw
+
+        return await self._act("lady_announce", view, once)
 
     async def banter(self, view: PlayerView) -> tuple[Statement, str]:
-        raw = await self._converse("banter", view)
-        return await self._extract("banter", view, prompts.extract_statement(raw), Statement), raw
+        async def once() -> tuple[Statement, str]:
+            raw = await self._converse("banter", view)
+            return await self._extract("banter", view, prompts.extract_statement(raw), Statement), raw
+
+        return await self._act("banter", view, once)
 
 
 def build_player(kind: Literal["llm", "random"], rng: random.Random, recorder: Recorder, extractor: ModelSpec) -> Player:
