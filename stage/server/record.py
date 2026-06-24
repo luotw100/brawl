@@ -4,7 +4,8 @@
 进程内起 uvicorn 到 127.0.0.1:<随机口> → Xvfb 造一块虚拟屏（无需物理显示器，SSH 里照跑）→
 带头 Chromium kiosk 把 #/stage 真渲染进这块虚拟 framebuffer → **ffmpeg x11grab 实时抓裸帧、
 单趟硬编 HEVC（边播边编，编码藏进本就实时的播放里，无臃肿中间件、无"VP8→转码"的来回有损）**
-→ 读 engine.phase 由 playing→intermission 判定本局放完即停 → 收每拍时间线 → 把 replay 里的
+→ 先等本局真上屏、首帧画定才开抓（待机/幕间挡在窗口外），读终局拍的定格收尾时刻判定放完即停
+（赶在幕间下发渲染前收手，phase 离开 playing 兜底坏局）→ 收每拍时间线 → 把 replay 里的
 .opus 按拍偏移离线拼成音轨 → 与已编好的视频流 `-c:v copy` remux 成 mp4（瞬时）。
 
 音画对齐靠引擎的确定性 + 抓屏的挂钟 PTS：x11grab 的帧 PTS 以"开抓那一刻"为零点，引擎随后
@@ -51,8 +52,8 @@ from server.record_settings import RENDER_DEVICE, RecordSettings
 from server.sfx import SFX_VOLUME, cues_for
 from server.settings import EngineKnobs, StageSettings
 
-_TAIL_SECONDS = 1.0  # 终局定格后多录一点，保证最后一帧落进视频文件
-_CAPTURE_WARMUP = 0.5  # 开抓后、入队前留一点让 x11grab 真正挂上画面，保证第一拍不黑帧（不影响 origin）
+_CAPTURE_WARMUP = 0.5  # 开抓后让 x11grab 真正挂上画面再进停录判定（此刻画面已是开局静帧，warmup 帧即开局、不黑、不挪 origin）
+_FIRST_FRAME_SETTLE = 0.4  # 等开局首帧渲染落定再开抓：把待机/幕间挡在录制窗口之外，开抓即开局
 
 _WEB_SRC = Path(__file__).resolve().parent.parent / "web"  # 前端源码目录（stage/web）：每次录制现构建
 
@@ -68,6 +69,18 @@ class Beat:
     started_at: float
     audio_url: str | None
     cues: list[tuple[str, float]] = field(default_factory=list)
+
+
+@dataclass
+class Timeline:
+    """录制时间线：逐拍条目 + 终局定格的收尾挂钟时刻。
+
+    gameover_ends_at = 终局拍 started_at + duration，即定格演完、幕间即将下发的那一刻；停录以它
+    为准、赶在幕间渲染前收手。没有终局拍（坏局/跳局/limit 截断）时为 None，停录回落到
+    phase 离开 playing 的兜底信号。"""
+
+    beats: list[Beat] = field(default_factory=list)
+    gameover_ends_at: float | None = None
 
 
 # ---------------------------------------------------------------- 进度（节拍渲染）
@@ -249,9 +262,10 @@ def ffmpeg_mux_cmd(video: Path, audio: Path | None, bgm: Path | None, out: Path)
 # ---------------------------------------------------------------- 引擎探针 / 等待
 
 
-def _tap_engine(engine) -> list[Beat]:
-    """包住 engine._publish：每拍 emit 后顺手把时间线记下来（seq 去重，暂停/旋钮的重发不计）。"""
-    beats: list[Beat] = []
+def _tap_engine(engine) -> Timeline:
+    """包住 engine._publish：每拍 emit 后顺手把时间线记下来（seq 去重，暂停/旋钮的重发不计）。
+    终局拍另记下定格收尾挂钟时刻，供停录赶在幕间下发渲染前收手。"""
+    timeline = Timeline()
     seen: set[int] = set()
     orig = engine._publish
 
@@ -261,8 +275,10 @@ def _tap_engine(engine) -> list[Beat]:
             fi = feed[-1]
             seen.add(fi.seq)
             cues = cues_for(fi.directive, fi.duration)
-            beats.append(Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), cues))
-            elapsed = fi.started_at - beats[0].started_at  # 视频时间轴（以第一拍为零点）
+            timeline.beats.append(Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), cues))
+            if isinstance(fi.directive, GameOver):
+                timeline.gameover_ends_at = fi.started_at + fi.duration  # 定格演完 = 幕间即将下发的挂钟时刻
+            elapsed = fi.started_at - timeline.beats[0].started_at  # 视频时间轴（以第一拍为零点）
             tag, color, detail = _beat_summary(fi.directive, engine.scene.seats)
             note = "[cyan]♪[/cyan]" if getattr(fi.directive, "audio_url", None) else " "
             # 每拍固定一行：超宽（中文台词）裁切而非换行，进度日志更整齐
@@ -270,7 +286,7 @@ def _tap_engine(engine) -> list[Beat]:
         await orig()
 
     engine._publish = tap
-    return beats
+    return timeline
 
 
 async def _wait(pred: Callable[[], bool], timeout: float, what: str) -> None:
@@ -338,7 +354,7 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
             await _wait(lambda: Path(f"/tmp/.X11-unix/X{display}").exists(), timeout=10, what="Xvfb 启动")
         port = server.servers[0].sockets[0].getsockname()[1]
         engine = app.state.engine
-        beats = _tap_engine(engine)
+        timeline = _tap_engine(engine)
         replay_id = settings.dir.name
         url = f"http://127.0.0.1:{port}/?token={stage_settings.stage_token}#/stage"
 
@@ -365,6 +381,11 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(url)
 
+            # 先入队、等本局真上屏、首帧画定，再开抓——待机/幕间一帧都挡在录制窗口外。
+            engine.queue = [replay_id]  # 入队这一局，主循环 1s 内拾起
+            await _wait(lambda: engine.phase == "playing", timeout=60, what="开局")
+            await asyncio.sleep(_FIRST_FRAME_SETTLE)  # 让开局首帧渲染落定，开抓即开局而非待机
+
             # 开抓：x11grab 实时录这块屏 → 单趟编码出成品视频流。origin 即开抓时刻 = 视频零点。
             cap_out = tmpdir / "capture.mp4"
             cap_proc = subprocess.Popen(
@@ -373,20 +394,25 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
             )
             origin = time.time()
             try:
-                await asyncio.sleep(_CAPTURE_WARMUP)  # 让 x11grab 真挂上画面，第一拍不黑帧（不挪 origin）
-                engine.queue = [replay_id]  # 入队这一局，主循环 1s 内拾起
-                await _wait(lambda: engine.phase == "playing", timeout=60, what="开局")
-                # 主停录信号：终局（phase 离开 playing）；次级兜底：到时长上限即停
+                await asyncio.sleep(_CAPTURE_WARMUP)  # 让 x11grab 真挂上画面（画面已是开局静帧、不黑、不挪 origin）
+                # 主停录信号：终局定格演完即停，赶在幕间下发渲染前收手；坏局/跳局没有终局拍时回落到
+                # phase 离开 playing 的兜底；次级安全阀：到时长上限即停。
                 cap = time.monotonic() + settings.limit_seconds if settings.limit_seconds else None
-                await _wait(lambda: engine.phase != "playing" or (cap is not None and time.monotonic() >= cap),
-                            timeout=3600, what="终局")
-                await asyncio.sleep(_TAIL_SECONDS)
+
+                def _reached_end() -> bool:
+                    if timeline.gameover_ends_at is not None and time.time() >= timeline.gameover_ends_at:
+                        return True
+                    if engine.phase != "playing":
+                        return True
+                    return cap is not None and time.monotonic() >= cap
+
+                await _wait(_reached_end, timeout=3600, what="终局")
             finally:
                 _stop_capture(cap_proc)  # 无论正常终局还是异常，都把录制收成完整 mp4
 
             await context.close()  # persistent_context.close() 一并关掉浏览器
 
-        return beats, origin, cap_out
+        return timeline.beats, origin, cap_out
     finally:
         server.should_exit = True
         await server_task
