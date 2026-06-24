@@ -16,9 +16,12 @@
 # 烧进 meta.model_labels，直播在座位头像下显这行小字。
 #
 # opencode go（https://opencode.ai/zen/go/v1）是聚合端点，单把 OPENCODE_API_KEY。
-# 2026-06-12 实测 /models 共 18 款，逐个打 /chat/completions：17 款通；qwen3.7-max
-# 报 "not supported for format oa-compat"（不走 OpenAI 兼容格式），不收录。
-# 名字统一加 oc- 前缀以区分直连 DeepSeek。聚合端透传 extra_body 行为未验证，先不开 thinking。
+# 2026-06-24 实测 /models 共 20 款：qwen3.7-max 复测仍报 "not supported for format
+# oa-compat"（只对接 anthropic 通道、不走 OpenAI 兼容格式），不收录；mimo-v2-pro /
+# mimo-v2-omni 为新增，小米已不维护 mimo-v2 系列、迟早下架，不收录（未实测连通性）。
+# 其余 17 款入池。名字统一加 oc- 前缀以区分直连 DeepSeek；聚合端透传 extra_body 行为
+# 未验证，先不开 thinking。kimi-k2.7-code 是思考模型（自带 reasoning_content）且 provider
+# 强制 temperature=1，故单独设 1.0，其余 oc- 款沿用 0.7。
 models:
   # - name: deepseek-v4-flash
   #   base_url: https://api.deepseek.com
@@ -63,6 +66,14 @@ models:
     avatar: minimax
     display: MiniMax M2.5
 
+  - name: oc-kimi-k2.7-code
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: kimi-k2.7-code
+    api_key_env: OPENCODE_API_KEY
+    temperature: 1.0
+    avatar: kimi
+    display: Kimi K2.7 Code
+
   - name: oc-kimi-k2.6
     base_url: https://opencode.ai/zen/go/v1
     model_id: kimi-k2.6
@@ -78,6 +89,14 @@ models:
     temperature: 0.7
     avatar: kimi
     display: Kimi K2.5
+
+  - name: oc-glm-5.2
+    base_url: https://opencode.ai/zen/go/v1
+    model_id: glm-5.2
+    api_key_env: OPENCODE_API_KEY
+    temperature: 0.7
+    avatar: zhipu
+    display: GLM-5.2
 
   - name: oc-glm-5.1
     base_url: https://opencode.ai/zen/go/v1
