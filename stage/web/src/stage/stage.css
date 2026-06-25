@@ -39,7 +39,6 @@
 .hud-right { justify-self: end; }
 
 .brand { font: 900 40px/54px var(--f-display); letter-spacing: .04em; color: var(--c-gold); text-shadow: var(--ts-strong); white-space: nowrap; }
-.crest { color: var(--c-gold-deep); }
 
 .mission-track { display: flex; align-items: center; gap: 20px; }
 .track-score { font: 900 46px/54px var(--f-display); text-shadow: var(--ts-strong); }

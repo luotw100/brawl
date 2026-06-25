@@ -121,7 +121,7 @@ function TopHud({ scene }: { scene: Scene }) {
   return (
     <div className="hud">
       <div className="hud-left">
-        <div className="brand"><span className="crest">⚜</span> 赛博物种观察日记</div>
+        <div className="brand">赛博物种观察日记</div>
       </div>
       <div className="hud-center">
         <div className="mission-track">

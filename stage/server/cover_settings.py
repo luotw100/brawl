@@ -1,0 +1,199 @@
+"""CoverSettings：`stage-cover` 的参数面。
+
+生成封面只消费发布资源目录里的 `title.txt` 和 stage 当前背景图，固定产出三种比例：
+
+```
+<replay>/covers/4-3.png
+<replay>/covers/3-4.png
+<replay>/covers/16-9.png
+```
+
+边界一次性查清：目录、标题两行、背景图、字体、输出覆盖策略；绘制函数拿到的是已解析好的
+CoverJob 列表，不再猜路径、不再挑字体。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import ClassVar, Literal
+
+from pydantic import PrivateAttr, model_validator
+from pydantic_settings import (
+    BaseSettings,
+    CliPositionalArg,
+    CliSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+_STAGE_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_BACKGROUND = _STAGE_ROOT / "web" / "public" / "scene.png"
+
+StyleChoice = Literal["serif-gold", "sans-frame", "bold-ribbon"]
+
+
+@dataclass(frozen=True)
+class CoverSize:
+    slug: str
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class CoverJob:
+    size: CoverSize
+    path: Path
+
+
+COVER_SIZES = (
+    CoverSize("4-3", 1600, 1200),
+    CoverSize("3-4", 1200, 1600),
+    CoverSize("16-9", 1920, 1080),
+)
+
+STYLE_FONTS: dict[StyleChoice, tuple[Path, ...]] = {
+    "serif-gold": (
+        Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        Path("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
+    ),
+    "sans-frame": (
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        Path("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
+        Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"),
+    ),
+    "bold-ribbon": (
+        Path("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"),
+    ),
+}
+AVATAR_EXTS = (".png", ".webp", ".jpg", ".jpeg")
+
+
+class CoverSettings(BaseSettings):
+    """`stage-cover <replay_dir>`：把 `title.txt` 烧进 stage 背景图生成三张封面。"""
+
+    model_config = SettingsConfigDict(
+        env_prefix="BRAWL_STAGE_COVER_",
+        cli_kebab_case=True,
+        cli_implicit_flags=True,
+        extra="forbid",
+    )
+
+    _cli_args: ClassVar[list[str] | None] = None
+
+    dir: CliPositionalArg[Path]  # 发布资源 / replay 目录（含 title.txt）
+    output_dir: Path | None = None  # 输出目录；默认 <dir>/covers
+    background: Path = DEFAULT_BACKGROUND  # stage 当前背景图
+    style: StyleChoice = "serif-gold"  # 最终选定方案后固定默认值
+    force: bool = False  # 覆盖已存在输出
+
+    _line1: str = PrivateAttr("")
+    _line2: str = PrivateAttr("")
+    _font: Path = PrivateAttr(default_factory=Path)
+    _avatars: tuple[Path, ...] = PrivateAttr(default_factory=tuple)
+    _jobs: tuple[CoverJob, ...] = PrivateAttr(default_factory=tuple)
+
+    @model_validator(mode="after")
+    def _check(self) -> CoverSettings:
+        if not self.dir.is_dir():
+            raise ValueError(f"资源目录不存在：{self.dir}")
+        title = self.dir / "title.txt"
+        if not title.is_file():
+            raise ValueError(f"缺 title.txt：{title}")
+        lines = [line.strip() for line in title.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if len(lines) != 2:
+            raise ValueError(f"title.txt 必须正好两行非空文本，当前 {len(lines)} 行：{title}")
+        if not self.background.is_file():
+            raise ValueError(f"背景图不存在：{self.background}")
+        font = _resolve_font(self.style)
+        avatars = _resolve_avatars(self.dir)
+        jobs = tuple(CoverJob(size=size, path=self.cover_dir / f"{size.slug}.png") for size in COVER_SIZES)
+        existing = [job.path for job in jobs if job.path.exists()]
+        if existing and not self.force:
+            names = ", ".join(str(path) for path in existing)
+            raise ValueError(f"封面已存在：{names}（加 --force 覆盖）")
+        self._line1, self._line2 = lines
+        self._font = font
+        self._avatars = avatars
+        self._jobs = jobs
+        return self
+
+    @property
+    def line1(self) -> str:
+        return self._line1
+
+    @property
+    def line2(self) -> str:
+        return self._line2
+
+    @property
+    def font(self) -> Path:
+        return self._font
+
+    @property
+    def avatars(self) -> tuple[Path, ...]:
+        return self._avatars
+
+    @property
+    def cover_dir(self) -> Path:
+        return self.output_dir if self.output_dir is not None else self.dir / "covers"
+
+    @property
+    def jobs(self) -> tuple[CoverJob, ...]:
+        return self._jobs
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            CliSettingsSource(
+                settings_cls,
+                cli_parse_args=cls._cli_args if cls._cli_args is not None else [],
+                cli_prog_name="stage-cover",
+            ),
+            env_settings,
+        )
+
+    @classmethod
+    def load(cls, cli_args: list[str]) -> CoverSettings:
+        cls._cli_args = cli_args
+        try:
+            return cls()
+        finally:
+            cls._cli_args = None
+
+
+def _resolve_font(style: StyleChoice) -> Path:
+    for path in STYLE_FONTS[style]:
+        if path.is_file():
+            return path
+    raise ValueError(f"{style} 没有可用字体：{', '.join(str(path) for path in STYLE_FONTS[style])}")
+
+
+def _resolve_avatars(replay_dir: Path) -> tuple[Path, ...]:
+    avatars_dir = replay_dir / "avatars"
+    if not avatars_dir.is_dir():
+        raise ValueError(f"缺 avatars 目录：{avatars_dir}")
+    avatars = tuple(_resolve_avatar(avatars_dir, no) for no in range(1, 11))
+    missing = [str(path) for path in avatars if not path.is_file()]
+    if missing:
+        raise ValueError(f"缺 1-10 号头像：{', '.join(missing)}")
+    return avatars
+
+
+def _resolve_avatar(avatars_dir: Path, no: int) -> Path:
+    for ext in AVATAR_EXTS:
+        path = avatars_dir / f"{no}{ext}"
+        if path.is_file():
+            return path
+    return avatars_dir / f"{no}.png"

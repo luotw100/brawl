@@ -12,10 +12,12 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "playwright>=1.40",  # stage-record：无头 Chromium 录画面（浏览器二进制走 ~/.cache/ms-playwright）
     "rich>=13.7",  # stage-record：节拍进度 + 步骤渲染
+    "pillow>=10.0",  # stage-cover：把 title.txt 烧进封面图
 ]
 
 [project.scripts]
 stage-record = "server.record:main_cli"
+stage-cover = "server.cover:main_cli"
 
 [dependency-groups]
 dev = [

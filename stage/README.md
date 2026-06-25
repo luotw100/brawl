@@ -58,9 +58,13 @@ cd games && uv run brawl avalon-tts /path/to/replay
 
 # stage 项目：离线录制舞台画面，生成 video.mp4
 cd stage && uv run stage-record /path/to/replay
+
+# stage 项目：用 stage 背景图 + title.txt 生成封面，生成 covers/{4-3,3-4,16-9}.png
+cd stage && uv run stage-cover /path/to/replay
 ```
 
 `stage-record` 不再接收输出路径，固定写 `<replay_dir>/video.mp4`；文件已存在时会在开工前询问是否覆盖。
+`stage-cover` 默认读取 `<replay_dir>/title.txt` 的两行文案和 `<replay_dir>/avatars/1..10.{png,webp,jpg,jpeg}`，固定写 `<replay_dir>/covers/` 下三张比例图；文件已存在时加 `--force` 覆盖。
 
 ## 将来接礼物
 
