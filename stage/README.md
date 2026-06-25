@@ -55,8 +55,6 @@ OBS 跑在外面的电脑上（别在 N100 上编码推流），加"浏览器源
 # games 项目：公开台词配音，生成 tts/*.opus + tts/manifest.json
 cd games && uv run brawl avalon-tts /path/to/replay
 
-# games 项目：LLM 生成标题/简介/标签，生成 title.txt
-cd games && uv run brawl avalon-title /path/to/replay
 
 # stage 项目：离线录制舞台画面，生成 video.mp4
 cd stage && uv run stage-record /path/to/replay

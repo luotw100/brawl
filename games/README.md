@@ -17,7 +17,6 @@ uv run brawl undercover --player llm --players 6 --undercover 1
 # 阿瓦隆：生成 replay 后，可继续在同一目录内生成发布素材
 uv run brawl avalon --player random --players 10 --percival --morgana --mordred --oberon --lady --replay /tmp/avalon1
 uv run brawl avalon-tts /tmp/avalon1
-uv run brawl avalon-title /tmp/avalon1
 ```
 
 ## 测试

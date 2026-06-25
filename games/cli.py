@@ -14,10 +14,8 @@ from pydantic import ValidationError
 
 from avalon import replay as avalon_replay
 from avalon import run as avalon_run
-from avalon import title as avalon_title
 from avalon import tts as avalon_tts
 from avalon.settings import SettingsError as AvalonSettingsError
-from avalon.title import SettingsError as AvalonTitleError
 from avalon.tts import SettingsError as AvalonTtsError
 from llmview import show as llm_view
 from llmview.show import ViewError
@@ -32,7 +30,6 @@ GAMES: dict[str, Callable[[list[str]], None]] = {
     "avalon": avalon_run.main,
     "avalon-replay": avalon_replay.main,  # 回放一局 replay 快照（非生成，纯消费 events.jsonl）
     "avalon-tts": avalon_tts.main,  # 把一局公开发言合成音频，落 replay/tts/（柔性续合）
-    "avalon-title": avalon_title.main,  # 用 LLM 总结一局发布标题/简介/标签，落 replay/title.txt
     "voice-forge": voice_forge.main,  # 音色铸造：嗓音描述 → 阿里云 voice_id + 试听 wav（跨玩法）
     "chat-view": llm_view.main,  # 把 llm_calls.jsonl 第 N 行渲染成聊天记录（跨玩法）
 }
@@ -55,7 +52,7 @@ def main() -> int:
         return 2
     try:
         handler(rest)
-    except (UndercoverSettingsError, AvalonSettingsError, AvalonTtsError, AvalonTitleError, VoicelabSettingsError, ViewError, ValidationError) as e:
+    except (UndercoverSettingsError, AvalonSettingsError, AvalonTtsError, VoicelabSettingsError, ViewError, ValidationError) as e:
         # 用户配置错误(坏的 --config、字段校验失败):只打印消息,不甩 traceback。
         print(f"配置错误: {e}", file=sys.stderr)
         return 1
