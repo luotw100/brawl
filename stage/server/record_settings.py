@@ -4,8 +4,8 @@
 新旋钮只在基类加一次、两侧自动都有，不再两套配置手抄同步（见 settings.py 的 EngineKnobs）。
 
 边界纪律：所有"合不合法"的校验在这里一次查清（replay 目录是真目录且含 events.jsonl、
-fps/画布尺寸正；旋钮范围归 EngineKnobs），并把可省字段（out）的默认在此解析成确定值，
-下游（record.py）拿到的 settings 默认已合法、字段已就绪，零校验分叉。
+fps/画布尺寸正；旋钮范围归 EngineKnobs）。下游（record.py）拿到的 settings 默认已合法，
+字段已就绪，零校验分叉。
 
 前端构建产物不在这里配：每次录制都现构建到临时目录（见 record.py 的 _build_web），
 所以没有 --web-dist，也永远录不到旧 web——构建即新鲜，零地雷。
@@ -45,7 +45,6 @@ class RecordSettings(EngineKnobs):
     _cli_args: ClassVar[list[str] | None] = None
 
     dir: CliPositionalArg[Path]  # replay 目录（含 events.jsonl + tts/）
-    out: Path | None = None  # 输出 mp4；缺省落 <当前目录>/<replay 名>.mp4（在 _check 里解析）
     pace: float = 1.0  # 覆写 EngineKnobs 默认：录像跑足从容直播节奏（直播默认 0.5）
     width: int = 1920  # 录制画布宽：默认 16:9 横屏（舞台 layout 本就是横屏）；直播画面形状由 OBS/浏览器侧决定，不在此
     height: int = 1080  # 录制画布高
@@ -73,10 +72,12 @@ class RecordSettings(EngineKnobs):
             raise ValueError(f"replay 目录不存在：{self.dir}")
         if not (self.dir / "events.jsonl").is_file():
             raise ValueError(f"{self.dir} 不是 replay 目录（缺 events.jsonl）")
-        # 解析可省字段的默认值：校验只查不改，填默认是另一回事，这里一次性补齐给下游确定值
-        if self.out is None:
-            self.out = Path.cwd() / f"{self.dir.name}.mp4"
         return self
+
+    @property
+    def video_path(self) -> Path:
+        """发布资源包约定：视频永远生成在 replay 目录里的固定文件名。"""
+        return self.dir / "video.mp4"
 
     @classmethod
     def settings_customise_sources(

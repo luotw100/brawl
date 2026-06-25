@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from server.bgm import BGM_VOLUME
 from server.record import (
     Beat,
@@ -14,11 +16,30 @@ from server.record import (
     ffmpeg_capture_cmd,
     ffmpeg_mux_cmd,
 )
-from server.record_settings import RENDER_DEVICE
+from server.record_settings import RENDER_DEVICE, RecordSettings
 from server.sfx import SFX_VOLUME
 
 ROOT = Path("/replays-root")
 SFX = Path("/sfx-root")
+
+
+def test_record_settings_video_path_is_inside_replay_dir(tmp_path):
+    replay = tmp_path / "game1"
+    replay.mkdir()
+    (replay / "events.jsonl").write_text("", encoding="utf-8")
+
+    settings = RecordSettings.load([str(replay)])
+
+    assert settings.video_path == replay / "video.mp4"
+
+
+def test_record_settings_rejects_out_cli(tmp_path):
+    replay = tmp_path / "game1"
+    replay.mkdir()
+    (replay / "events.jsonl").write_text("", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        RecordSettings.load([str(replay), "--out", str(tmp_path / "x.mp4")])
 
 
 def test_audio_segments_offsets_relative_to_origin():

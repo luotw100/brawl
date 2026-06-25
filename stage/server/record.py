@@ -32,6 +32,8 @@ import uvicorn
 from playwright.async_api import async_playwright
 from pydantic import ValidationError
 from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm
 
 from server.app import create_app
 from server.protocol import (
@@ -159,9 +161,11 @@ def _atempo_chain(speed: float) -> str:
     factors: list[float] = []
     s = speed
     while s > 2.0:
-        factors.append(2.0); s /= 2.0
+        factors.append(2.0)
+        s /= 2.0
     while s < 0.5:
-        factors.append(0.5); s *= 2.0
+        factors.append(0.5)
+        s *= 2.0
     factors.append(s)
     return "".join(f"atempo={f:g}," for f in factors)
 
@@ -237,9 +241,13 @@ def ffmpeg_mux_cmd(video: Path, audio: Path | None, bgm: Path | None, out: Path)
     voice_idx = bgm_idx = None
     idx = 1
     if audio is not None:
-        voice_idx = idx; cmd += ["-i", str(audio)]; idx += 1
+        voice_idx = idx
+        cmd += ["-i", str(audio)]
+        idx += 1
     if bgm is not None:
-        bgm_idx = idx; cmd += ["-stream_loop", "-1", "-i", str(bgm)]; idx += 1
+        bgm_idx = idx
+        cmd += ["-stream_loop", "-1", "-i", str(bgm)]
+        idx += 1
 
     cmd += ["-map", "0:v:0", "-c:v", "copy"]
 
@@ -465,11 +473,28 @@ def _build_bgm(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> Path |
     return bed
 
 
+def _confirm_overwrite(settings: RecordSettings, console: Console) -> bool:
+    """录制入口的人机边界：video.mp4 已存在时，开工前明确询问是否覆盖。"""
+    video = settings.video_path
+    if not video.exists():
+        return True
+    size_mb = video.stat().st_size / 1e6
+    console.print(Panel.fit(
+        f"[bold yellow]{video.name} 已存在[/bold yellow]\n\n"
+        f"[dim]{video}[/dim]\n"
+        f"当前大小：[cyan]{size_mb:.1f} MB[/cyan]\n\n"
+        "继续录制会覆盖这个文件。",
+        title="确认覆盖",
+        border_style="yellow",
+    ))
+    return Confirm.ask("要覆盖并重新生成视频吗？", default=False, console=console)
+
+
 async def _record(settings: RecordSettings) -> None:
     limit = f" · 上限 {settings.limit_seconds:g}s" if settings.limit_seconds else ""
     _console.rule(f"[bold]录制 {settings.dir.name}[/bold]")
     speed = f" · speed {settings.speed:g}×" if settings.speed != 1.0 else ""
-    _console.print(f"[dim]→ {settings.out} · {settings.width}×{settings.height} · 编码 {settings.encoder} · pace {settings.pace:g}{speed}{limit}[/dim]")
+    _console.print(f"[dim]→ {settings.video_path} · {settings.width}×{settings.height} · 编码 {settings.encoder} · pace {settings.pace:g}{speed}{limit}[/dim]")
     with tempfile.TemporaryDirectory(prefix="stage-record-") as tmp:
         tmpdir = Path(tmp)
         web_dist = _build_web(tmpdir)  # 每局现构建前端，永远录最新（无 --web-dist、无旧 dist 地雷）
@@ -480,9 +505,9 @@ async def _record(settings: RecordSettings) -> None:
             audio = tmpdir / "audio.m4a"
             _run(ffmpeg_audio_cmd(segs, audio, settings.speed), f"拼接音轨（{len(segs)} 段语音/音效）…")
         bgm = _build_bgm(settings, web_dist, tmpdir)
-        _run(ffmpeg_mux_cmd(video, audio, bgm, settings.out), "封装视频（视频流拷贝 + 音轨）…")
-    size_mb = settings.out.stat().st_size / 1e6
-    _console.print(f"[bold green]✓ 已生成[/bold green] {settings.out} [dim]({size_mb:.1f} MB)[/dim]")
+        _run(ffmpeg_mux_cmd(video, audio, bgm, settings.video_path), "封装视频（视频流拷贝 + 音轨）…")
+    size_mb = settings.video_path.stat().st_size / 1e6
+    _console.print(f"[bold green]✓ 已生成[/bold green] {settings.video_path} [dim]({size_mb:.1f} MB)[/dim]")
 
 
 def main(argv: list[str]) -> int:
@@ -494,6 +519,9 @@ def main(argv: list[str]) -> int:
     except ValidationError as e:
         msg = "；".join(err["msg"].removeprefix("Value error, ") for err in e.errors())
         _console.print(f"[red]配置错误:[/red] {msg}")
+        return 1
+    if not _confirm_overwrite(settings, _console):
+        _console.print("[yellow]已取消录制，原视频保留。[/yellow]")
         return 1
     asyncio.run(_record(settings))
     return 0

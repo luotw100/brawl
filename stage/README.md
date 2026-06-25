@@ -47,8 +47,23 @@ wangzonghao 共用中继；443 已被它占用，本栈走 `FRP_REMOTE_PORT` 如
 OBS 跑在外面的电脑上（别在 N100 上编码推流），加"浏览器源"指向 stage URL，
 画布 1080×1920。声音勾"通过 OBS 控制音频"。
 
-## 将来接 TTS / 礼物
+## 发布资源包
 
-- TTS：replay 目录下放 `audio/<call_id>.mp3`，发言指令自动带 `audio_url`，
-  文字与音频各播各的（文字保证先打完，见 engine 的 duration 折算）。
+一局 replay 目录同时也是发布资源目录。各消费端都以同一个目录为输入，并把派生产物写回目录内：
+
+```bash
+# games 项目：公开台词配音，生成 tts/*.opus + tts/manifest.json
+cd games && uv run brawl avalon-tts /path/to/replay
+
+# games 项目：LLM 生成标题/简介/标签，生成 title.txt
+cd games && uv run brawl avalon-title /path/to/replay
+
+# stage 项目：离线录制舞台画面，生成 video.mp4
+cd stage && uv run stage-record /path/to/replay
+```
+
+`stage-record` 不再接收输出路径，固定写 `<replay_dir>/video.mp4`；文件已存在时会在开工前询问是否覆盖。
+
+## 将来接礼物
+
 - 礼物/平台对接：写一个自动调 `POST /api/overlays` 的 worker 即可，overlay 抽象不动。

@@ -1,6 +1,6 @@
 # brawl-games
 
-AI 直播对战的纯游戏逻辑层。一个文件夹一个玩法，各自自包含、互不 import。当前实现：谁是卧底。
+AI 直播对战的纯游戏逻辑层。一个文件夹一个玩法，各自自包含、互不 import。当前实现：谁是卧底、阿瓦隆。
 
 ## 跑一局
 
@@ -11,8 +11,13 @@ uv run brawl undercover --player random
 # 把这局冻成 replay 快照（目录须不存在）
 uv run brawl undercover --player random --replay /tmp/game1
 
-# 真模型在玩（先把 key 填进 games/.env，默认只需 DEEPSEEK_API_KEY；模型池见 undercover/data/models.yaml）
+# 真模型在玩（先把 key 填进 games/.env；模型池见各玩法 data/models.yaml）
 uv run brawl undercover --player llm --players 6 --undercover 1
+
+# 阿瓦隆：生成 replay 后，可继续在同一目录内生成发布素材
+uv run brawl avalon --player random --players 10 --percival --morgana --mordred --oberon --lady --replay /tmp/avalon1
+uv run brawl avalon-tts /tmp/avalon1
+uv run brawl avalon-title /tmp/avalon1
 ```
 
 ## 测试
