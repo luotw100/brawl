@@ -8,8 +8,8 @@
 <replay>/covers/16-9.png
 ```
 
-边界一次性查清：目录、标题两行、背景图、字体、输出覆盖策略；绘制函数拿到的是已解析好的
-CoverJob 列表，不再猜路径、不再挑字体。
+边界一次性查清：目录、标题两行、期号、背景图、字体、输出覆盖策略；绘制函数拿到的是已解析好的
+CoverJob 列表和节目期数文案，不再猜路径、不再挑字体。
 """
 
 from __future__ import annotations
@@ -88,10 +88,13 @@ class CoverSettings(BaseSettings):
     output_dir: Path | None = None  # 输出目录；默认 <dir>/covers
     background: Path = DEFAULT_BACKGROUND  # stage 当前背景图
     style: StyleChoice = "serif-gold"  # 最终选定方案后固定默认值
+    episode: str = "001"  # 节目期号；只填中间内容，封面显示为 AI 阿瓦隆{episode}期
+    episod: str = ""  # 兼容 --episod 拼写；同样只填中间内容
     force: bool = False  # 覆盖已存在输出
 
     _line1: str = PrivateAttr("")
     _line2: str = PrivateAttr("")
+    _episode_text: str = PrivateAttr("")
     _font: Path = PrivateAttr(default_factory=Path)
     _avatars: tuple[Path, ...] = PrivateAttr(default_factory=tuple)
     _jobs: tuple[CoverJob, ...] = PrivateAttr(default_factory=tuple)
@@ -116,6 +119,7 @@ class CoverSettings(BaseSettings):
             names = ", ".join(str(path) for path in existing)
             raise ValueError(f"封面已存在：{names}（加 --force 覆盖）")
         self._line1, self._line2 = lines
+        self._episode_text = f"AI 阿瓦隆{self.episod or self.episode}期"
         self._font = font
         self._avatars = avatars
         self._jobs = jobs
@@ -128,6 +132,10 @@ class CoverSettings(BaseSettings):
     @property
     def line2(self) -> str:
         return self._line2
+
+    @property
+    def episode_text(self) -> str:
+        return self._episode_text
 
     @property
     def font(self) -> Path:

@@ -35,9 +35,26 @@ def test_cover_settings_defaults_to_three_cover_pngs(tmp_path):
     ]
     assert settings.line1 == "梅林全程装死"
     assert settings.line2 == "刺客一刀砍偏"
+    assert settings.episode_text == "AI 阿瓦隆001期"
     assert settings.background.name == "scene.png"
     assert settings.font.is_file()
     assert len(settings.avatars) == 10
+
+
+def test_cover_settings_fills_episode_number_into_label(tmp_path):
+    replay = _write_resource_dir(tmp_path)
+
+    settings = CoverSettings.load([str(replay), "--episode", "005"])
+
+    assert settings.episode_text == "AI 阿瓦隆005期"
+
+
+def test_cover_settings_accepts_episod_spelling(tmp_path):
+    replay = _write_resource_dir(tmp_path)
+
+    settings = CoverSettings.load([str(replay), "--episod", "第五局观察"])
+
+    assert settings.episode_text == "AI 阿瓦隆第五局观察期"
 
 
 def test_cover_settings_rejects_bad_title_lines(tmp_path):
@@ -59,7 +76,7 @@ def test_cover_settings_rejects_existing_output_without_force(tmp_path):
 def test_render_covers_writes_three_images_with_title_pixels(tmp_path):
     replay = _write_resource_dir(tmp_path)
     out = tmp_path / "covers"
-    settings = CoverSettings.load([str(replay), "--output-dir", str(out)])
+    settings = CoverSettings.load([str(replay), "--output-dir", str(out), "--episode", "005"])
 
     paths = render_covers(settings)
 

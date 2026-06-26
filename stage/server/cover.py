@@ -19,24 +19,38 @@ GOLD = (242, 204, 112, 225)
 GOLD_DEEP = (214, 173, 87, 230)
 DARK = (12, 8, 3, 225)
 BRAND = "赛博物种观察日记"
-GAME_LABEL = "AI阿瓦隆"
 _console = Console()
 
 
 @dataclass(frozen=True)
 class CoverTheme:
-    title_width: float
-    anchor_y: float
-    font_scale: float
     gap_scale: float
     stroke_scale: float
     decorate: Callable[[Image.Image], None]
 
 
+@dataclass(frozen=True)
+class CoverLayout:
+    brand_font_scale: float
+    title_width: float
+    title_anchor_y: float
+    title_font_scale: float
+    episode_width: float
+    episode_anchor_y: float
+    episode_font_scale: float
+    episode_stroke_scale: float
+
+
 THEMES: dict[str, CoverTheme] = {
-    "serif-gold": CoverTheme(0.72, 0.56, 0.115, 0.18, 0.055, lambda canvas: None),
-    "sans-frame": CoverTheme(0.84, 0.57, 0.15, 0.20, 0.050, lambda canvas: _decorate_frame(canvas)),
-    "bold-ribbon": CoverTheme(0.90, 0.58, 0.16, 0.14, 0.060, lambda canvas: _decorate_ribbon(canvas)),
+    "serif-gold": CoverTheme(0.18, 0.055, lambda canvas: None),
+    "sans-frame": CoverTheme(0.20, 0.050, lambda canvas: _decorate_frame(canvas)),
+    "bold-ribbon": CoverTheme(0.14, 0.060, lambda canvas: _decorate_ribbon(canvas)),
+}
+
+LAYOUTS: dict[str, CoverLayout] = {
+    "3-4": CoverLayout(0.068, 0.76, 0.39, 0.096, 0.74, 0.785, 0.081, 0.088),
+    "4-3": CoverLayout(0.045, 0.68, 0.42, 0.108, 0.58, 0.815, 0.068, 0.080),
+    "16-9": CoverLayout(0.040, 0.60, 0.46, 0.118, 0.48, 0.825, 0.064, 0.080),
 }
 
 
@@ -45,9 +59,11 @@ def render_covers(settings: CoverSettings) -> list[Path]:
     for job in settings.jobs:
         canvas = _cover_background(settings.background, job.size.width, job.size.height)
         theme = THEMES[settings.style]
+        layout = LAYOUTS[job.size.slug]
         theme.decorate(canvas)
-        _draw_corner_labels(canvas, settings.font)
-        _draw_title_and_avatars(canvas, settings.line1, settings.line2, settings.font, settings.avatars, theme)
+        _draw_brand_label(canvas, settings.font, layout)
+        _draw_title_and_avatars(canvas, settings.line1, settings.line2, settings.font, settings.avatars, theme, layout)
+        _draw_episode_label(canvas, settings.episode_text, settings.font, theme, layout)
         job.path.parent.mkdir(parents=True, exist_ok=True)
         canvas.save(job.path)
         paths.append(job.path)
@@ -90,7 +106,7 @@ def _decorate_frame(canvas: Image.Image) -> None:
     panel = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     pdraw = ImageDraw.Draw(panel, "RGBA")
     pdraw.rounded_rectangle(
-        (round(w * 0.08), round(h * 0.38), round(w * 0.92), round(h * 0.72)),
+        (round(w * 0.08), round(h * 0.24), round(w * 0.92), round(h * 0.86)),
         radius=round(min(w, h) * 0.025),
         fill=(8, 6, 3, 82),
         outline=(244, 208, 125, 95),
@@ -102,8 +118,8 @@ def _decorate_frame(canvas: Image.Image) -> None:
 def _decorate_ribbon(canvas: Image.Image) -> None:
     draw = ImageDraw.Draw(canvas, "RGBA")
     w, h = canvas.size
-    top = round(h * 0.42)
-    bottom = round(h * 0.72)
+    top = round(h * 0.26)
+    bottom = round(h * 0.84)
     slant = round(w * 0.045)
     draw.polygon(
         ((0, top + slant), (w, top), (w, bottom - slant), (0, bottom)),
@@ -113,23 +129,27 @@ def _decorate_ribbon(canvas: Image.Image) -> None:
     draw.line((0, bottom, w, bottom - slant), fill=(244, 208, 125, 130), width=max(3, h // 300))
 
 
-def _draw_corner_labels(canvas: Image.Image, font_path: Path) -> None:
+def _draw_brand_label(canvas: Image.Image, font_path: Path, layout: CoverLayout) -> None:
     draw = ImageDraw.Draw(canvas)
     w, h = canvas.size
-    font = ImageFont.truetype(str(font_path), size=round(min(w * 0.034, h * 0.060)))
+    font = ImageFont.truetype(str(font_path), size=round(min(w * layout.brand_font_scale, h * 0.060)))
     margin_x = round(w * 0.025)
     margin_y = round(h * 0.030)
-    _draw_small_text(draw, (margin_x, margin_y), BRAND, font)
-    box = draw.textbbox((0, 0), GAME_LABEL, font=font, stroke_width=_small_stroke(font))
-    _draw_small_text(draw, (w - margin_x - (box[2] - box[0]), margin_y), GAME_LABEL, font)
+    _draw_small_text(draw, (margin_x, margin_y), BRAND, font, WHITE)
 
 
-def _draw_small_text(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font: ImageFont.FreeTypeFont) -> None:
+def _draw_small_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    color: tuple[int, int, int, int],
+) -> None:
     stroke = _small_stroke(font)
     x, y = xy
     offset = max(3, round(font.size * 0.07))
     draw.text((x + offset, y + offset), text, font=font, fill=(0, 0, 0, 150), stroke_width=stroke, stroke_fill=DARK)
-    draw.text((x, y), text, font=font, fill=GOLD, stroke_width=stroke, stroke_fill=DARK)
+    draw.text((x, y), text, font=font, fill=color, stroke_width=stroke, stroke_fill=DARK)
 
 
 def _small_stroke(font: ImageFont.FreeTypeFont) -> int:
@@ -143,10 +163,11 @@ def _draw_title_and_avatars(
     font_path: Path,
     avatars: tuple[Path, ...],
     theme: CoverTheme,
+    layout: CoverLayout,
 ) -> None:
     draw = ImageDraw.Draw(canvas)
-    max_width = int(canvas.width * theme.title_width)
-    font = _fit_font(draw, font_path, (line1, line2), max_width, canvas.height, theme)
+    max_width = int(canvas.width * layout.title_width)
+    font = _fit_font(draw, font_path, (line1, line2), max_width, canvas.height, theme, layout.title_font_scale)
     stroke = _stroke_width(font, theme)
     gap = round(font.size * theme.gap_scale)
     title_width = _title_width(draw, (line1, line2), font, stroke)
@@ -155,12 +176,37 @@ def _draw_title_and_avatars(
         (line2, YELLOW),
     ))
     total_height = line_images[0].height + gap + line_images[1].height
-    title_top = round(canvas.height * theme.anchor_y - total_height / 2)
+    title_top = round(canvas.height * layout.title_anchor_y - total_height / 2)
     _draw_avatar_rows(canvas, avatars, title_top, title_top + total_height, title_width)
     y = title_top
     for image in line_images:
         canvas.alpha_composite(image, (round((canvas.width - title_width) / 2), y))
         y += image.height + gap
+
+
+def _draw_episode_label(
+    canvas: Image.Image,
+    label: str,
+    font_path: Path,
+    theme: CoverTheme,
+    layout: CoverLayout,
+) -> None:
+    draw = ImageDraw.Draw(canvas)
+    max_width = round(canvas.width * layout.episode_width)
+    font = _fit_text_font(
+        draw,
+        font_path,
+        label,
+        max_width,
+        round(canvas.height * layout.episode_font_scale),
+        layout.episode_stroke_scale,
+    )
+    stroke = max(3, round(font.size * layout.episode_stroke_scale))
+    label_width = min(max_width, _tracked_natural_width(draw, label, font, stroke))
+    image = _text_image(label, font, GOLD, stroke, label_width)
+    x = round((canvas.width - image.width) / 2)
+    y = round(canvas.height * layout.episode_anchor_y - image.height / 2)
+    canvas.alpha_composite(image, (x, y))
 
 
 def _title_width(
@@ -253,14 +299,34 @@ def _fit_font(
     max_width: int,
     canvas_height: int,
     theme: CoverTheme,
+    font_scale: float,
 ) -> ImageFont.FreeTypeFont:
-    size = round(canvas_height * theme.font_scale)
+    size = round(canvas_height * font_scale)
     min_size = 24
     while size > min_size:
         font = ImageFont.truetype(str(font_path), size=size)
         stroke = _stroke_width(font, theme)
         widest = max(_tracked_natural_width(draw, line, font, stroke) for line in lines)
         if widest <= max_width:
+            return font
+        size -= 4
+    return ImageFont.truetype(str(font_path), size=min_size)
+
+
+def _fit_text_font(
+    draw: ImageDraw.ImageDraw,
+    font_path: Path,
+    text: str,
+    max_width: int,
+    start_size: int,
+    stroke_scale: float,
+) -> ImageFont.FreeTypeFont:
+    size = start_size
+    min_size = 20
+    while size > min_size:
+        font = ImageFont.truetype(str(font_path), size=size)
+        stroke = max(3, round(font.size * stroke_scale))
+        if _tracked_natural_width(draw, text, font, stroke) <= max_width:
             return font
         size -= 4
     return ImageFont.truetype(str(font_path), size=min_size)
