@@ -137,7 +137,9 @@ function TopHud({ scene }: { scene: Scene }) {
         </div>
         <Carousel scene={scene} />
       </div>
-      <div className="hud-right" />
+      <div className="hud-right">
+        <div className="show-badge">AI阿瓦隆</div>
+      </div>
     </div>
   );
 }
@@ -487,7 +489,7 @@ function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, lady
             {tag}{seat ? <> · <StageIcon name={roleIconName(seat.role)} size={18} /> {roleLabel(seat.role)}</> : ""}
           </div>
         </div>
-        {/* 内心戏：头像右侧那块区域，纯排版（💭+斜体灰字）体现"脑子里的话"，不加框/底。 */}
+        {/* 内心戏：给观众看的隐藏信息，保留低声部气质但优先保证直播压缩后的可读性。 */}
         {monologue && (
           <div className="spot-think" key={item.seq}>
             <span className="think-mark">💭</span>
