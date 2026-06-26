@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from server.engine import Engine
+from server.engine import Engine, PlaybackGate
 from server.hub import Hub
 from server.overlay import OverlayBoard
 from server.protocol import OverlayItem, StateMsg
@@ -45,7 +45,7 @@ class QueuePayload(BaseModel):
     queue: list[str]
 
 
-def create_app(settings: StageSettings) -> FastAPI:
+def create_app(settings: StageSettings, playback_gate: PlaybackGate | None = None) -> FastAPI:
     hub = Hub()
 
     def state_msg() -> StateMsg:
@@ -56,7 +56,7 @@ def create_app(settings: StageSettings) -> FastAPI:
     async def publish() -> None:
         await hub.broadcast(state_msg())
 
-    engine = Engine(settings, publish)
+    engine = Engine(settings, publish, playback_gate=playback_gate)
     overlays = OverlayBoard(publish)
 
     @asynccontextmanager

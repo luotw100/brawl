@@ -18,6 +18,7 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
+from typing import Protocol
 
 from server import scene as avalon
 from server.protocol import (
@@ -43,6 +44,19 @@ _TICK = 0.2  # 状态位轮询粒度：跳局/下一拍的最大响应延迟
 _AUDIO_MARGIN = 0.5  # 音频时长之外多留的气口（秒）：页面预热到位后只兜残余抖动，不再扛拉取延迟
 
 
+class PlaybackGate(Protocol):
+    async def first_frame_published(self, seq: int) -> float | None: ...
+    async def before_intermission(self) -> None: ...
+
+
+class NullPlaybackGate:
+    async def first_frame_published(self, seq: int) -> float | None:
+        return None
+
+    async def before_intermission(self) -> None:
+        pass
+
+
 def _upcoming_audio(beats: list[Directive], i: int, factor: int) -> list[str]:
     """从第 i 拍之后顺取最多 factor 条待播音频 URL（跳过无声拍），交给页面提前预热——
     起拍那一刻音频已在缓存里，currentTime 从 0 即时出声，尾巴不再被下一拍顶掉时截断。"""
@@ -57,9 +71,15 @@ def _upcoming_audio(beats: list[Directive], i: int, factor: int) -> list[str]:
 
 
 class Engine:
-    def __init__(self, settings: StageSettings, publish: Callable[[], Awaitable[None]]) -> None:
+    def __init__(
+        self,
+        settings: StageSettings,
+        publish: Callable[[], Awaitable[None]],
+        playback_gate: PlaybackGate | None = None,
+    ) -> None:
         self._root = settings.replay_root
         self._publish = publish
+        self._playback_gate = playback_gate or NullPlaybackGate()
         self.scene = Scene()
         self.queue: list[str] = []
         self.pace = settings.pace
@@ -178,12 +198,18 @@ class Engine:
             duration = self._duration(directive)
             self.prefetch = _upcoming_audio(beats, i, self._prefetch_factor)
             await self._emit(directive, duration)
+            if i == 0:
+                started_at = await self._playback_gate.first_frame_published(self._seq)
+                if started_at is not None:
+                    self.scene.feed[-1].started_at = started_at
+                    await self._publish()
             if not await self._dwell(duration):
                 break  # 导播台跳局
         self.prefetch = []
         return last
 
     async def _intermission(self, last: GameOver | None) -> None:
+        await self._playback_gate.before_intermission()
         self.phase = "intermission"
         self.replay_id = None
         directive = Intermission(

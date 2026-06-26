@@ -4,12 +4,12 @@
 进程内起 uvicorn 到 127.0.0.1:<随机口> → Xvfb 造一块虚拟屏（无需物理显示器，SSH 里照跑）→
 带头 Chromium kiosk 把 #/stage 真渲染进这块虚拟 framebuffer → **ffmpeg x11grab 实时抓裸帧、
 单趟硬编 HEVC（边播边编，编码藏进本就实时的播放里，无臃肿中间件、无"VP8→转码"的来回有损）**
-→ 先等本局真上屏、首帧画定才开抓（待机/幕间挡在窗口外），读终局拍的定格收尾时刻判定放完即停
-（赶在幕间下发渲染前收手，phase 离开 playing 兜底坏局）→ 收每拍时间线 → 把 replay 里的
+→ 浏览器首帧 paint 后才启动抓屏，ffmpeg 确认抓到首帧后释放播放时钟；收尾由 engine 在 emit 幕间前
+同步停抓（幕间被挡在录制窗口外）→ 收每拍时间线 → 把 replay 里的
 .opus 按拍偏移离线拼成音轨 → 与已编好的视频流 `-c:v copy` remux 成 mp4（瞬时）。
 
-音画对齐靠引擎的确定性 + 抓屏的挂钟 PTS：x11grab 的帧 PTS 以"开抓那一刻"为零点，引擎随后
-实时 sleep 出每拍，所以"按 started_at 减开抓时刻折算的音频偏移"与"画面里这拍实际出现的 PTS"
+音画对齐靠引擎的确定性 + 抓屏的挂钟 PTS：x11grab 的帧 PTS 以"开抓那一刻"为零点，首帧抓稳后
+引擎释放第一拍时间轴并实时 sleep 出每拍，所以"按 started_at 减开抓时刻折算的音频偏移"与"画面里这拍实际出现的 PTS"
 天然对齐（origin = 开抓时刻 = 视频零点）；残余的常数延迟用 --audio-shift 微调。
 """
 
@@ -23,10 +23,13 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TextIO
 
 import uvicorn
 from playwright.async_api import async_playwright
@@ -53,9 +56,6 @@ from server.bgm import BGM_PLAYLIST, BGM_VOLUME
 from server.record_settings import RENDER_DEVICE, RecordSettings
 from server.sfx import SFX_VOLUME, cues_for
 from server.settings import EngineKnobs, StageSettings
-
-_CAPTURE_WARMUP = 0.5  # 开抓后让 x11grab 真正挂上画面再进停录判定（此刻画面已是开局静帧，warmup 帧即开局、不黑、不挪 origin）
-_FIRST_FRAME_SETTLE = 0.4  # 等开局首帧渲染落定再开抓：把待机/幕间挡在录制窗口之外，开抓即开局
 
 _WEB_SRC = Path(__file__).resolve().parent.parent / "web"  # 前端源码目录（stage/web）：每次录制现构建
 
@@ -206,7 +206,7 @@ def ffmpeg_bgm_concat_cmd(tracks: list[Path], out: Path) -> list[str]:
 
 
 def ffmpeg_capture_cmd(
-    display: str, width: int, height: int, fps: int, encoder: str, out_video: Path
+    display: str, width: int, height: int, fps: int, encoder: str, out_video: Path, progress: bool = False
 ) -> list[str]:
     """x11grab 实时抓 Xvfb 那块虚拟屏的裸帧 → 单趟编码出视频（边播边编，无中间 webm、不二次压缩）。
 
@@ -223,6 +223,8 @@ def ffmpeg_capture_cmd(
                 "-c:v", "hevc_vaapi", "-rc_mode", "CQP", "-qp", "18", "-tag:v", "hvc1"]
     else:
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p"]
+    if progress:
+        cmd += ["-progress", "pipe:1"]
     cmd += [str(out_video)]
     return cmd
 
@@ -274,16 +276,25 @@ def _tap_engine(engine) -> Timeline:
     每拍都更新 last_beat_ends_at（GameOver 之后的复盘 etc. 一并计入），但停录判据是 phase
     离开 playing——拍间没有竞态。"""
     timeline = Timeline()
-    seen: set[int] = set()
+    by_seq: dict[int, Beat] = {}
     orig = engine._publish
 
     async def tap() -> None:
         feed = engine.scene.feed
-        if feed and feed[-1].seq not in seen:
+        if feed:
             fi = feed[-1]
-            seen.add(fi.seq)
             cues = cues_for(fi.directive, fi.duration)
-            timeline.beats.append(Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), cues))
+            if fi.seq in by_seq:
+                beat = by_seq[fi.seq]
+                beat.started_at = fi.started_at
+                beat.audio_url = getattr(fi.directive, "audio_url", None)
+                beat.cues = cues
+                timeline.last_beat_ends_at = fi.started_at + fi.duration
+                await orig()
+                return
+            beat = Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), cues)
+            by_seq[fi.seq] = beat
+            timeline.beats.append(beat)
             timeline.last_beat_ends_at = fi.started_at + fi.duration  # 逐拍更新（信息用，含 GameOver 之后的复盘等）
             elapsed = fi.started_at - timeline.beats[0].started_at  # 视频时间轴（以第一拍为零点）
             tag, color, detail = _beat_summary(fi.directive, engine.scene.seats)
@@ -317,12 +328,118 @@ def _free_display() -> int:
 
 def _stop_capture(proc: subprocess.Popen) -> None:
     """给 x11grab ffmpeg 发 SIGINT 优雅收尾（写完 moov、出完整可播 mp4）；逾时再硬杀兜底。"""
+    if proc.poll() is not None:
+        return
     proc.send_signal(signal.SIGINT)
     try:
         proc.wait(timeout=30)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+def _drain_capture_progress(pipe: TextIO, ready: asyncio.Future[None], loop: asyncio.AbstractEventLoop) -> None:
+    """读 ffmpeg -progress：frame>0 是抓屏进程已真实拿到画面的硬信号。"""
+    try:
+        for raw in pipe:
+            line = raw.strip()
+            if not line.startswith("frame="):
+                continue
+            try:
+                frame = int(line.partition("=")[2])
+            except ValueError:
+                continue
+            if frame > 0 and not ready.done():
+                loop.call_soon_threadsafe(ready.set_result, None)
+    finally:
+        if not ready.done():
+            loop.call_soon_threadsafe(ready.set_exception, RuntimeError("ffmpeg 抓屏未产出首帧"))
+
+
+class RecordPlaybackGate:
+    """录制专用门闩：页面首帧 paint 后启动抓屏；进入幕间前同步收屏。
+
+    live 路径用 Engine 的 NullPlaybackGate；录制路径把所有"何时开始/停止"的事实收到这里，
+    record 主流程只等这个门闩给出 capture.mp4 和视频零点。
+    """
+
+    def __init__(self, settings: RecordSettings, display: str, tmpdir: Path) -> None:
+        self._settings = settings
+        self._display = display
+        self._out = tmpdir / "capture.mp4"
+        self._loop = asyncio.get_running_loop()
+        self._page_painted: asyncio.Future[None] = self._loop.create_future()
+        self._capture_ready: asyncio.Future[None] = self._loop.create_future()
+        self._done: asyncio.Future[None] = self._loop.create_future()
+        self._lock = asyncio.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._progress_thread: threading.Thread | None = None
+        self.origin: float | None = None
+
+    def mark_first_frame_painted(self, seq: int) -> None:
+        if not self._page_painted.done():
+            self._page_painted.set_result(None)
+
+    async def first_frame_published(self, seq: int) -> float | None:
+        await asyncio.wait_for(self._page_painted, timeout=30)
+        await self._start_capture()
+        await asyncio.wait_for(self._capture_ready, timeout=30)
+        return time.time()
+
+    async def before_intermission(self) -> None:
+        await self.stop()
+
+    async def wait_done(self, timeout: float) -> None:
+        await asyncio.wait_for(self._done, timeout=timeout)
+
+    async def stop(self) -> None:
+        async with self._lock:
+            proc = self._proc
+            if proc is None:
+                if not self._done.done():
+                    self._done.set_exception(RuntimeError("录制尚未开始就收到停止信号"))
+                return
+            await asyncio.to_thread(_stop_capture, proc)
+            if not self._done.done():
+                self._done.set_result(None)
+
+    async def _start_capture(self) -> None:
+        async with self._lock:
+            if self._proc is not None:
+                return
+            self._proc = subprocess.Popen(
+                ffmpeg_capture_cmd(
+                    self._display,
+                    self._settings.width,
+                    self._settings.height,
+                    self._settings.fps,
+                    self._settings.encoder,
+                    self._out,
+                    progress=True,
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            self.origin = time.time()
+            assert self._proc.stdout is not None
+            self._progress_thread = threading.Thread(
+                target=_drain_capture_progress,
+                args=(self._proc.stdout, self._capture_ready, self._loop),
+                daemon=True,
+            )
+            self._progress_thread.start()
+            if self._settings.limit_seconds:
+                asyncio.create_task(self._stop_at_limit())
+
+    async def _stop_at_limit(self) -> None:
+        await asyncio.sleep(self._settings.limit_seconds)
+        await self.stop()
+
+    def result(self) -> tuple[float, Path]:
+        if self.origin is None:
+            raise RuntimeError("录制尚未开始")
+        return self.origin, self._out
 
 
 async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tuple[list[Beat], float, Path]:
@@ -338,10 +455,6 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
         loop_pool=False,  # 只放队列里这一局，放完即转幕间，绝不自动补别的局
         **{k: getattr(settings, k) for k in EngineKnobs.model_fields},
     )
-    app = create_app(stage_settings)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
-    server_task = asyncio.create_task(server.serve())
-
     # 显示源在边界一次定下：默认起一块 Xvfb 虚拟屏（无头服务器照跑）；--headed 复用现有 $DISPLAY
     # （带屏机本地调试）。下游统一拿一个 display 号；xvfb 进程为 None 即"无需收尾"的空对象。
     if settings.headed:
@@ -354,6 +467,11 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         display = str(dnum)
+
+    gate = RecordPlaybackGate(settings, display, tmpdir)
+    app = create_app(stage_settings, playback_gate=gate)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
+    server_task = asyncio.create_task(server.serve())
 
     try:
         await _wait(lambda: server.started, timeout=30, what="服务启动")
@@ -386,40 +504,21 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
                       "--mute-audio", "--autoplay-policy=no-user-gesture-required"],
             )
             page = context.pages[0] if context.pages else await context.new_page()
+            await page.expose_function("__brawlRecordFirstFramePainted", gate.mark_first_frame_painted)
             await page.goto(url)
 
-            # 先入队、等本局真上屏、首帧画定，再开抓——待机/幕间一帧都挡在录制窗口外。
+            # 先入队；播放门闩会等浏览器实际 paint 第一帧，再启动 ffmpeg，确认 ffmpeg 已抓到首帧后
+            # 才释放第一拍时间轴。待机/幕间不参与录制窗口，首帧边界不靠 sleep 猜。
             engine.queue = [replay_id]  # 入队这一局，主循环 1s 内拾起
-            await _wait(lambda: engine.phase == "playing", timeout=60, what="开局")
-            await asyncio.sleep(_FIRST_FRAME_SETTLE)  # 让开局首帧渲染落定，开抓即开局而非待机
-
-            # 开抓：x11grab 实时录这块屏 → 单趟编码出成品视频流。origin 即开抓时刻 = 视频零点。
-            cap_out = tmpdir / "capture.mp4"
-            cap_proc = subprocess.Popen(
-                ffmpeg_capture_cmd(display, settings.width, settings.height, settings.fps, settings.encoder, cap_out),
-                stdin=subprocess.DEVNULL,
-            )
-            origin = time.time()
-            try:
-                await asyncio.sleep(_CAPTURE_WARMUP)  # 让 x11grab 真挂上画面（画面已是开局静帧、不黑、不挪 origin）
-                # 停录信号：phase 离开 playing（_play 返回 → _intermission 把 phase 切到
-                # intermission，但 Intermission 指令还没 emit/渲染，赶在幕间上屏前收手）；
-                # 次级安全阀：到时长上限即停。
-                cap = time.monotonic() + settings.limit_seconds if settings.limit_seconds else None
-
-                def _reached_end() -> bool:
-                    if engine.phase != "playing":
-                        return True
-                    return cap is not None and time.monotonic() >= cap
-
-                await _wait(_reached_end, timeout=3600, what="终局")
-            finally:
-                _stop_capture(cap_proc)  # 无论正常终局还是异常，都把录制收成完整 mp4
+            await gate.wait_done(timeout=3600)
+            origin, cap_out = gate.result()
 
             await context.close()  # persistent_context.close() 一并关掉浏览器
 
         return timeline.beats, origin, cap_out
     finally:
+        with suppress(Exception):
+            await gate.stop()
         server.should_exit = True
         await server_task
         if xvfb is not None:

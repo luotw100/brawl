@@ -138,6 +138,11 @@ def test_ffmpeg_capture_cmd_vaapi_is_single_pass_hevc():
     assert cmd[-1] == "/tmp/cap.mp4"
 
 
+def test_ffmpeg_capture_cmd_progress_is_opt_in():
+    cmd = ffmpeg_capture_cmd("99", 1920, 1080, 30, "x264", Path("/tmp/cap.mp4"), progress=True)
+    assert cmd[-3:] == ["-progress", "pipe:1", "/tmp/cap.mp4"]
+
+
 def test_ffmpeg_capture_cmd_x264_software_realtime_fallback():
     cmd = ffmpeg_capture_cmd("0", 1280, 720, 24, "x264", Path("/tmp/cap.mp4"))
     assert "x11grab" in cmd

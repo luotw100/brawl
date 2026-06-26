@@ -49,9 +49,9 @@ class Recorder:
         return out
 
 
-def make_engine(settings) -> tuple[Engine, Recorder]:
+def make_engine(settings, playback_gate=None) -> tuple[Engine, Recorder]:
     rec = Recorder()
-    engine = Engine(settings, rec.publish)
+    engine = Engine(settings, rec.publish, playback_gate=playback_gate)
     rec.engine = engine
     return engine, rec
 
@@ -73,6 +73,43 @@ async def test_plays_full_game_then_intermission(settings):
     kinds = rec.kinds()
     assert kinds[0] == "game_open" and "game_over" in kinds
     assert engine.scene.winner == "evil"
+
+
+async def test_playback_gate_resets_first_frame_clock_before_dwell(settings):
+    class Gate:
+        async def first_frame_published(self, seq: int) -> float | None:
+            assert seq == 1
+            return 1234.0
+
+        async def before_intermission(self) -> None:
+            pass
+
+    engine, rec = make_engine(settings, Gate())
+    await engine.set_queue(["game1"])
+    await _run_until(engine, lambda: len(rec.states) >= 2)
+    first_items = [scene.feed[-1] for _, scene in rec.states if scene.feed and scene.feed[-1].seq == 1]
+    assert first_items[-1].started_at == 1234.0
+
+
+async def test_playback_gate_runs_before_intermission_is_published(settings):
+    class Gate:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        async def first_frame_published(self, seq: int) -> float | None:
+            return None
+
+        async def before_intermission(self) -> None:
+            self.stopped = True
+
+    gate = Gate()
+    engine, rec = make_engine(settings, gate)
+    await engine.set_queue(["game1"])
+    await _run_until(engine, lambda: "intermission" in rec.kinds())
+    intermission_index = next(i for i, (_, scene) in enumerate(rec.states)
+                              if scene.feed and scene.feed[-1].directive.kind == "intermission")
+    assert gate.stopped
+    assert all(scene.feed[-1].directive.kind != "intermission" for _, scene in rec.states[:intermission_index])
 
 
 async def test_idle_when_queue_empty_and_pool_off(settings):

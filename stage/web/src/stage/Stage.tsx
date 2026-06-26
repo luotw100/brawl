@@ -8,6 +8,12 @@ import { useBgm } from "./bgm";
 import { StageIcon, roleIconName } from "./StageIcon";
 import "./stage.css";
 
+declare global {
+  interface Window {
+    __brawlRecordFirstFramePainted?: (seq: number) => void;
+  }
+}
+
 const W = 1920;
 const H = 1080;
 
@@ -86,6 +92,22 @@ export default function Stage() {
 
   useSfx(ch, last);
   useBgm(state?.phase);
+  useEffect(() => {
+    if (!window.__brawlRecordFirstFramePainted || state?.phase !== "playing" || !last) return;
+    let cancelled = false;
+    let secondRaf = 0;
+    const seq = last.seq;
+    const raf = window.requestAnimationFrame(() => {
+      secondRaf = window.requestAnimationFrame(() => {
+        if (!cancelled) window.__brawlRecordFirstFramePainted?.(seq);
+      });
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(raf);
+      window.cancelAnimationFrame(secondRaf);
+    };
+  }, [state?.phase, last?.seq]);
 
   if (!state) return <div className="viewport" />;
   // 刺杀的闪屏不在起拍放（那会先于台词剧透生死），改由 AssassinView 在揭晓那一刻自己炸。
