@@ -18,6 +18,7 @@ import asyncio
 import io
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -33,8 +34,11 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
-from rich.console import Console
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich import box
+from rich.console import Console, Group
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
 
 # 北京地域。与 voice-forge 同一合成接口；这里按"不抽公共函数"自带一份。
 _SYNTH_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
@@ -58,7 +62,7 @@ class TtsSettings(BaseSettings):
     _cli_args: ClassVar[list[str] | None] = None
 
     dir: CliPositionalArg[Path]  # replay 目录（含 events.jsonl / meta.json）
-    concurrency: int = 4  # 并行合成上限（信号量限流，撞 API 限流时调小）
+    rps: float = 2.8  # DashScope 合成请求发起速率；qwen3-tts-vd 官方限流约 3 RPS，默认留一点余量
 
     @model_validator(mode="after")
     def _check(self) -> TtsSettings:
@@ -67,8 +71,8 @@ class TtsSettings(BaseSettings):
         for name in ("events.jsonl", "meta.json"):
             if not (self.dir / name).is_file():
                 raise ValueError(f"{self.dir} 不是 replay 目录（缺 {name}）")
-        if self.concurrency < 1:
-            raise ValueError(f"concurrency 必须 ≥1，收到 {self.concurrency}")
+        if self.rps <= 0:
+            raise ValueError(f"rps 必须 >0，收到 {self.rps}")
         return self
 
     @classmethod
@@ -113,6 +117,135 @@ class Utterance:
     text: str
 
 
+@dataclass
+class LaunchClock:
+    """按固定节拍发射请求；2.8 rps 就是 10 秒左右发完 28 条。"""
+
+    rps: float
+    _next_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        self._interval = 1 / self.rps
+
+    async def wait_next(self) -> None:
+        now = time.monotonic()
+        if self._next_at > now:
+            await asyncio.sleep(self._next_at - now)
+            now = time.monotonic()
+        self._next_at = now + self._interval
+
+
+@dataclass
+class TtsJob:
+    """一条 TTS 请求的展示状态。"""
+
+    index: int
+    utterance: Utterance
+    status: str = "Queued"
+    detail: str = ""
+    attempt: int = 0
+    started_at: float = 0.0
+    ended_at: float = 0.0
+    duration_ms: int = 0
+
+
+class TtsDashboard:
+    """Rich Live 渲染器：固定刷新一个框，避免长任务刷屏。"""
+
+    def __init__(self, settings: TtsSettings, utterances: int, done: int, jobs: list[TtsJob], tts_dir: Path, console: Console) -> None:
+        self._settings = settings
+        self._utterances = utterances
+        self._already_done = done
+        self._jobs = jobs
+        self._by_call_id = {j.utterance.call_id: j for j in jobs}
+        self._tts_dir = tts_dir
+        self._console = console
+        self._started_at = time.monotonic()
+        self._latest = "等待首条音频"
+
+    def status(self, u: Utterance, status: str, detail: str = "", attempt: int | None = None) -> None:
+        job = self._by_call_id[u.call_id]
+        job.status = status
+        job.detail = detail
+        if attempt is not None:
+            job.attempt = attempt
+        if job.started_at == 0.0 and status != "Queued":
+            job.started_at = time.monotonic()
+
+    def done(self, u: Utterance, duration_ms: int) -> None:
+        job = self._by_call_id[u.call_id]
+        job.status = "Done"
+        job.detail = f"{duration_ms / 1000:.1f}s"
+        job.duration_ms = duration_ms
+        job.ended_at = time.monotonic()
+        self._latest = f"{u.speaker} · {u.persona} · {duration_ms / 1000:.1f}s"
+
+    def render(self) -> Panel:
+        now = time.monotonic()
+        counts = {s: sum(1 for j in self._jobs if j.status == s) for s in ("Queued", "Request", "Download", "Transcode", "Done")}
+        failed = sum(1 for j in self._jobs if j.status == "Retry")
+        completed = self._already_done + counts["Done"]
+        active = counts["Request"] + counts["Download"] + counts["Transcode"] + failed
+
+        summary = Table.grid(expand=True)
+        summary.add_column(style="bold cyan", ratio=1)
+        summary.add_column(style="white", ratio=3)
+        summary.add_column(style="bold cyan", ratio=1)
+        summary.add_column(style="white", ratio=2)
+        summary.add_row("Replay", str(self._settings.dir), "Model", _VD_MODEL)
+        summary.add_row("Output", str(self._tts_dir), "RPS", f"{self._settings.rps:.2f}")
+        summary.add_row("Done", f"{completed}/{self._utterances}", "Active", str(active))
+        summary.add_row("Queued", str(counts["Queued"]), "Latest", self._latest)
+
+        table = Table(box=box.SIMPLE_HEAVY, expand=True, show_edge=False)
+        table.add_column("#", style="dim", width=4, justify="right")
+        table.add_column("Speaker", style="bold", width=10)
+        table.add_column("Persona", overflow="fold", ratio=1)
+        table.add_column("State", width=10)
+        table.add_column("Try", justify="right", width=4)
+        table.add_column("Elapsed", justify="right", width=8)
+        table.add_column("Detail", overflow="fold", ratio=2)
+
+        for job in self._visible_jobs():
+            table.add_row(
+                str(job.index),
+                job.utterance.speaker,
+                job.utterance.persona,
+                self._state_label(job.status),
+                str(job.attempt),
+                self._elapsed(job, now),
+                job.detail or job.utterance.call_id,
+            )
+
+        body = Group(summary, table)
+        elapsed = now - self._started_at
+        return Panel(body, title=f"[bold]Avalon Voice Forge[/bold] [dim]{elapsed:0.1f}s[/dim]", border_style="bright_cyan", padding=(1, 2))
+
+    def _visible_jobs(self) -> list[TtsJob]:
+        height = max(8, self._console.size.height - 12)
+        ordered = sorted(self._jobs, key=lambda j: (j.status == "Done", j.index))
+        if len(ordered) <= height:
+            return ordered
+        return ordered[: height - 1] + [TtsJob(index=0, utterance=Utterance("more", "...", "...", "", ""), detail=f"{len(ordered) - height + 1} more")]
+
+    def _elapsed(self, job: TtsJob, now: float) -> str:
+        if job.status == "Queued" or job.started_at == 0.0:
+            return "-"
+        end = job.ended_at or now
+        return f"{end - job.started_at:0.1f}s"
+
+    def _state_label(self, status: str) -> str:
+        styles = {
+            "Queued": "[dim]Queued[/dim]",
+            "Request": "[cyan]Request[/cyan]",
+            "Download": "[magenta]Download[/magenta]",
+            "Transcode": "[yellow]Transcode[/yellow]",
+            "Retry": "[red]Retry[/red]",
+            "Done": "[green]Done[/green]",
+        }
+        return styles.get(status, status)
+
+
 def _utterances(events: list[dict[str, Any]], voices: list[str], host_voice: str, cast: list[str], host_cast: str) -> list[Utterance]:
     """从事件流摘出所有公开发言。voices[i]/cast[i] 对应 i+1 号座位（座位号 1 起）。"""
 
@@ -148,19 +281,23 @@ def _api_key() -> str:
     return key
 
 
-async def _synthesize(client: httpx.AsyncClient, voice_id: str, text: str, attempts: int = 3) -> bytes:
+async def _synthesize(client: httpx.AsyncClient, dashboard: TtsDashboard, u: Utterance, attempts: int = 3) -> bytes:
     """合成一句并下载音频字节。瞬时失败重试几次（指数退避），仍不行则抛。"""
     for i in range(attempts):
         try:
-            resp = await client.post(_SYNTH_URL, json={"model": _VD_MODEL, "input": {"text": text, "voice": voice_id}})
+            attempt = i + 1
+            dashboard.status(u, "Request", "DashScope", attempt)
+            resp = await client.post(_SYNTH_URL, json={"model": _VD_MODEL, "input": {"text": u.text, "voice": u.voice_id}})
             body = resp.json()
             if resp.status_code != 200:
                 raise SettingsError(f"合成失败（{resp.status_code}）：{body.get('code')} {body.get('message')}")
+            dashboard.status(u, "Download", "audio", attempt)
             audio = await client.get(body["output"]["audio"]["url"])
             return audio.content
         except (httpx.HTTPError, SettingsError):
             if i == attempts - 1:
                 raise
+            dashboard.status(u, "Retry", f"sleep {2**i}s", i + 1)
             await asyncio.sleep(2**i)
     raise AssertionError("unreachable")
 
@@ -184,20 +321,6 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
-
-
-# ---------------------------------------------------------------- 驱动
-
-
-def _progress() -> Progress:
-    """原地刷新的进度条（不滚屏）：当前合成谁 + 已完成/总数 + 耗时。"""
-    return Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-    )
 
 
 def _read_events(path: Path) -> list[dict[str, Any]]:
@@ -241,39 +364,81 @@ async def _run(settings: TtsSettings, console: Console) -> None:
     # 差集：manifest 里有记录且音频文件还在的，算已完成，跳过。
     todo = [u for u in utterances if not (u.call_id in manifest and (tts_dir / f"{u.call_id}.opus").is_file())]
     done = len(utterances) - len(todo)
-    console.print(f"共 {len(utterances)} 条公开发言，已完成 {done} 条，待合成 {len(todo)} 条。")
+    jobs = [TtsJob(i, u) for i, u in enumerate(todo, start=1)]
+    dashboard = TtsDashboard(settings, len(utterances), done, jobs, tts_dir, console)
     if not todo:
+        console.print(dashboard.render())
         return
 
-    sem = asyncio.Semaphore(settings.concurrency)
+    clock = LaunchClock(settings.rps)
+    in_flight: set[asyncio.Task[tuple[Utterance, int]]] = set()
+    failed: Exception | None = None
 
-    with _progress() as progress:
-        task = progress.add_task("准备中", total=len(todo))
+    with Live(dashboard.render(), console=console, refresh_per_second=8, vertical_overflow="ellipsis") as live:
         async with httpx.AsyncClient(headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60) as client:
 
             async def one(u: Utterance) -> tuple[Utterance, int]:
-                async with sem:
-                    progress.update(task, description=f"合成 {u.speaker} · {u.persona}")
-                    wav = await _synthesize(client, u.voice_id, u.text)
-                    opus, duration_ms = _to_opus(wav)
-                    _atomic_write_bytes(tts_dir / f"{u.call_id}.opus", opus)
-                    return u, duration_ms
+                wav = await _synthesize(client, dashboard, u)
+                dashboard.status(u, "Transcode", "opus")
+                opus, duration_ms = _to_opus(wav)
+                _atomic_write_bytes(tts_dir / f"{u.call_id}.opus", opus)
+                return u, duration_ms
 
-            for coro in asyncio.as_completed([one(u) for u in todo]):
-                u, duration_ms = await coro
-                manifest[u.call_id] = {
-                    "speaker": u.speaker,
-                    "persona": u.persona,
-                    "voice_id": u.voice_id,
-                    "text": u.text,
-                    "file": f"{u.call_id}.opus",
-                    "duration_ms": duration_ms,
-                }
-                # 每条原子刷 manifest：中断也不丢已完成的部分，且绝不留半截 manifest。
-                _atomic_write_bytes(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
-                progress.advance(task)
+            for u in todo:
+                await clock.wait_next()
+                task = asyncio.create_task(one(u))
+                in_flight.add(task)
+                live.update(dashboard.render())
+                done_tasks = {t for t in in_flight if t.done()}
+                in_flight.difference_update(done_tasks)
+                failed = _collect_done(done_tasks, manifest, manifest_path, dashboard)
+                live.update(dashboard.render())
+                if failed is not None:
+                    break
+
+            while in_flight and failed is None:
+                done_tasks, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                in_flight.difference_update(done_tasks)
+                failed = _collect_done(done_tasks, manifest, manifest_path, dashboard)
+                live.update(dashboard.render())
+
+            if failed is not None:
+                for task in in_flight:
+                    task.cancel()
+                await asyncio.gather(*in_flight, return_exceptions=True)
+                in_flight.clear()
+
+        live.update(dashboard.render())
+
+    if failed is not None:
+        raise failed
 
     console.print(f"完成：音频与 manifest.json 已写入 {tts_dir}")
+
+
+def _collect_done(
+    tasks: list[asyncio.Task[tuple[Utterance, int]]] | set[asyncio.Task[tuple[Utterance, int]]],
+    manifest: dict[str, dict[str, Any]],
+    manifest_path: Path,
+    dashboard: TtsDashboard,
+) -> Exception | None:
+    for task in tasks:
+        try:
+            u, duration_ms = task.result()
+        except Exception as e:
+            return e
+        manifest[u.call_id] = {
+            "speaker": u.speaker,
+            "persona": u.persona,
+            "voice_id": u.voice_id,
+            "text": u.text,
+            "file": f"{u.call_id}.opus",
+            "duration_ms": duration_ms,
+        }
+        # 每条原子刷 manifest：中断也不丢已完成的部分，且绝不留半截 manifest。
+        _atomic_write_bytes(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
+        dashboard.done(u, duration_ms)
+    return None
 
 
 def main(argv: list[str]) -> None:
