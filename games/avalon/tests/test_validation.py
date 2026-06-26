@@ -142,14 +142,16 @@ def test_replay_dir_already_exists_raises(registry: Registry, tmp_path) -> None:
 
 def test_llm_backend_missing_api_key_raises(registry: Registry, monkeypatch: pytest.MonkeyPatch) -> None:
     """llm 后端下，用到的模型缺 api_key 必须在边界就炸，而非跑到一半首次调用才炸。"""
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    settings = AvalonSettings(player="llm", players=5)
+    model_name = registry.model_names()[0]
+    monkeypatch.delenv(registry.models[model_name].api_key_env, raising=False)
+    settings = AvalonSettings(player="llm", players=5, models=[model_name] * 5, extractor=model_name)
     with pytest.raises(SettingsError):
         resolve_and_validate(settings, registry, random.Random(0))
 
 
 def test_random_backend_skips_api_key_check(registry: Registry, monkeypatch: pytest.MonkeyPatch) -> None:
     """random 后端不调模型，即便没 key 也能解析通过（离线 mock 可跑通/测试）。"""
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    setup = resolve_and_validate(AvalonSettings(player="random", players=5), registry, random.Random(0))
+    model_name = registry.model_names()[0]
+    monkeypatch.delenv(registry.models[model_name].api_key_env, raising=False)
+    setup = resolve_and_validate(AvalonSettings(player="random", players=5, models=[model_name] * 5), registry, random.Random(0))
     assert len(setup.cast) == 5
