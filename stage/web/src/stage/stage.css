@@ -38,14 +38,7 @@
 .hud-center { justify-self: center; display: flex; flex-direction: column; align-items: center; gap: 13px; }
 .hud-right { justify-self: end; display: flex; justify-content: flex-end; }
 
-.brand { font: 900 40px/54px var(--f-display); letter-spacing: .04em; color: var(--c-gold); text-shadow: var(--ts-strong); white-space: nowrap; }
-.show-badge {
-  display: inline-flex; align-items: center; justify-content: center; min-width: 148px; height: 42px; padding: 0 18px;
-  border: 1px solid rgba(240,208,137,.62); border-radius: 6px;
-  background: linear-gradient(180deg, rgba(240,208,137,.18), rgba(12,9,5,.72));
-  box-shadow: 0 10px 26px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.12);
-  font: 900 21px/1 var(--f-sans); color: var(--c-gold); letter-spacing: .08em; text-shadow: var(--ts-strong);
-}
+.brand, .show-badge { font: 900 40px/54px var(--f-display); letter-spacing: .04em; color: var(--c-gold); text-shadow: var(--ts-strong); white-space: nowrap; }
 
 .mission-track { display: flex; align-items: center; gap: 20px; }
 .track-score { font: 900 46px/54px var(--f-display); text-shadow: var(--ts-strong); }
@@ -199,12 +192,10 @@
 .caret { color: var(--c-gold); font-weight: 400; animation: caretBlink .75s infinite; }
 @keyframes caretBlink { 50% { opacity: 0; } }
 
-/* 内心戏：头像右侧给观众看的隐藏信息。用轻底托和暖色字区分正文，同时保证直播压缩后的可读性。 */
+/* 内心戏：头像右侧给观众看的隐藏信息，直接嵌在发言区内，不再叠第二层底框。 */
 .spot-think {
   flex: 1; min-width: 0; align-self: stretch; display: flex; gap: 10px;
-  align-items: flex-start; padding: 8px 14px 9px; border-radius: 8px;
-  background: linear-gradient(180deg, rgba(255,255,255,.09), rgba(8,6,3,.32));
-  border: 1px solid rgba(240,208,137,.18); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 8px 18px rgba(0,0,0,.18);
+  align-items: flex-start; padding: 8px 14px 9px;
   animation: contentFade .5s ease both;
 }
 .think-mark { flex: none; font-size: 23px; line-height: 1.35; opacity: .95; filter: drop-shadow(0 2px 5px rgba(0,0,0,.75)); }
