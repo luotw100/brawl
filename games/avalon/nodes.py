@@ -25,10 +25,13 @@ from langchain_core.runnables import RunnableConfig
 
 from avalon import prompts, rules
 from avalon.deps import Deps
-from avalon.events import decision_id, emit
 from avalon.player import PlayerView
 from avalon.registry import ModelSpec
-from avalon.state import GameState, ProposalRecord, Role, Seat, SeatThread, Side, ThreadMessage
+from avalon.state import GameState, ProposalRecord, Role, Seat, Side
+from core.events import decision_id, emit
+from core.threads import SeatThread, copy_threads
+from core.threads import broadcast as _broadcast
+from core.threads import commit as _commit
 
 
 def _deps(config: RunnableConfig) -> Deps:
@@ -42,23 +45,7 @@ def _model_spec(deps: Deps, seat: Seat) -> ModelSpec | None:
 
 
 def _threads_copy(state: GameState) -> dict[int, SeatThread]:
-    """取一份可变工作副本：节点在副本上追加，整体作为状态更新返回（不动原状态）。"""
-    return {no: t.model_copy(deep=True) for no, t in state.threads.items()}
-
-
-def _broadcast(threads: dict[int, SeatThread], line: str) -> None:
-    """公开行进全员 inbox（含当事人：官方记录回灌，全桌对公开账面的认知一致）。
-    只用于玩家发言原文与开票票型这类"非主持人"的公开记录；主持人台词走 host.announce。"""
-    for t in threads.values():
-        t.inbox.append(line)
-
-
-def _commit(threads: dict[int, SeatThread], no: int, prompt: str, raw: str) -> None:
-    """某席位完成一次行动：inbox 已 flush 进 prompt，清空；human/assistant 各追加一条。"""
-    t = threads[no]
-    t.inbox.clear()
-    t.messages.append(ThreadMessage(role="human", content=prompt))
-    t.messages.append(ThreadMessage(role="assistant", content=raw))
+    return copy_threads(state.threads)
 
 
 def _ask_view(

@@ -19,12 +19,12 @@ from avalon import rules
 from avalon.deps import Deps
 from avalon.graph import build_graph
 from avalon.player import Player, PlayerView, build_player
-from avalon.recorder import open_recorder
 from avalon.registry import load_registry
 from avalon.run import _build_seats
 from avalon.settings import AvalonSettings
 from avalon.state import GameState, Side
 from avalon.validation import GameSetup, resolve_and_validate
+from core.recorder import open_recorder
 
 
 class ProbePlayer:

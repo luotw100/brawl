@@ -20,17 +20,20 @@ from pathlib import Path
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from avalon import resume as resume_mod
 from avalon import rules
 from avalon.console import Renderer
 from avalon.deps import Deps
 from avalon.graph import build_graph
 from avalon.player import build_player
-from avalon.recorder import Recorder, open_recorder
 from avalon.registry import Registry, load_registry
 from avalon.settings import AvalonSettings
 from avalon.state import GameState, Seat
 from avalon.validation import GameSetup, resolve_and_validate, validate_resume
+from core import resume as resume_mod
+from core.recorder import Recorder, open_recorder
+from core.runner import drive_graph, graph_config
+
+_THREAD_ID = "avalon"
 
 
 def _build_seats(registry: Registry, setup: GameSetup) -> list[Seat]:
@@ -47,44 +50,6 @@ def _build_seats(registry: Registry, setup: GameSetup) -> list[Seat]:
             )
         )
     return seats
-
-
-def _config(deps: Deps, checkpoint_id: str | None = None) -> dict:
-    """跑图的 config：deps 走 configurable（运行时注入、不入 checkpoint），thread_id 让
-    checkpointer 归并本局检查点链；续跑时再钉上 checkpoint_id 从那一步接着跑。"""
-    configurable: dict = {"deps": deps, "thread_id": resume_mod.THREAD_ID}
-    if checkpoint_id is not None:
-        configurable["checkpoint_id"] = checkpoint_id
-    return {"configurable": configurable, "recursion_limit": 200}
-
-
-async def _drive(
-    graph, stream_input, config: dict, recorder: Recorder, renderer: Renderer, run_dir: Path | None,
-) -> GameState:
-    """跑图主循环。三路 stream 同序到达，给了 --replay（run_dir 非空）时据此落 sidecar：
-      - custom：god-view 事件，扇出渲染 + 落 events.jsonl；
-      - checkpoints：某 super-step 的检查点**就在该步 custom 事件落完之后**到达（实测严格
-        有序），此刻 recorder.counts() 恰是"截至该步"的产物行数——把 (checkpoint_id, 行数)
-        配对追加进 sidecar，这一对就是续跑时的"截断点 + 续跑点"，同源故严格对齐；
-      - values：每步后的完整状态，留最后一个作返回值。
-    run_dir=None（无 --replay）时只渲染、不挂 checkpointer/sidecar。"""
-    seen = resume_mod.recorded_ids(run_dir) if run_dir is not None else set()
-    final: GameState | None = None
-    async for mode, chunk in graph.astream(stream_input, config=config, stream_mode=["custom", "values", "checkpoints"]):
-        if mode == "custom":
-            # 同一份 god-view 事件扇出两家：渲染器实时打印 + 录制器落 events.jsonl 供回放。
-            renderer.handle(chunk)
-            recorder.record_event(chunk)
-        elif mode == "checkpoints" and run_dir is not None:
-            cid = chunk["config"]["configurable"]["checkpoint_id"]
-            if cid not in seen:  # 跳过续跑时被重放的历史步（节点不重跑、产物不增长）
-                seen.add(cid)
-                e, n = recorder.counts()
-                resume_mod.record_watermark(run_dir, resume_mod.Watermark(cid, e, n))
-        elif mode == "values":
-            final = GameState(**chunk) if not isinstance(chunk, GameState) else chunk
-    assert final is not None  # astream 至少 yield 一次初始 values
-    return final
 
 
 async def run_game(settings: AvalonSettings) -> GameState:
@@ -124,10 +89,10 @@ async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Re
         if src is not None:  # 该模型没配 avatar / 源文件缺失 → 不烧入，回放渲染走 hash 色回退
             recorder.write_avatar(seat.no, src)
     if settings.replay is None:  # 无产物目录=不可续：纯内存跑，不挂 checkpointer/sidecar
-        return await _drive(build_graph(), initial, _config(deps), recorder, renderer, run_dir=None)
+        return await _drive_avalon(build_graph(), initial, deps, recorder, renderer, run_dir=None)
     async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(settings.replay)) as saver:
         graph = build_graph(checkpointer=saver)
-        return await _drive(graph, initial, _config(deps), recorder, renderer, run_dir=settings.replay)
+        return await _drive_avalon(graph, initial, deps, recorder, renderer, run_dir=settings.replay)
 
 
 async def _resume_game(settings: AvalonSettings, registry: Registry, renderer: Renderer) -> GameState:
@@ -143,8 +108,13 @@ async def _resume_game(settings: AvalonSettings, registry: Registry, renderer: R
     deps = _make_deps(settings, registry, recorder, random.Random(settings.seed))
     async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(run_dir)) as saver:
         graph = build_graph(checkpointer=saver)
-        config = _config(deps, checkpoint_id=wm.checkpoint_id)
-        return await _drive(graph, None, config, recorder, renderer, run_dir=run_dir)
+        config = graph_config(deps, thread_id=_THREAD_ID, checkpoint_id=wm.checkpoint_id)
+        return await drive_graph(graph, None, config, recorder, renderer, run_dir, GameState)
+
+
+async def _drive_avalon(graph, stream_input, deps: Deps, recorder: Recorder, renderer: Renderer, run_dir: Path | None) -> GameState:
+    config = graph_config(deps, thread_id=_THREAD_ID)
+    return await drive_graph(graph, stream_input, config, recorder, renderer, run_dir, GameState)
 
 
 def _make_deps(settings: AvalonSettings, registry: Registry, recorder: Recorder, rng: random.Random) -> Deps:

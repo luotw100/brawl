@@ -18,6 +18,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
+from core.threads import SeatThread
+
 # 公开发言与内心戏的字段类型：去掉首尾空白后必须非空。这是"字段内在/形状校验"——声明式收在
 # 模型里随抽取一起完成，故 extractor 抽出"该有发言却空了 / 该有内心戏却空了"会直接 parse 失败
 # （抛 JsonParseError），由 LLMPlayer 的退避重试兜住，绝不让空发言静默上桌。
@@ -55,21 +57,6 @@ class Seat(BaseModel):
     role: Role = Role.SERVANT  # 入图前由边界(validation→run._build_seats)摇定填好；默认仅为占位
     # 夜晚情报（座位号列表，不含自己），含义随角色——可见性规则全在 rules.night_intel。
     intel: list[int] = Field(default_factory=list)
-
-
-class ThreadMessage(BaseModel):
-    """席位线程里的一条消息：human=裁判灌入（公开事件+提问），assistant=该席位自由文本原文。"""
-
-    role: Literal["human", "assistant"]
-    content: str
-
-
-class SeatThread(BaseModel):
-    """一个席位的私有对话线程。inbox 暂存自该席位上次行动以来的公开事件行，
-    轮到它行动时 flush 成一条 human 消息；messages 只增不改（append-only）。"""
-
-    inbox: list[str] = Field(default_factory=list)
-    messages: list[ThreadMessage] = Field(default_factory=list)
 
 
 class ProposalRecord(BaseModel):

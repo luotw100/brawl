@@ -1,5 +1,4 @@
-"""柔性断点续生成：让一局在中途崩了（超时/限流/进程被杀）之后，能从最后一个**完整
-节点**接着往下跑，而不是从头重烧。
+"""柔性断点续生成：让一局在中途崩了之后，能从最后一个完整节点接着往下跑。
 
 机制三件套：
   1. LangGraph 的 checkpointer（AsyncSqliteSaver，落在 replay 目录里的 state.sqlite）——
@@ -24,8 +23,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-# 一个 replay 目录 = 一局，故 thread_id 用常量即可（checkpointer 按它归并本局的检查点链）。
-THREAD_ID = "avalon"
 _SIDECAR = "_resume.jsonl"
 _DB = "state.sqlite"
 

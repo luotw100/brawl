@@ -23,14 +23,14 @@
 from __future__ import annotations
 
 import json
-import os
 import random
 from dataclasses import dataclass
 
-from avalon import resume as resume_mod
 from avalon.registry import Registry
 from avalon.settings import AvalonSettings, SettingsError
 from avalon.state import Role
+from core import resume as resume_mod
+from core import setup as core_setup
 
 
 @dataclass
@@ -72,13 +72,13 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
     """把 settings 解析成确定的 GameSetup（座位号即下标）：cast 缺省即用 registry 默认
     补齐，角色/首任队长用 rng 摇定。违规抛 SettingsError（被 cli 捕获、只打印消息
     不甩 traceback）。"""
-    cast = _resolve_cast(settings, registry, rng)
-    host_cast = _resolve_host_cast(settings, registry)
-    strategies = _resolve_strategies(settings, registry, rng)
-    models = _resolve_models(settings, registry, rng)
-    _check_extractor(settings, registry)
+    cast = core_setup.resolve_unique_personas(settings.cast, players=settings.players, registry=registry, rng=rng, error=SettingsError)
+    host_cast = core_setup.resolve_host(settings.host_cast, registry=registry, default="herald", error=SettingsError)
+    strategies = core_setup.resolve_strategies(settings.strategies, players=settings.players, registry=registry, rng=rng, error=SettingsError)
+    models = core_setup.resolve_models(settings.models, players=settings.players, registry=registry, rng=rng, error=SettingsError)
+    core_setup.check_extractor(settings.extractor, registry=registry, error=SettingsError)
     _check_env(settings, models, registry)
-    _check_replay(settings)
+    core_setup.check_new_replay(settings.replay, error=SettingsError)
     first_leader = rng.randint(1, settings.players)
     return GameSetup(
         cast=cast,
@@ -97,56 +97,6 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
     )
 
 
-def _resolve_cast(settings: AvalonSettings, registry: Registry, rng: random.Random) -> list[str]:
-    """显式 --cast 则逐个校验在册；否则从玩家人设池**无放回**随机抽 N 个（不够即报错）。
-    无放回是因为同一人设撞音色/网名——直播上等于两个一模一样的人；故各座位人设必互异。"""
-    if settings.cast is not None:
-        for pid in settings.cast:
-            if pid not in registry.personas:
-                raise SettingsError(f"未知人设 id: {pid}（可选：{registry.persona_ids()}）")
-        return settings.cast
-    ids = registry.persona_ids()
-    if len(ids) < settings.players:
-        raise SettingsError(f"玩家人设只有 {len(ids)} 个，不够 {settings.players} 个座位；请用 --cast 指定或补充 cast.yaml")
-    return rng.sample(ids, settings.players)
-
-
-def _resolve_host_cast(settings: AvalonSettings, registry: Registry) -> str:
-    """显式 --host-cast 则按主持人库校验在册；否则用默认主持人 herald（必须在册）。
-    主持人库（hosts.yaml）与玩家库分开：玩家人设不能当主持人，反之亦然。"""
-    if settings.host_cast is not None:
-        if settings.host_cast not in registry.hosts:
-            raise SettingsError(f"未知主持人人设 id: {settings.host_cast}（可选：{registry.host_ids()}）")
-        return settings.host_cast
-    if "herald" not in registry.hosts:
-        raise SettingsError("hosts.yaml 缺少默认主持人人设 herald；请补上或显式指定 --host-cast")
-    return "herald"
-
-
-def _resolve_strategies(settings: AvalonSettings, registry: Registry, rng: random.Random) -> list[str]:
-    """显式 --strategies 则逐个校验在册；否则逐座位从流派库**放回**随机抽（可多座位共享同一
-    流派，不像 cast 会撞音色/网名）。流派库至少要有一个流派。"""
-    if settings.strategies is not None:
-        for sid in settings.strategies:
-            if sid not in registry.strategies:
-                raise SettingsError(f"未知流派 id: {sid}（可选：{registry.strategy_ids()}）")
-        return settings.strategies
-    sids = registry.strategy_ids()
-    if not sids:
-        raise SettingsError("strategies.yaml 没有任何流派；请补上至少一个或显式指定 --strategies")
-    return [rng.choice(sids) for _ in range(settings.players)]
-
-
-def _resolve_models(settings: AvalonSettings, registry: Registry, rng: random.Random) -> list[str]:
-    """显式 --models 则逐个校验在册；否则从 provider 池里随机分配（放回抽样，可重复）。"""
-    if settings.models is not None:
-        for name in settings.models:
-            if name not in registry.models:
-                raise SettingsError(f"未知模型: {name}（可选：{registry.model_names()}）")
-        return settings.models
-    names = registry.model_names()
-    return [rng.choice(names) for _ in range(settings.players)]
-
 
 def _resolve_roles(settings: AvalonSettings, rng: random.Random) -> list[Role]:
     """按规则表与角色开关配出角色池，洗匀发给各座位。
@@ -159,28 +109,12 @@ def _resolve_roles(settings: AvalonSettings, rng: random.Random) -> list[Role]:
     return pool
 
 
-def _check_extractor(settings: AvalonSettings, registry: Registry) -> None:
-    """extractor 引用的逻辑模型必须在册（配置静态约束，与后端无关）。"""
-    if settings.extractor not in registry.models:
-        raise SettingsError(f"未知 extractor 模型: {settings.extractor}（可选：{registry.model_names()}）")
-
-
 def _check_env(settings: AvalonSettings, models: list[str], registry: Registry) -> None:
-    """llm 后端下，用到的每个模型（含 extractor）其 api_key_env 必须已配——前置在这里查，
-    而不是等跑到一半某席位首次调用模型时才炸。random 后端不调模型，跳过。"""
+    """llm 后端下，用到的每个模型（含 extractor）其 api_key_env 必须已配。"""
     if settings.player != "llm":
         return
-    for name in dict.fromkeys([*models, settings.extractor]):  # 去重保序
-        spec = registry.models[name]
-        if not os.getenv(spec.api_key_env):
-            raise SettingsError(f"环境变量 {spec.api_key_env} 未设置（模型 {spec.model_id} 需要它）；请在 .env 配置")
+    core_setup.check_model_env([*models, settings.extractor], registry=registry, error=SettingsError)
 
-
-def _check_replay(settings: AvalonSettings) -> None:
-    """新局：--replay 目录已存在即报错（不覆盖、无 --force）：要重跑换个名。
-    （续跑反过来要求目录已存在，那条在 validate_resume 里把守，不走这里。）"""
-    if settings.replay is not None and settings.replay.exists():
-        raise SettingsError(f"--replay 目录已存在，拒绝覆盖：{settings.replay}（换个名，或先删掉它）")
 
 
 def validate_resume(settings: AvalonSettings, registry: Registry) -> dict:

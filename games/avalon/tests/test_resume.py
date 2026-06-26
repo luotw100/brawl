@@ -23,9 +23,9 @@ from collections import Counter
 import pytest
 
 from avalon import player as player_mod
-from avalon import resume as resume_mod
 from avalon.run import run_game
 from avalon.settings import AvalonSettings
+from core import resume as resume_mod
 
 
 class _HardCrash(BaseException):

@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage
 from avalon import player as player_mod
 from avalon.run import run_game
 from avalon.settings import AvalonSettings
+from core import actor as actor_mod
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +27,7 @@ def _no_backoff_sleep(monkeypatch):
     async def _instant(_delay):
         return None
 
-    monkeypatch.setattr(player_mod.asyncio, "sleep", _instant)
+    monkeypatch.setattr(actor_mod.asyncio, "sleep", _instant)
 
 
 async def test_transient_call_failure_is_retried(tmp_path, monkeypatch) -> None:

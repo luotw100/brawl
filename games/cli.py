@@ -19,14 +19,11 @@ from avalon.settings import SettingsError as AvalonSettingsError
 from avalon.tts import SettingsError as AvalonTtsError
 from llmview import show as llm_view
 from llmview.show import ViewError
-from undercover import run as undercover_run
-from undercover.settings import SettingsError as UndercoverSettingsError
 from voicelab import forge as voice_forge
 from voicelab.forge import SettingsError as VoicelabSettingsError
 
 # 子命令名(含中文别名)→ 该玩法的 main(argv) 入口
 GAMES: dict[str, Callable[[list[str]], None]] = {
-    "undercover": undercover_run.main,
     "avalon": avalon_run.main,
     "avalon-replay": avalon_replay.main,  # 回放一局 replay 快照（非生成，纯消费 events.jsonl）
     "avalon-tts": avalon_tts.main,  # 把一局公开发言合成音频，落 replay/tts/（柔性续合）
@@ -52,7 +49,7 @@ def main() -> int:
         return 2
     try:
         handler(rest)
-    except (UndercoverSettingsError, AvalonSettingsError, AvalonTtsError, VoicelabSettingsError, ViewError, ValidationError) as e:
+    except (AvalonSettingsError, AvalonTtsError, VoicelabSettingsError, ViewError, ValidationError) as e:
         # 用户配置错误(坏的 --config、字段校验失败):只打印消息,不甩 traceback。
         print(f"配置错误: {e}", file=sys.stderr)
         return 1

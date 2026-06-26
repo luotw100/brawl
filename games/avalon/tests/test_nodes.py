@@ -13,7 +13,6 @@ from itertools import product
 
 import pytest
 
-from avalon import host as host_module
 from avalon import nodes
 from avalon.deps import Deps
 from avalon.registry import Registry
@@ -30,6 +29,7 @@ from avalon.state import (
     Statement,
     TeamVote,
 )
+from core import host as host_module
 
 
 def _seat(no: int, role: Role = Role.SERVANT) -> Seat:
@@ -106,7 +106,7 @@ async def test_propose_valid_team_resets_votes(registry: Registry, monkeypatch: 
     for t in out["threads"].values():
         assert any("队长 1号 提议的队伍：2号、4号" in line for line in t.inbox)  # 队伍清单存档上桌（不念）
         assert any("下面从 2号 开始轮流发言" in line for line in t.inbox)  # 主持人只点名开启讨论轮（队长下家）
-        assert any("1号：「s」" == line for line in t.inbox)  # 队长发言原文上桌
+        assert any(line == "1号：「s」" for line in t.inbox)  # 队长发言原文上桌
 
 
 @pytest.mark.parametrize("team", [[1], [1, 2, 3], [1, 1], [0, 99]])

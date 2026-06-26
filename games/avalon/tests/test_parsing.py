@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from avalon.parsing import JsonParseError, parse_json
 from avalon.state import Assassination, Proposal, Statement, TeamVote
+from core.parsing import JsonParseError, parse_json
 
 
 def test_clean_json() -> None:

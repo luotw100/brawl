@@ -44,7 +44,7 @@ async def test_host_events_cover_beats_and_schema(tmp_path) -> None:
         final, events = await _run_with_events(tmp_path, f"g{seed}", players=7, lady=True, seed=seed)
         hosts = [e for e in events if e["type"] == "host"]
         beats = [e["beat"] for e in hosts]
-        assert _ALWAYS_BEATS <= set(beats)
+        assert set(beats) >= _ALWAYS_BEATS
         for e in hosts:
             assert set(e) == {"type", "beat", "call_id", "text"}
             assert _CALL_ID.match(e["call_id"]), e["call_id"]

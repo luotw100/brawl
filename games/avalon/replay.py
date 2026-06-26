@@ -30,7 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from avalon.console import InstantTypist, PacedTypist, Renderer
-from avalon.events import decision_id
+from core.events import decision_id
 
 # pace=1 时的上限：每字停顿 / 事件间停顿（秒）。pace 在 0..1 间线性缩放到这两个上限。
 _MAX_CHAR_DELAY = 0.06
