@@ -49,7 +49,7 @@ class RecordSettings(EngineKnobs):
     width: int = 1920  # 录制画布宽：默认 16:9 横屏（舞台 layout 本就是横屏）；直播画面形状由 OBS/浏览器侧决定，不在此
     height: int = 1080  # 录制画布高
     fps: int = 30  # 输出帧率
-    encoder: Literal["x264", "vaapi"] = "x264"  # 软件 H.264 veryfast（默认，开箱即用、跟得上实时）/ 硬件 VAAPI 单趟 HEVC（需 render 组，体积更小、上传平台友好）
+    encoder: Literal["x264", "vaapi"] = "vaapi"  # 软件 H.264 veryfast / 硬件 VAAPI 单趟 HEVC（需 render 组，体积更小、上传平台友好）
     audio_shift: float = 0.0  # 音轨整体微调（秒，正=音频后移）：补开抓→首帧的常数延迟
     bgm: bool = True  # 叠加背景音乐床（--no-bgm 录纯人声/音效）
     limit_seconds: float | None = None  # 录像时长上限（秒）：到点即停的安全阀，也便于先出片段试看；缺省录到终局
