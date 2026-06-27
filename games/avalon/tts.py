@@ -21,7 +21,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import httpx
 import soundfile as sf
@@ -39,10 +39,6 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
-
-# 北京地域。与 voice-forge 同一合成接口；这里按"不抽公共函数"自带一份。
-_SYNTH_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-_VD_MODEL = "qwen3-tts-vd-2026-01-26"
 
 
 class SettingsError(Exception):
@@ -63,6 +59,7 @@ class TtsSettings(BaseSettings):
 
     dir: CliPositionalArg[Path]  # replay 目录（含 events.jsonl / meta.json）
     rps: float = 2.8  # DashScope 合成请求发起速率；qwen3-tts-vd 官方限流约 3 RPS，默认留一点余量
+    backend: Literal["cloud", "local"] = "cloud"
 
     @model_validator(mode="after")
     def _check(self) -> TtsSettings:
@@ -152,7 +149,7 @@ class TtsJob:
 class TtsDashboard:
     """Rich Live 渲染器：固定刷新一个框，避免长任务刷屏。"""
 
-    def __init__(self, settings: TtsSettings, utterances: int, done: int, jobs: list[TtsJob], tts_dir: Path, console: Console) -> None:
+    def __init__(self, settings: TtsSettings, utterances: int, done: int, jobs: list[TtsJob], tts_dir: Path, console: Console, backend_label: str) -> None:
         self._settings = settings
         self._utterances = utterances
         self._already_done = done
@@ -162,6 +159,7 @@ class TtsDashboard:
         self._console = console
         self._started_at = time.monotonic()
         self._latest = "等待首条音频"
+        self._backend_label = backend_label
 
     def status(self, u: Utterance, status: str, detail: str = "", attempt: int | None = None) -> None:
         job = self._by_call_id[u.call_id]
@@ -192,7 +190,7 @@ class TtsDashboard:
         summary.add_column(style="white", ratio=3)
         summary.add_column(style="bold cyan", ratio=1)
         summary.add_column(style="white", ratio=2)
-        summary.add_row("Replay", str(self._settings.dir), "Model", _VD_MODEL)
+        summary.add_row("Replay", str(self._settings.dir), "Model", self._backend_label)
         summary.add_row("Output", str(self._tts_dir), "RPS", f"{self._settings.rps:.2f}")
         summary.add_row("Done", f"{completed}/{self._utterances}", "Active", str(active))
         summary.add_row("Queued", str(counts["Queued"]), "Latest", self._latest)
@@ -281,27 +279,6 @@ def _api_key() -> str:
     return key
 
 
-async def _synthesize(client: httpx.AsyncClient, dashboard: TtsDashboard, u: Utterance, attempts: int = 3) -> bytes:
-    """合成一句并下载音频字节。瞬时失败重试几次（指数退避），仍不行则抛。"""
-    for i in range(attempts):
-        try:
-            attempt = i + 1
-            dashboard.status(u, "Request", "DashScope", attempt)
-            resp = await client.post(_SYNTH_URL, json={"model": _VD_MODEL, "input": {"text": u.text, "voice": u.voice_id}})
-            body = resp.json()
-            if resp.status_code != 200:
-                raise SettingsError(f"合成失败（{resp.status_code}）：{body.get('code')} {body.get('message')}")
-            dashboard.status(u, "Download", "audio", attempt)
-            audio = await client.get(body["output"]["audio"]["url"])
-            return audio.content
-        except (httpx.HTTPError, SettingsError):
-            if i == attempts - 1:
-                raise
-            dashboard.status(u, "Retry", f"sleep {2**i}s", i + 1)
-            await asyncio.sleep(2**i)
-    raise AssertionError("unreachable")
-
-
 def _to_opus(wav: bytes) -> tuple[bytes, int]:
     """把合成返回的 wav 字节本地转成 opus（OGG/Opus），并返回 (opus 字节, 真实时长毫秒)。
 
@@ -365,55 +342,78 @@ async def _run(settings: TtsSettings, console: Console) -> None:
     todo = [u for u in utterances if not (u.call_id in manifest and (tts_dir / f"{u.call_id}.opus").is_file())]
     done = len(utterances) - len(todo)
     jobs = [TtsJob(i, u) for i, u in enumerate(todo, start=1)]
-    dashboard = TtsDashboard(settings, len(utterances), done, jobs, tts_dir, console)
+    backend_label = "AliCloudQwen3TTS" if settings.backend == "cloud" else "LocalEdgeTTS"
+    dashboard = TtsDashboard(settings, len(utterances), done, jobs, tts_dir, console, backend_label)
     if not todo:
         console.print(dashboard.render())
         return
 
     clock = LaunchClock(settings.rps)
-    in_flight: set[asyncio.Task[tuple[Utterance, int]]] = set()
-    failed: Exception | None = None
 
     with Live(dashboard.render(), console=console, refresh_per_second=8, vertical_overflow="ellipsis") as live:
-        async with httpx.AsyncClient(headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60) as client:
+        if settings.backend == "local":
+            from avalon.tts_backend import LocalEdgeTTS
 
-            async def one(u: Utterance) -> tuple[Utterance, int]:
-                wav = await _synthesize(client, dashboard, u)
-                dashboard.status(u, "Transcode", "opus")
-                opus, duration_ms = _to_opus(wav)
-                _atomic_write_bytes(tts_dir / f"{u.call_id}.opus", opus)
-                return u, duration_ms
+            synthesizer: object = LocalEdgeTTS()
+            failed = await _synthesize_all(synthesizer, todo, dashboard, clock, tts_dir, manifest, manifest_path, live)
+        else:
+            async with httpx.AsyncClient(headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60) as client:
+                from avalon.tts_backend import AliCloudQwen3TTS
 
-            for u in todo:
-                await clock.wait_next()
-                task = asyncio.create_task(one(u))
-                in_flight.add(task)
-                live.update(dashboard.render())
-                done_tasks = {t for t in in_flight if t.done()}
-                in_flight.difference_update(done_tasks)
-                failed = _collect_done(done_tasks, manifest, manifest_path, dashboard)
-                live.update(dashboard.render())
-                if failed is not None:
-                    break
-
-            while in_flight and failed is None:
-                done_tasks, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
-                in_flight.difference_update(done_tasks)
-                failed = _collect_done(done_tasks, manifest, manifest_path, dashboard)
-                live.update(dashboard.render())
-
-            if failed is not None:
-                for task in in_flight:
-                    task.cancel()
-                await asyncio.gather(*in_flight, return_exceptions=True)
-                in_flight.clear()
-
-        live.update(dashboard.render())
+                synthesizer = AliCloudQwen3TTS(client)
+                failed = await _synthesize_all(synthesizer, todo, dashboard, clock, tts_dir, manifest, manifest_path, live)
 
     if failed is not None:
         raise failed
 
     console.print(f"完成：音频与 manifest.json 已写入 {tts_dir}")
+
+
+async def _synthesize_all(
+    synthesizer: object,
+    todo: list[Utterance],
+    dashboard: TtsDashboard,
+    clock: LaunchClock,
+    tts_dir: Path,
+    manifest: dict[str, dict[str, Any]],
+    manifest_path: Path,
+    live: Live,
+) -> Exception | None:
+    """共用合成循环：发射请求、收拢结果、刷 manifest。不同后端的差异全收在 synthesizer 里。"""
+    in_flight: set[asyncio.Task[tuple[Utterance, int]]] = set()
+    failed: Exception | None = None
+
+    async def one(u: Utterance) -> tuple[Utterance, int]:
+        wav = await synthesizer.synthesize(dashboard, u)
+        dashboard.status(u, "Transcode", "opus")
+        opus, duration_ms = _to_opus(wav)
+        _atomic_write_bytes(tts_dir / f"{u.call_id}.opus", opus)
+        return u, duration_ms
+
+    for u in todo:
+        await clock.wait_next()
+        task = asyncio.create_task(one(u))
+        in_flight.add(task)
+        live.update(dashboard.render())
+        done_tasks = {t for t in in_flight if t.done()}
+        in_flight.difference_update(done_tasks)
+        failed = _collect_done(done_tasks, manifest, manifest_path, dashboard)
+        live.update(dashboard.render())
+        if failed is not None:
+            break
+
+    while in_flight and failed is None:
+        done_tasks, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+        in_flight.difference_update(done_tasks)
+        failed = _collect_done(done_tasks, manifest, manifest_path, dashboard)
+        live.update(dashboard.render())
+
+    if failed is not None:
+        for task in in_flight:
+            task.cancel()
+        await asyncio.gather(*in_flight, return_exceptions=True)
+
+    return failed
 
 
 def _collect_done(
