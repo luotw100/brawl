@@ -47,6 +47,7 @@ from server.protocol import (
     GameOver,
     HostSpeech,
     Intermission,
+    NarrationCue,
     QuestReveal,
     SeatInfo,
     Speech,
@@ -65,11 +66,13 @@ _console = Console()  # 进度输出：录制节拍 + ffmpeg 步骤（与捕获/
 @dataclass
 class Beat:
     """一拍的录制时间线条目：seq 去重，started_at 定位偏移，audio_url 指向待拼的人声，
-    cues 是这拍要叠的音效（名字 + 拍内偏移秒，tap 时由 cues_for 算好）。"""
+    narrations 是挂在视觉拍下的主持旁白，cues 是这拍要叠的音效（名字 + 拍内偏移秒，tap 时由
+    cues_for 算好）。"""
 
     seq: int
     started_at: float
     audio_url: str | None
+    narrations: list[NarrationCue] = field(default_factory=list)
     cues: list[tuple[str, float]] = field(default_factory=list)
 
 
@@ -146,6 +149,13 @@ def audio_segments(
         base = b.started_at - origin + shift
         if b.audio_url:
             segs.append((replay_root / b.audio_url.removeprefix("/replays/"), max(0.0, base), 1.0))
+        for narration in b.narrations:
+            if narration.audio_url:
+                segs.append((
+                    replay_root / narration.audio_url.removeprefix("/replays/"),
+                    max(0.0, base + narration.at),
+                    1.0,
+                ))
         for name, at in b.cues:
             segs.append((sfx_dir / f"{name}.opus", max(0.0, base + at), SFX_VOLUME))
     return segs
@@ -288,17 +298,18 @@ def _tap_engine(engine) -> Timeline:
                 beat = by_seq[fi.seq]
                 beat.started_at = fi.started_at
                 beat.audio_url = getattr(fi.directive, "audio_url", None)
+                beat.narrations = fi.narrations
                 beat.cues = cues
                 timeline.last_beat_ends_at = fi.started_at + fi.duration
                 await orig()
                 return
-            beat = Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), cues)
+            beat = Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), fi.narrations, cues)
             by_seq[fi.seq] = beat
             timeline.beats.append(beat)
             timeline.last_beat_ends_at = fi.started_at + fi.duration  # 逐拍更新（信息用，含 GameOver 之后的复盘等）
             elapsed = fi.started_at - timeline.beats[0].started_at  # 视频时间轴（以第一拍为零点）
             tag, color, detail = _beat_summary(fi.directive, engine.scene.seats)
-            note = "[cyan]♪[/cyan]" if getattr(fi.directive, "audio_url", None) else " "
+            note = "[cyan]♪[/cyan]" if getattr(fi.directive, "audio_url", None) or fi.narrations else " "
             # 每拍固定一行：超宽（中文台词）裁切而非换行，进度日志更整齐
             _console.print(f"[dim]{_mmss(elapsed)}[/dim] {note} [{color}]{tag}[/{color}] {detail}", no_wrap=True)
         await orig()

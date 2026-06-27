@@ -17,6 +17,7 @@ from server.record import (
     ffmpeg_mux_cmd,
 )
 from server.record_settings import RENDER_DEVICE, RecordSettings
+from server.protocol import NarrationCue
 from server.sfx import SFX_VOLUME
 
 ROOT = Path("/replays-root")
@@ -78,6 +79,25 @@ def test_audio_segments_sfx_cues_offset_on_top_of_beat():
         (SFX / "stamp.opus", 2.0, SFX_VOLUME),
         (SFX / "stamp.opus", 2.5, SFX_VOLUME),
         (SFX / "vote-pass.opus", 3.0, SFX_VOLUME),
+    ]
+
+
+def test_audio_segments_narrations_offset_inside_beat():
+    beats = [
+        Beat(
+            seq=1,
+            started_at=100.0,
+            audio_url="/replays/g/tts/main.opus",
+            narrations=[
+                NarrationCue(name="司仪", beat="opening", text="开场", audio_url="/replays/g/tts/host.opus", at=1.25),
+                NarrationCue(name="司仪", beat="silent", text="无声", audio_url=None, at=2.0),
+            ],
+        ),
+    ]
+    segs = audio_segments(beats, ROOT, SFX, shift=0.5, origin=99.0)
+    assert segs == [
+        (ROOT / "g/tts/main.opus", 1.5, 1.0),
+        (ROOT / "g/tts/host.opus", 2.75, 1.0),
     ]
 
 
