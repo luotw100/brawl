@@ -89,37 +89,32 @@ def test_human_message_composition() -> None:
 def test_event_lines_render_public_facts_only() -> None:
     """公开事件行冒烟：票型/张数/发言上桌，函数签名里压根没有秘密可带。"""
     intro = prompts.line_host_propose_intro(2, 1, 3, 3)
-    assert "第 2 个任务" in intro and "队长 3号" in intro and "第 1 次" not in intro  # 首次组队不报次数
-    assert "最后一次组队" in prompts.line_host_propose_intro(2, 5, 3, 3)
-    # 主持人那拍只点名交接、不复述队伍；队伍清单挪到不念出口的存档行 line_team_record。
-    handoff = prompts.line_host_team(4)
-    assert "4号" in handoff and "发言" in handoff and "号、" not in handoff
+    assert "第二个任务" in intro and "队长三号" in intro and "第一次" not in intro  # 首次组队不报次数
+    assert "最后机会" in prompts.line_host_propose_intro(2, 5, 3, 3)
     record = prompts.line_team_record(3, [1, 3, 5])
     assert "队长 3号" in record and "1号、3号、5号" in record
     votes = prompts.line_votes({1: True, 2: False, 3: True})
     assert "1号✔" in votes and "2号✘" in votes
     approved = prompts.line_host_vote_result(2, 3, True, 0)
-    assert "2 票赞成、1 票反对" in approved and "通过" in approved
-    rejected = prompts.line_host_vote_result(1, 3, False, 2)
-    assert "否决" in rejected and "第 2 次流队" in rejected
-    quest = prompts.line_host_quest_result(2, 1, "fail", 1, 1)
-    assert "失败" in quest and "1 张破坏票" in quest and "蓝方 1 比 1" in quest
+    assert "二票赞成" in approved and "一票反对" in approved and "通过" in approved
+    rejected = prompts.line_host_vote_result(1, 3, False, 2, next_leader=4)
+    assert "否决" in rejected and "下一轮由四号提队" in rejected
+    quest = prompts.line_host_quest_result(2, 1, "fail", 1, 1, next_leader=5)
+    assert "失败" in quest and "一张破坏票" in quest and "蓝方一比一" in quest and "下一轮由五号提队" in quest
     saved = prompts.line_host_quest_result(4, 1, "success", 2, 1)
-    assert "未达到门槛" in saved and "依然成功" in saved
+    assert "未达到门槛" in saved and "成功" in saved
     lady = prompts.line_host_lady(3, 5)
-    assert "3号 查验了 5号" in lady and "令牌随后传给 5号" in lady
+    assert "三号查验五号" in lady and "令牌传给五号" in lady
     assert prompts.line_player(7, "走起") == "7号：「走起」"
 
 
 def test_host_lines_are_tts_friendly() -> None:
     """主持词是要逐句 TTS 的口播文案：不带【】标记、✔✘ 符号与 ×N 计数记法，
     阵容用"四名忠臣"这类口语数法；玩家发言（带引号）绝不出现在主持词里。"""
-    lineup = [Role.MERLIN, Role.PERCIVAL] + [Role.SERVANT] * 4 + [Role.ASSASSIN, Role.MORGANA, Role.MORDRED, Role.OBERON]
     samples = [
-        prompts.line_host_opening(10, lineup, True),
+        prompts.line_host_opening(10, 4, 5, 3),
         prompts.line_host_deal(3, 2),
         prompts.line_host_propose_intro(1, 2, 3, 6),
-        prompts.line_host_team(6),
         prompts.line_host_vote_result(6, 10, True, 0),
         prompts.line_host_quest_result(1, 0, "success", 1, 0),
         prompts.line_host_lady(2, 7),
@@ -130,7 +125,7 @@ def test_host_lines_are_tts_friendly() -> None:
     for text in samples:
         for banned in ("【", "】", "✔", "✘", "×", "「", "」"):
             assert banned not in text, f"主持词含不可念符号 {banned!r}：{text}"
-    assert "四名忠臣" in samples[0]
+    assert "十人局" in samples[0] and "队长是五号" in samples[0]
 
 
 def test_rules_contain_no_coaching() -> None:

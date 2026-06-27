@@ -101,15 +101,10 @@ async def pregame_node(state: GameState, config: RunnableConfig) -> dict[str, An
         for x in state.seats
     ]
     threads = _threads_copy(state)
-    lineup = sorted((x.role for x in state.seats), key=tuple(Role).index)
-    # 开场节目单（事件调用顺序即 feed 顺序）：头像先就座（身份面朝下）→ 主持人念欢迎+阵容
-    # → 发牌逐张翻面亮身份 → 主持人念队长/仙女宣布开始。座位表挂在 game_start 上，头像开局即在场。
+    first_team_size = rules.team_size(s.players, state.quest_no)
+    # 开场节目单（事件调用顺序即 feed 顺序）：头像先就座（身份面朝下）→ 发牌逐张翻面亮身份，
+    # 主持人开场口播盖在发牌动画下面，一句带出人数、仙女、队长与首队规模。
     emit("game_start", players=s.players, good=s.good, evil=s.evil, seats=seats_payload)
-    deps.host.announce(
-        threads, "opening",
-        prompts.line_host_opening(s.players, lineup, state.lady_holder is not None),
-        quest=state.quest_no, attempt=state.attempt,
-    )
     emit(
         "deal",
         leader_no=state.leader,
@@ -117,8 +112,8 @@ async def pregame_node(state: GameState, config: RunnableConfig) -> dict[str, An
         seats=seats_payload,
     )
     deps.host.announce(
-        threads, "deal",
-        prompts.line_host_deal(state.leader, state.lady_holder),
+        threads, "opening",
+        prompts.line_host_opening(s.players, state.lady_holder, state.leader, first_team_size),
         quest=state.quest_no, attempt=state.attempt,
     )
     return {"threads": threads}
@@ -130,12 +125,6 @@ async def propose_node(state: GameState, config: RunnableConfig) -> dict[str, An
     threads = _threads_copy(state)
     leader = next(s for s in state.seats if s.no == state.leader)
     size = rules.team_size(len(state.seats), state.quest_no)
-    # 串场在队长行动之前：队长本人的提问 flush 时也会带上这句主持词
-    deps.host.announce(
-        threads, "propose_intro",
-        prompts.line_host_propose_intro(state.quest_no, state.attempt, size, leader.no),
-        quest=state.quest_no, attempt=state.attempt,
-    )
 
     view = _ask_view(deps, state, leader, threads, prompts.ask_propose(size))
     result, raw = await deps.player.propose(view)
@@ -157,13 +146,6 @@ async def propose_node(state: GameState, config: RunnableConfig) -> dict[str, An
         team=team,
         speech=result.speech,
         monologue=result.monologue,
-    )
-    # 队长发言（propose 事件）落定后主持人才开口，只点名开启讨论轮（从队长下家起，与 discuss_node
-    # 起点同一算式），不复述队伍。回放层据此先放完队长面板、再播这句交接，更自然。
-    first_no = state.seats[state.leader % len(state.seats)].no
-    deps.host.announce(
-        threads, "team", prompts.line_host_team(first_no),
-        quest=state.quest_no, attempt=state.attempt,
     )
     return {"team": team, "votes": {}, "threads": threads}
 
@@ -233,9 +215,16 @@ async def team_vote_node(state: GameState, config: RunnableConfig) -> dict[str, 
         rejections=rejections,
     )
     # 全员的票都亮完（vote_result 事件）后主持人才收口总结——回放层先逐个翻票、再播这句更自然。
+    next_leader = state.leader % len(state.seats) + 1
     deps.host.announce(
         threads, "vote_result",
-        prompts.line_host_vote_result(sum(votes.values()), len(votes), approved, rejections),
+        prompts.line_host_vote_result(
+            sum(votes.values()),
+            len(votes),
+            approved,
+            rejections,
+            None if approved or rejections >= rules.MAX_REJECTIONS else next_leader,
+        ),
         quest=state.quest_no, attempt=state.attempt,
     )
     if approved:
@@ -250,7 +239,7 @@ async def team_vote_node(state: GameState, config: RunnableConfig) -> dict[str, 
         "threads": threads,
         "history": [record],
         "rejections": rejections,
-        "leader": state.leader % len(state.seats) + 1,
+        "leader": next_leader,
     }
     if rejections >= rules.MAX_REJECTIONS:
         out |= {"winner": "evil", "win_reason": "rejections", "finished": True}
@@ -307,12 +296,22 @@ async def quest_node(state: GameState, config: RunnableConfig) -> dict[str, Any]
         failed=failed,
     )
     # 暗牌全部开完（quest_result 事件）后主持人才公布结果——回放层先逐张翻牌、再播这句更自然。
+    next_leader = state.leader % players + 1
+    terminal = failed >= rules.QUESTS_TO_WIN or succeeded >= rules.QUESTS_TO_WIN
+    lady_next = state.lady_holder is not None and state.quest_no in rules.LADY_QUESTS
     deps.host.announce(
         threads, "quest_result",
-        prompts.line_host_quest_result(state.quest_no, fails, result, succeeded, failed),
+        prompts.line_host_quest_result(
+            state.quest_no,
+            fails,
+            result,
+            succeeded,
+            failed,
+            None if terminal or lady_next else next_leader,
+        ),
         quest=state.quest_no, attempt=state.attempt,
     )
-    return {"history": [record], "rejections": 0, "leader": state.leader % players + 1, "threads": threads}
+    return {"history": [record], "rejections": 0, "leader": next_leader, "threads": threads}
 
 
 async def check_node(state: GameState, config: RunnableConfig) -> dict[str, Any]:

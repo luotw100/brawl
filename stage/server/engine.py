@@ -18,6 +18,7 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from server import scene as avalon
@@ -30,6 +31,7 @@ from server.protocol import (
     GameOver,
     HostSpeech,
     Intermission,
+    NarrationCue,
     QuestReveal,
     Scene,
     Speech,
@@ -42,6 +44,14 @@ _MAX_CHAR_DELAY = 0.06
 _MAX_BEAT = 0.7
 _TICK = 0.2  # 状态位轮询粒度：跳局/下一拍的最大响应延迟
 _AUDIO_MARGIN = 0.5  # 音频时长之外多留的气口（秒）：页面预热到位后只兜残余抖动，不再扛拉取延迟
+_NARRATION_MARGIN = 0.2  # 主持旁白贴在动画下，只留很短缓冲，不再按独立节目拍留尾巴
+
+
+@dataclass
+class StageBeat:
+    directive: Directive
+    content_at: float = 0.0
+    narrations: list[NarrationCue] = field(default_factory=list)
 
 
 class PlaybackGate(Protocol):
@@ -57,16 +67,25 @@ class NullPlaybackGate:
         pass
 
 
-def _upcoming_audio(beats: list[Directive], i: int, factor: int) -> list[str]:
+def _beat_audio_urls(beat: StageBeat) -> list[str]:
+    urls = [n.audio_url for n in beat.narrations if n.audio_url]
+    url = getattr(beat.directive, "audio_url", None)
+    if url:
+        urls.append(url)
+    return urls
+
+
+def _upcoming_audio(beats: list[StageBeat], i: int, factor: int) -> list[str]:
     """从第 i 拍之后顺取最多 factor 条待播音频 URL（跳过无声拍），交给页面提前预热——
     起拍那一刻音频已在缓存里，currentTime 从 0 即时出声，尾巴不再被下一拍顶掉时截断。"""
     urls: list[str] = []
-    for directive in beats[i + 1:]:
+    for beat in beats[i + 1:]:
         if len(urls) >= factor:  # 放循环头：factor=0（关掉预取）时直接不取
             break
-        url = getattr(directive, "audio_url", None)
-        if url:
+        for url in _beat_audio_urls(beat):
             urls.append(url)
+            if len(urls) >= factor:
+                break
     return urls
 
 
@@ -188,16 +207,18 @@ class Engine:
         model_labels = avalon.load_model_labels(replay_dir)  # 逻辑名→对外展示名，缺则座位不显模型名
         # 先把整局摊平：前瞻要看后面的拍，懒迭代给不了"下一拍是谁"。一局事件量很小，全量无妨。
         # adapt 返回 None 表示"这条事件不演"（如主持人复述身份的 reveal 拍），过滤掉不进时间线。
-        beats = [d for event in avalon.load_events(replay_dir)
-                 if (d := avalon.adapt(event, replay_id=replay_id, tts=tts, names=names, host_name=host_name,
-                                       avatars=avatars, model_labels=model_labels)) is not None]
+        directives = [d for event in avalon.load_events(replay_dir)
+                      if (d := avalon.adapt(event, replay_id=replay_id, tts=tts, names=names, host_name=host_name,
+                                            avatars=avatars, model_labels=model_labels)) is not None]
+        beats = self._stage_beats(directives)
         last: GameOver | None = None
-        for i, directive in enumerate(beats):
+        for i, beat in enumerate(beats):
+            directive = beat.directive
             if isinstance(directive, GameOver):
                 last = directive
-            duration = self._duration(directive)
+            duration = self._duration(beat)
             self.prefetch = _upcoming_audio(beats, i, self._prefetch_factor)
-            await self._emit(directive, duration)
+            await self._emit(beat, duration)
             if i == 0:
                 started_at = await self._playback_gate.first_frame_published(self._seq)
                 if started_at is not None:
@@ -217,12 +238,20 @@ class Engine:
             last_reason=last.win_reason if last else None,
             next_ready=bool(self.queue) or self._peek_pool() is not None,
         )
-        await self._emit(directive, self.intermission_seconds)
+        await self._emit(StageBeat(directive), self.intermission_seconds)
         await self._dwell(self.intermission_seconds)
 
-    async def _emit(self, directive: Directive, duration: float) -> None:
+    async def _emit(self, beat: StageBeat, duration: float) -> None:
         self._seq += 1
-        avalon.apply(self.scene, FeedItem(seq=self._seq, directive=directive, started_at=time.time(), duration=duration, speed=self.speed))
+        avalon.apply(self.scene, FeedItem(
+            seq=self._seq,
+            directive=beat.directive,
+            started_at=time.time(),
+            duration=duration,
+            speed=self.speed,
+            content_at=beat.content_at,
+            narrations=beat.narrations,
+        ))
         await self._publish()
 
     async def _dwell(self, seconds: float) -> bool:
@@ -252,16 +281,67 @@ class Engine:
 
     # ---------------------------------------------------------------- 节奏
 
-    def _duration(self, directive: Directive) -> float:
-        """一拍演多久（秒）。分镜节奏配方写死在这（不做导播台）：以"从容直播"为基准编排——
-        发牌每张约 1.5s、发言之间留约 3s 气口、表决逐个亮票、大场面敢留白。`unit = pace` 是
-        秒预算单位：**pace=1 跑足这套从容节奏，pace=0 全归零（整局瞬间倾倒，生成/测试用）。**
-        前端的发牌/亮票动画 stagger 由本拍 duration 反推，故任何 pace 下动画都跟得上、不被顶掉。
+    def _stage_beats(self, directives: list[Directive]) -> list[StageBeat]:
+        """把 replay 的 host 事件贴到相邻视觉拍上：games 决定说什么，stage 决定怎么播。
 
-        两段式：先算 content（视觉/朗读，未计音频）→ 音频必须放得完取 max → 给有台词的拍
-        加尾部气口（发言间留白）。音频时长按指令 audio_url 查表，与页面播的是同一条。"""
+        opening/deal/vote/quest 等结果口播压在刚出现的动画上；propose_intro/lady 这类
+        前置指令先作为 lead-in 播完，再让玩家正文开始，避免主持音频和玩家发言重叠。"""
+        beats: list[StageBeat] = []
+        pending: list[HostSpeech] = []
+        for directive in directives:
+            if isinstance(directive, HostSpeech):
+                if directive.beat in {"propose_intro", "lady"}:
+                    pending.append(directive)
+                elif beats:
+                    self._append_post_narration(beats[-1], directive)
+                else:
+                    pending.append(directive)
+                continue
+
+            beat = StageBeat(directive)
+            at = 0.0
+            for host in pending:
+                cue = self._narration(host, at)
+                beat.narrations.append(cue)
+                at += cue.duration
+            beat.content_at = at
+            pending = []
+            beats.append(beat)
+
+        if pending and beats:
+            for host in pending:
+                self._append_post_narration(beats[-1], host)
+        return beats
+
+    def _append_post_narration(self, beat: StageBeat, host: HostSpeech) -> None:
+        at = 0.0
+        if isinstance(beat.directive, (Speech, Assassination)):
+            at = beat.content_at + self._content_duration(beat.directive)
+        if beat.narrations:
+            at = max(at, max(n.at + n.duration for n in beat.narrations))
+        beat.narrations.append(self._narration(host, at))
+
+    def _narration(self, host: HostSpeech, at: float) -> NarrationCue:
+        return NarrationCue(
+            name=host.name,
+            beat=host.beat,
+            text=host.text,
+            audio_url=host.audio_url,
+            at=at,
+            duration=self._narration_duration(host),
+        )
+
+    def _narration_duration(self, host: HostSpeech) -> float:
         char = self.pace * _MAX_CHAR_DELAY
-        unit = self.pace  # 秒预算单位：pace=1 → 编排的秒数原样生效
+        content = len(host.text) * char
+        audio = self._durations.get(host.audio_url or "")
+        if audio is not None:
+            content = max(content, audio + _NARRATION_MARGIN)
+        return content / self.speed
+
+    def _content_duration(self, directive: Directive) -> float:
+        char = self.pace * _MAX_CHAR_DELAY
+        unit = self.pace
         match directive:
             case Speech(text=text, monologue=monologue):
                 content = (len(text) + len(monologue)) * char
@@ -286,8 +366,26 @@ class Engine:
         audio = self._durations.get(getattr(directive, "audio_url", None) or "")
         if audio is not None:
             content = max(content, audio + _AUDIO_MARGIN)
-        # 尾部气口：有台词的拍之间留白，节奏从容；刺杀是终局炸点，留白要更狠
+        return content / self.speed
+
+    def _tail_duration(self, directive: Directive) -> float:
         tail = {Speech: 3.0, HostSpeech: 2.5, Assassination: 6.0}.get(type(directive), 0.0)
+        return self.pace * tail / self.speed
+
+    def _duration(self, beat: StageBeat) -> float:
+        """一拍演多久（秒）。分镜节奏配方写死在这（不做导播台）：以"从容直播"为基准编排——
+        发牌每张约 1.5s、发言之间留约 3s 气口、表决逐个亮票、大场面敢留白。`unit = pace` 是
+        秒预算单位：**pace=1 跑足这套从容节奏，pace=0 全归零（整局瞬间倾倒，生成/测试用）。**
+        前端的发牌/亮票动画 stagger 由本拍 duration 反推，故任何 pace 下动画都跟得上、不被顶掉。
+
+        两段式：先算 content（视觉/朗读，未计音频）→ 音频必须放得完取 max → 给有台词的拍
+        加尾部气口（发言间留白）。音频时长按指令 audio_url 查表，与页面播的是同一条。"""
+        narration_end = max((n.at + n.duration for n in beat.narrations), default=0.0)
+        if beat.narrations and isinstance(beat.directive, (Deal, VoteReveal, QuestReveal)):
+            return narration_end
+        content = beat.content_at + self._content_duration(beat.directive) + self._tail_duration(beat.directive)
+        for narration in beat.narrations:
+            content = max(content, narration.at + narration.duration)
         # speed 是整条时间轴的除数：每拍（含音频地板）等比压缩 → 引擎少 sleep（原生快录/快播）。
         # 音频另在播放侧按 speed 提速（直播 playbackRate / 录制 atempo）贴合压缩后的拍，音画仍齐。
-        return (content + unit * tail) / self.speed
+        return content

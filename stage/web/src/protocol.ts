@@ -42,6 +42,14 @@ export interface Assassination {
 }
 export interface GameOver { kind: "game_over"; winner: "good" | "evil"; win_reason: string; seats: SeatInfo[] }
 export interface HostSpeech { kind: "host"; name: string; beat: string; text: string; audio_url: string | null }
+export interface NarrationCue {
+  name: string;
+  beat: string;
+  text: string;
+  audio_url: string | null;
+  at: number;
+  duration: number;
+}
 export interface Intermission {
   kind: "intermission"; last_winner: string | null; last_reason: string | null; next_ready: boolean;
 }
@@ -70,7 +78,15 @@ export interface QuestLog {
 }
 export type TimelineEntry = ProposalLog | QuestLog;
 
-export interface FeedItem { seq: number; directive: Directive; started_at: number; duration: number; speed: number }
+export interface FeedItem {
+  seq: number;
+  directive: Directive;
+  started_at: number;
+  duration: number;
+  speed: number;
+  content_at: number;
+  narrations: NarrationCue[];
+}
 
 export interface Scene {
   seats: SeatInfo[];

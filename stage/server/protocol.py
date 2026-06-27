@@ -133,6 +133,17 @@ class HostSpeech(BaseModel):
     audio_url: str | None = None
 
 
+class NarrationCue(BaseModel):
+    """挂在一拍视觉之下的主持旁白。at 是拍内偏移秒；duration 是旁白字幕/音频预算。"""
+
+    name: str
+    beat: str
+    text: str
+    audio_url: str | None = None
+    at: float = 0.0
+    duration: float = 0.0
+
+
 class Intermission(BaseModel):
     """幕间页（engine 生成，非 replay 事件）。下局是什么不公开——报幕功能后续做。"""
 
@@ -208,6 +219,8 @@ class FeedItem(BaseModel):
     started_at: float  # 服务端 epoch 秒
     duration: float
     speed: float = 1.0  # 时间轴倍速：duration 已按它压缩；播放侧据此把音频 playbackRate 提速贴合
+    content_at: float = 0.0  # 主内容拍内偏移：前置主持旁白先说完，玩家发言再开始
+    narrations: list[NarrationCue] = Field(default_factory=list)
 
 
 class Scene(BaseModel):

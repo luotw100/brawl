@@ -130,6 +130,14 @@ def _zh_count(n: int) -> str:
     return _ZH_NUM[n] if n <= 10 else str(n)
 
 
+def _seat_no(n: int) -> str:
+    return f"{_zh_count(n)}号"
+
+
+def _ordinal(n: int) -> str:
+    return f"第{_zh_count(n)}个"
+
+
 def _lineup_phrase(lineup: list[Role]) -> str:
     """口播版阵容：'梅林、派西维尔和四名忠臣，对阵刺客、莫甘娜和两名爪牙'。"""
     counts: dict[Role, int] = {}
@@ -143,53 +151,70 @@ def _lineup_phrase(lineup: list[Role]) -> str:
     return f"{side_phrase(Side.GOOD)}，对阵{side_phrase(Side.EVIL)}"
 
 
-def line_host_opening(players: int, lineup: list[Role], lady: bool) -> str:
-    extra = "本局还启用湖中仙女。" if lady else ""
-    return f"欢迎来到《阿瓦隆》。本局 {players} 位玩家入座，阵容是{_lineup_phrase(lineup)}。{extra}"
+def line_host_opening(players: int, lady_holder: int | None, leader_no: int, team_size: int) -> str:
+    lady = "带湖中仙女" if lady_holder is not None else "不带湖中仙女"
+    token = f"，仙女令牌在{_seat_no(lady_holder)}" if lady_holder is not None else ""
+    return f"欢迎来到《阿瓦隆》，{_zh_count(players)}人局，{lady}，队长是{_seat_no(leader_no)}{token}，第一个队伍需{_zh_count(team_size)}人。"
 
 
 def line_host_deal(leader_no: int, lady_holder: int | None) -> str:
-    lady = f"，湖中仙女的令牌在 {lady_holder}号 手中" if lady_holder is not None else ""
-    return f"身份牌已经发到各位手中，请确认自己的角色。首任队长是 {leader_no}号{lady}。游戏正式开始。"
+    lady = f"，仙女令牌在{_seat_no(lady_holder)}" if lady_holder is not None else ""
+    return f"首任队长{_seat_no(leader_no)}{lady}，开局。"
 
 
 def line_host_propose_intro(quest: int, attempt: int, team_size: int, leader_no: int) -> str:
-    hammer = "注意，这是本任务最后一次组队机会，再被否决红方将直接获胜。" if attempt >= 5 else ""
-    attempt_part = "" if attempt == 1 else f"第 {attempt} 次"
-    return f"现在进行第 {quest} 个任务的{attempt_part}组队，队伍需要 {team_size} 人。请队长 {leader_no}号 提队并发言。{hammer}"
+    attempt_part = "" if attempt == 1 else f"第{_zh_count(attempt)}次，"
+    hammer = "最后机会，再流队红方直接获胜。" if attempt >= 5 else ""
+    return f"{_ordinal(quest)}任务，{attempt_part}队长{_seat_no(leader_no)}，队伍需{_zh_count(team_size)}人。{hammer}"
 
 
 def line_host_team(first_no: int) -> str:
     """队长提队后，主持人只点名开启讨论轮（从队长下家起轮流发言），绝不复述队伍——谁带了谁
     由队长自己的组队宣言交代，结构化存档走 line_team_record 进线程。"""
-    return f"下面从 {first_no}号 开始轮流发言。"
+    return f"从 {first_no}号 开始讨论。"
 
 
-def line_host_vote_result(approves: int, total: int, approved: bool, rejections: int) -> str:
-    tally = f"表决结果，{approves} 票赞成、{total - approves} 票反对"
+def line_host_vote_result(
+    approves: int,
+    total: int,
+    approved: bool,
+    rejections: int,
+    next_leader: int | None = None,
+) -> str:
+    tally = f"{_zh_count(approves)}票赞成、{_zh_count(total - approves)}票反对"
     if approved:
         return f"{tally}，提案通过，队伍出发执行任务。"
-    return f"{tally}，提案被否决，这是本任务第 {rejections} 次流队，队长顺位轮转。"
+    if next_leader is not None:
+        return f"{tally}，提案被否决，下一轮由{_seat_no(next_leader)}提队。"
+    return f"{tally}，提案被否决，第{_zh_count(rejections)}次流队，红方获胜。"
 
 
-def line_host_quest_result(quest: int, fails: int, result: str, succeeded: int, failed: int) -> str:
+def line_host_quest_result(
+    quest: int,
+    fails: int,
+    result: str,
+    succeeded: int,
+    failed: int,
+    next_leader: int | None = None,
+) -> str:
     if result == "fail":
-        outcome = f"第 {quest} 个任务宣告失败，出现了 {fails} 张破坏票。"
+        outcome = f"{_ordinal(quest)}任务宣告失败，出现了{_zh_count(fails)}张破坏票。"
     elif fails:
-        outcome = f"第 {quest} 个任务出现了 {fails} 张破坏票，但未达到门槛，任务依然成功。"
+        outcome = f"{_ordinal(quest)}任务出现了{_zh_count(fails)}张破坏票，但未达到门槛，任务依然成功。"
     else:
-        outcome = f"第 {quest} 个任务宣告成功，没有出现破坏票。"
-    return f"{outcome}目前任务比分，蓝方 {succeeded} 比 {failed}。"
+        outcome = f"{_ordinal(quest)}任务宣告成功，没有出现破坏票。"
+    nxt = f"下一轮由{_seat_no(next_leader)}提队。" if next_leader is not None else ""
+    return f"{outcome}目前任务比分，蓝方{_zh_count(succeeded)}比{_zh_count(failed)}。{nxt}"
 
 
 def line_host_lady(holder_no: int, target_no: int) -> str:
-    return f"湖中仙女环节：令牌持有者 {holder_no}号 查验了 {target_no}号 的真实阵营，令牌随后传给 {target_no}号。下面请 {holder_no}号 当众宣布查验结果。"
+    return f"仙女环节，{_seat_no(holder_no)}查验{_seat_no(target_no)}，令牌传给{_seat_no(target_no)}。"
 
 
 def line_host_assassination(assassin_no: int, target_no: int, hit: bool) -> str:
     if hit:
-        return f"刺客 {assassin_no}号 出刀，指认 {target_no}号 是梅林——命中！梅林倒下，红方逆转获胜。"
-    return f"刺客 {assassin_no}号 出刀，指认 {target_no}号 是梅林——刺杀落空，{target_no}号 并不是梅林，蓝方守住胜局。"
+        return f"刺客{_seat_no(assassin_no)}指认{_seat_no(target_no)}，命中梅林，红方获胜。"
+    return f"刺客{_seat_no(assassin_no)}指认{_seat_no(target_no)}，刺杀落空，蓝方获胜。"
 
 
 _WIN_REASON_LINE = {
@@ -203,12 +228,12 @@ _WIN_REASON_LINE = {
 
 def line_host_reveal(winner: str, win_reason: str, roles: dict[int, Role]) -> str:
     side = "蓝方" if winner == "good" else "红方"
-    pairs = "、".join(f"{no}号 是{_ROLE_LABEL[r]}" for no, r in sorted(roles.items()))
-    return f"本局结束，{side}获胜，{_WIN_REASON_LINE[(winner, win_reason)]}。现在公布全部身份：{pairs}。最后请各位玩家依次复盘这一局。"
+    pairs = "、".join(f"{_seat_no(no)}是{_ROLE_LABEL[r]}" for no, r in sorted(roles.items()))
+    return f"{side}获胜，{_WIN_REASON_LINE[(winner, win_reason)]}。身份公布：{pairs}。开始复盘。"
 
 
 def line_host_closing() -> str:
-    return "本局《阿瓦隆》到此结束，感谢各位玩家的精彩表现，我们下一局再见。"
+    return "本局结束，下一局见。"
 
 
 def line_player(seat_no: int, speech: str) -> str:

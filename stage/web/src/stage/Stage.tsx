@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
-  FeedItem, Intermission, ProposalLog, QuestLog, Scene, SeatInfo,
+  FeedItem, Intermission, NarrationCue, ProposalLog, QuestLog, Scene, SeatInfo,
 } from "../protocol";
 import { type Channel, elapsedOf, useChannel } from "../useChannel";
 import { useSfx } from "./sfx";
@@ -121,6 +121,7 @@ export default function Stage() {
         {flashKind && <div key={last!.seq} className={`flash flash-${flashKind}`} />}
         {scene && <TopHud scene={scene} />}
         {scene && <Arena ch={ch} scene={scene} last={last} />}
+        {last && <NarrationLayer ch={ch} item={last} />}
         {state.phase === "idle" && <Curtain title="稍候开演" sub="导播正在排片…" />}
         {last?.directive.kind === "intermission" && <IntermissionCard d={last.directive} />}
         <div className="overlay-canvas">
@@ -346,13 +347,7 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fe
     case "deal":
       return <DealDeck ch={ch} item={last} n={scene.seats.length} />;
     case "host":
-      return (
-        <div className="host-stage">
-          <div className="host-name"><StageIcon name="herald" size={28} /> {d.name}</div>
-          <div className="host-text"><LiveText ch={ch} item={last} text={d.text} /></div>
-          <Audio ch={ch} item={last} url={d.audio_url} />
-        </div>
-      );
+      return null;
     case "speech": {
       const sp = seatOf(d.seat_no);
       return (
@@ -659,8 +654,9 @@ function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: strin
     const t = window.setInterval(() => setNow(Date.now()), 50);
     return () => window.clearInterval(t);
   }, [item.seq]);
-  const budget = Math.max(item.duration * 0.62, 0.001);
-  const n = Math.min(Math.floor((elapsedOf(ch, item.started_at, now) / budget) * text.length), text.length);
+  const budget = Math.max((item.duration - item.content_at) * 0.62, 0.001);
+  const elapsed = elapsedOf(ch, item.started_at, now) - item.content_at;
+  const n = Math.min(Math.floor((elapsed / budget) * text.length), text.length);
   // 文字铺满后把最近的滚动容器（.live-scroll：发言区/复盘字幕共用契约）拉到底，最新一行始终可见。
   useEffect(() => {
     const box = ref.current?.closest(".live-scroll");
@@ -669,16 +665,41 @@ function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: strin
   return <span ref={ref}>{text.slice(0, Math.max(n, 0))}{n < text.length && <span className="caret">▌</span>}</span>;
 }
 
-function Audio({ ch, item, url }: { ch: Channel; item: FeedItem; url: string | null | undefined }) {
+function NarrationLayer({ ch, item }: { ch: Channel; item: FeedItem }) {
+  return (
+    <>
+      {item.narrations.map((n) => <NarrationAudio key={`${item.seq}-${n.beat}-${n.at}`} ch={ch} item={item} cue={n} />)}
+    </>
+  );
+}
+
+function NarrationAudio({ ch, item, cue }: { ch: Channel; item: FeedItem; cue: NarrationCue }) {
+  return <Audio ch={ch} item={item} url={cue.audio_url} at={cue.at} />;
+}
+
+function Audio({ ch, item, url, at = item.content_at }: { ch: Channel; item: FeedItem; url: string | null | undefined; at?: number }) {
   useEffect(() => {
     if (!url) return;
-    const el = new window.Audio(url);
-    // 时间轴倍速：拍被压缩了 speed 倍，音频也按 speed 提速才放得进、对得齐（中途加入时音频位置同乘 speed）。
-    el.playbackRate = item.speed;
-    el.currentTime = Math.max(elapsedOf(ch, item.started_at, Date.now()) * item.speed, 0);
-    el.play().catch(() => {});
-    return () => el.pause();
-  }, [url, item.seq]);
+    let timer = 0;
+    let el: HTMLAudioElement | null = null;
+    const play = (offset: number) => {
+      el = new window.Audio(url);
+      // 时间轴倍速：拍被压缩了 speed 倍，音频也按 speed 提速才放得进、对得齐（中途加入时音频位置同乘 speed）。
+      el.playbackRate = item.speed;
+      el.currentTime = Math.max(offset * item.speed, 0);
+      el.play().catch(() => {});
+    };
+    const elapsed = elapsedOf(ch, item.started_at, Date.now()) - at;
+    if (elapsed >= 0) {
+      play(elapsed);
+    } else {
+      timer = window.setTimeout(() => play(0), Math.max(-elapsed, 0) * 1000);
+    }
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      el?.pause();
+    };
+  }, [url, item.seq, at]);
   return null;
 }
 

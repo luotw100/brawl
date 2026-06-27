@@ -21,7 +21,7 @@ _CALL_ID = re.compile(r"^\d+\.\d+\.host\.[a-z_]+(\.\d+)?$")
 
 # 每局必然出现的拍子；lady / assassination 视对局走向（见各断言）。
 # 玩家发言（组队宣言/表态/复盘）不是主持拍——主持人只控场串场，绝不复述。
-_ALWAYS_BEATS = {"opening", "deal", "propose_intro", "team", "vote_result", "reveal", "closing"}
+_ALWAYS_BEATS = {"opening", "vote_result", "quest_result", "reveal", "closing"}
 
 
 async def _run_with_events(tmp_path: Path, name: str, **kwargs) -> tuple[GameState, list[dict]]:
@@ -58,22 +58,21 @@ async def test_host_events_cover_beats_and_schema(tmp_path) -> None:
 
 
 async def test_host_events_interleave_phases(tmp_path) -> None:
-    """host 事件穿插在各阶段之间：开场两拍（opening、deal）按序在一切玩家事件之前——节目单
-    是 game_start → host:opening → deal → host:deal（头像先就座再翻牌）；closing 是最后一个
-    事件，且每个结构化阶段事件（propose/vote_result/quest_result）都有同拍/配对 host 串场相伴。"""
+    """host 事件穿插在各阶段之间：开场只保留一条 opening，盖在发牌动画上；
+    队长提队后不再另接主持交接。closing 是最后一个事件，vote/quest 结果仍有配对口播。"""
     _, events = await _run_with_events(tmp_path, "order", players=5, seed=4)
     types = [e["type"] for e in events]
     host_beats = [e["beat"] for e in events if e["type"] == "host"]
-    # 开场前两拍 host 按序是 opening、deal（中间夹着 deal 游戏事件——头像先就座再翻牌）
-    assert host_beats[0] == "opening" and host_beats[1] == "deal"
-    # 第一个 host 之前只可能有 game_start / deal 游戏事件
+    assert host_beats[0] == "opening"
+    # 第一个 host 之前是 game_start / deal：开场口播压在发牌动画下。
     first_host = types.index("host")
     assert all(t in {"game_start", "deal"} for t in types[:first_host])
+    assert "deal" not in host_beats and "team" not in host_beats
     assert events[-1]["type"] == "host" and events[-1]["beat"] == "closing"
-    structural = {"propose": "propose_intro", "propose ": "team", "vote_result": "vote_result", "quest_result": "quest_result"}
     beats = [e["beat"] for e in events if e["type"] == "host"]
-    for ev_type, beat in structural.items():
-        assert types.count(ev_type.strip()) == beats.count(beat), f"{ev_type.strip()} 事件数应与 host {beat} 拍数一致"
+    assert types.count("vote_result") == beats.count("vote_result")
+    assert types.count("quest_result") == beats.count("quest_result")
+    assert "propose_intro" not in beats
 
 
 async def test_host_never_quotes_player_speech(tmp_path) -> None:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from server.engine import Engine, _upcoming_audio
-from server.protocol import GameOpen, Speech, VoteReveal
+from server.engine import Engine, StageBeat, _upcoming_audio
+from server.protocol import Deal, GameOpen, HostSpeech, QuestCard, QuestReveal, SeatVote, Speech, VoteReveal
 from server.tests.conftest import EVENTS, write_replay
 
 
@@ -14,12 +14,12 @@ def test_upcoming_audio_collects_next_urls_skipping_silent():
     def speech(no: int, url: str | None) -> Speech:
         return Speech(phase="discuss", seat_no=no, text="x", monologue="", audio_url=url)
 
-    beats: list = [
-        GameOpen(players=5, good=3, evil=2),  # 无声
-        speech(1, "/u1"),
-        VoteReveal(quest=1, attempt=1, votes=[], approved=True, rejections=0),  # 无声，跳过
-        speech(2, "/u2"),
-        speech(3, "/u3"),
+    beats = [
+        StageBeat(GameOpen(players=5, good=3, evil=2)),  # 无声
+        StageBeat(speech(1, "/u1")),
+        StageBeat(VoteReveal(quest=1, attempt=1, votes=[], approved=True, rejections=0)),  # 无声，跳过
+        StageBeat(speech(2, "/u2")),
+        StageBeat(speech(3, "/u3")),
     ]
     assert _upcoming_audio(beats, 0, 2) == ["/u1", "/u2"]  # 越过 VoteReveal 取够 2 条
     assert _upcoming_audio(beats, 1, 2) == ["/u2", "/u3"]
@@ -210,8 +210,8 @@ async def test_audio_duration_overrides_text_estimate(settings):
     voiced = Speech(phase="propose", seat_no=2, text="我带3号。", monologue="稳一手。",
                     audio_url="/replays/game1/tts/a.opus")
     silent = Speech(phase="discuss", seat_no=3, text="行吧。", monologue="没看出问题。")
-    assert engine._duration(voiced) == 9.5  # pace=0 文字估算为 0，音频撑满
-    assert engine._duration(silent) == 0.0  # 无音频回退字数估算
+    assert engine._duration(StageBeat(voiced)) == 9.5  # pace=0 文字估算为 0，音频撑满
+    assert engine._duration(StageBeat(silent)) == 0.0  # 无音频回退字数估算
 
 
 async def test_speed_compresses_beat_duration(settings):
@@ -220,9 +220,9 @@ async def test_speed_compresses_beat_duration(settings):
     engine._durations = {"/replays/game1/tts/a.opus": 9.0}
     voiced = Speech(phase="propose", seat_no=2, text="我带3号。", monologue="稳一手。",
                     audio_url="/replays/game1/tts/a.opus")
-    assert engine._duration(voiced) == 9.5  # speed=1.0 基准（9s 音频 + 0.5 余量）
+    assert engine._duration(StageBeat(voiced)) == 9.5  # speed=1.0 基准（9s 音频 + 0.5 余量）
     engine.speed = 2.0
-    assert engine._duration(voiced) == 4.75  # 2× → 拍减半
+    assert engine._duration(StageBeat(voiced)) == 4.75  # 2× → 拍减半
 
 
 async def test_lady_audio_extends_dwell(settings):
@@ -237,7 +237,81 @@ async def test_lady_audio_extends_dwell(settings):
     directive = avalon.adapt(lady_event, replay_id="game1", tts=tts, names={}, host_name="司仪")
     engine, _ = make_engine(settings)  # pace=0 → 文字估算为 0
     engine._durations = avalon.audio_durations("game1", tts)
-    assert engine._duration(directive) == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
+    assert engine._duration(StageBeat(directive)) == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
+
+
+async def test_host_speech_collapses_into_adjacent_stage_beat(settings):
+    engine, _ = make_engine(settings)
+    directives = [
+        GameOpen(players=5, good=3, evil=2),
+        Deal(seats=[], leader_no=5, lady_holder=4),
+        HostSpeech(name="司仪", beat="opening", text="开场", audio_url="/h1"),
+        Speech(phase="propose", seat_no=2, text="我带3号。", monologue="", audio_url="/p"),
+        VoteReveal(quest=1, attempt=1, votes=[], approved=True, rejections=0),
+        HostSpeech(name="司仪", beat="vote_result", text="通过", audio_url="/h2"),
+    ]
+    beats = engine._stage_beats(directives)
+    assert [b.directive.kind for b in beats] == ["game_open", "deal", "speech", "vote_reveal"]
+    assert [(n.beat, n.audio_url) for n in beats[1].narrations] == [("opening", "/h1")]
+    assert [(n.beat, n.audio_url) for n in beats[3].narrations] == [("vote_result", "/h2")]
+
+
+async def test_lead_host_delays_player_content(settings):
+    engine, _ = make_engine(settings)
+    engine._durations = {"/h": 2.0}
+    beats = engine._stage_beats([
+        HostSpeech(name="司仪", beat="propose_intro", text="队长提队", audio_url="/h"),
+        Speech(phase="propose", seat_no=2, text="我带3号。", monologue="", audio_url=None),
+    ])
+    assert len(beats) == 1
+    assert beats[0].content_at == 2.2
+    assert beats[0].narrations[0].at == 0.0
+
+
+async def test_reveal_animation_duration_follows_narration(settings):
+    engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
+    engine._durations = {"/h": 3.0}
+    host = HostSpeech(name="司仪", beat="vote_result", text="十票赞成", audio_url="/h")
+    beat = StageBeat(
+        VoteReveal(
+            quest=1,
+            attempt=1,
+            votes=[SeatVote(seat_no=i, approve=True, monologue="") for i in range(1, 11)],
+            approved=True,
+            rejections=0,
+        ),
+        narrations=[engine._narration(host, 0.0)],
+    )
+    assert engine._duration(beat) == 3.2
+
+
+async def test_deal_animation_duration_follows_opening_narration(settings):
+    engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
+    engine._durations = {"/h": 5.0}
+    host = HostSpeech(name="司仪", beat="opening", text="欢迎来到阿瓦隆", audio_url="/h")
+    beat = StageBeat(
+        Deal(seats=[], leader_no=5, lady_holder=4),
+        narrations=[engine._narration(host, 0.0)],
+    )
+    assert engine._duration(beat) == 5.2
+
+
+async def test_quest_animation_duration_follows_narration(settings):
+    engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
+    engine._durations = {"/h": 4.0}
+    host = HostSpeech(name="司仪", beat="quest_result", text="任务成功", audio_url="/h")
+    beat = StageBeat(
+        QuestReveal(
+            quest=1,
+            team=[1, 2, 3],
+            cards=[QuestCard(seat_no=1, success=True, monologue="")],
+            fails=0,
+            fails_required=1,
+            result="success",
+        ),
+        narrations=[engine._narration(host, 0.0)],
+    )
+    assert engine._duration(beat) == 4.2
 
 
 async def test_broken_replay_skipped_channel_survives(settings):
