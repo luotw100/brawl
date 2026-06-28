@@ -75,10 +75,10 @@ async def test_plays_full_game_then_intermission(settings):
     assert engine.scene.winner == "evil"
 
 
-async def test_playback_gate_resets_first_frame_clock_before_dwell(settings):
+async def test_playback_gate_starts_on_deal_frame(settings):
     class Gate:
         async def first_frame_published(self, seq: int) -> float | None:
-            assert seq == 1
+            assert seq == 2
             return 1234.0
 
         async def before_intermission(self) -> None:
@@ -86,9 +86,9 @@ async def test_playback_gate_resets_first_frame_clock_before_dwell(settings):
 
     engine, rec = make_engine(settings, Gate())
     await engine.set_queue(["game1"])
-    await _run_until(engine, lambda: len(rec.states) >= 2)
-    first_items = [scene.feed[-1] for _, scene in rec.states if scene.feed and scene.feed[-1].seq == 1]
-    assert first_items[-1].started_at == 1234.0
+    await _run_until(engine, lambda: len([s for _, s in rec.states if s.feed and s.feed[-1].seq == 2]) >= 2)
+    deal_items = [scene.feed[-1] for _, scene in rec.states if scene.feed and scene.feed[-1].seq == 2]
+    assert deal_items[-1].started_at == 1234.0
 
 
 async def test_playback_gate_runs_before_intermission_is_published(settings):

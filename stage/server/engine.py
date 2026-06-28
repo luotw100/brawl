@@ -219,7 +219,7 @@ class Engine:
             duration = self._duration(beat)
             self.prefetch = _upcoming_audio(beats, i, self._prefetch_factor)
             await self._emit(beat, duration)
-            if i == 0:
+            if isinstance(directive, Deal):
                 started_at = await self._playback_gate.first_frame_published(self._seq)
                 if started_at is not None:
                     self.scene.feed[-1].started_at = started_at

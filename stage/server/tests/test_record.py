@@ -15,6 +15,7 @@ from server.record import (
     ffmpeg_bgm_concat_cmd,
     ffmpeg_capture_cmd,
     ffmpeg_mux_cmd,
+    recorded_beats,
 )
 from server.record_settings import RENDER_DEVICE, RecordSettings
 from server.protocol import NarrationCue
@@ -103,6 +104,16 @@ def test_audio_segments_narrations_offset_inside_beat():
 
 def test_audio_segments_empty():
     assert audio_segments([], ROOT, SFX, shift=0.0, origin=0.0) == []
+
+
+def test_recorded_beats_drop_preroll_before_capture_origin():
+    beats = [
+        Beat(seq=1, started_at=99.0, audio_url="/replays/g/tts/open.opus"),
+        Beat(seq=2, started_at=100.0, audio_url="/replays/g/tts/deal.opus"),
+        Beat(seq=3, started_at=104.0, audio_url="/replays/g/tts/speech.opus"),
+    ]
+
+    assert [b.seq for b in recorded_beats(beats, origin=100.0)] == [2, 3]
 
 
 def test_ffmpeg_audio_cmd_delays_and_mix():

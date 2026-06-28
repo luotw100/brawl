@@ -278,6 +278,11 @@ def ffmpeg_mux_cmd(video: Path, audio: Path | None, bgm: Path | None, out: Path)
     return cmd
 
 
+def recorded_beats(beats: list[Beat], origin: float) -> list[Beat]:
+    """丢掉开抓前的前置拍；录制现在从发牌画面开始，game_open 不进视频也不进音轨。"""
+    return [b for b in beats if b.started_at >= origin]
+
+
 # ---------------------------------------------------------------- 引擎探针 / 等待
 
 
@@ -526,7 +531,7 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
 
             await context.close()  # persistent_context.close() 一并关掉浏览器
 
-        return timeline.beats, origin, cap_out
+        return recorded_beats(timeline.beats, origin), origin, cap_out
     finally:
         with suppress(Exception):
             await gate.stop()
