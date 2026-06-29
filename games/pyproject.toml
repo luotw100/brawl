@@ -19,6 +19,18 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.0",
 ]
 
+[project.optional-dependencies]
+qwen3-tts-cpu = [
+    "qwen-tts==0.1.1",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+]
+qwen3-tts-cu128 = [
+    "qwen-tts==0.1.1",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+]
+
 [project.scripts]
 brawl = "cli:main"
 
@@ -27,7 +39,6 @@ dev = [
     "ruff>=0.6.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "edge-tts>=6.1",
 ]
 
 [build-system]
@@ -39,10 +50,38 @@ build-backend = "hatchling.build"
 # 不用 force-include 复制 cli.py——那会在 site-packages 留一份副本遮蔽源文件。
 packages = ["core", "avalon", "voicelab", "llmview"]
 
+[tool.uv]
+conflicts = [
+    [
+        { extra = "qwen3-tts-cpu" },
+        { extra = "qwen3-tts-cu128" },
+    ],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "qwen3-tts-cpu" },
+    { index = "pytorch-cu128", extra = "qwen3-tts-cu128" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", extra = "qwen3-tts-cpu" },
+    { index = "pytorch-cu128", extra = "qwen3-tts-cu128" },
+]
+
 # 阿里云 PyPI 镜像加速安装
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.ruff]
 line-length = 120

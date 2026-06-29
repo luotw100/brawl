@@ -59,7 +59,7 @@ class TtsSettings(BaseSettings):
 
     dir: CliPositionalArg[Path]  # replay 目录（含 events.jsonl / meta.json）
     rps: float = 2.8  # DashScope 合成请求发起速率；qwen3-tts-vd 官方限流约 3 RPS，默认留一点余量
-    backend: Literal["cloud", "local"] = "cloud"
+    backend: Literal["cloud"] = "cloud"
 
     @model_validator(mode="after")
     def _check(self) -> TtsSettings:
@@ -342,7 +342,7 @@ async def _run(settings: TtsSettings, console: Console) -> None:
     todo = [u for u in utterances if not (u.call_id in manifest and (tts_dir / f"{u.call_id}.opus").is_file())]
     done = len(utterances) - len(todo)
     jobs = [TtsJob(i, u) for i, u in enumerate(todo, start=1)]
-    backend_label = "AliCloudQwen3TTS" if settings.backend == "cloud" else "LocalEdgeTTS"
+    backend_label = "AliCloudQwen3TTS"
     dashboard = TtsDashboard(settings, len(utterances), done, jobs, tts_dir, console, backend_label)
     if not todo:
         console.print(dashboard.render())
@@ -351,17 +351,11 @@ async def _run(settings: TtsSettings, console: Console) -> None:
     clock = LaunchClock(settings.rps)
 
     with Live(dashboard.render(), console=console, refresh_per_second=8, vertical_overflow="ellipsis") as live:
-        if settings.backend == "local":
-            from avalon.tts_backend import LocalEdgeTTS
+        async with httpx.AsyncClient(headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60) as client:
+            from avalon.tts_backend import AliCloudQwen3TTS
 
-            synthesizer: object = LocalEdgeTTS()
+            synthesizer = AliCloudQwen3TTS(client)
             failed = await _synthesize_all(synthesizer, todo, dashboard, clock, tts_dir, manifest, manifest_path, live)
-        else:
-            async with httpx.AsyncClient(headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60) as client:
-                from avalon.tts_backend import AliCloudQwen3TTS
-
-                synthesizer = AliCloudQwen3TTS(client)
-                failed = await _synthesize_all(synthesizer, todo, dashboard, clock, tts_dir, manifest, manifest_path, live)
 
     if failed is not None:
         raise failed

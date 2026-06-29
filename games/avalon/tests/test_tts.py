@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from avalon import tts
-from avalon.tts import LaunchClock, SettingsError, TtsSettings
+from avalon.tts import LaunchClock, TtsSettings
 
 
 def _replay_dir(tmp_path: Path) -> Path:
@@ -63,29 +63,11 @@ def test_backend_defaults_to_cloud(tmp_path: Path) -> None:
     assert settings.backend == "cloud"
 
 
-def test_backend_accepts_local(tmp_path: Path) -> None:
-    settings = TtsSettings.load([str(_replay_dir(tmp_path)), "--backend", "local"])
-    assert settings.backend == "local"
+def test_backend_rejects_local(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        TtsSettings.load([str(_replay_dir(tmp_path)), "--backend", "local"])
 
 
 def test_backend_rejects_unknown_value(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         TtsSettings.load([str(_replay_dir(tmp_path)), "--backend", "garbage"])
-
-
-def test_local_edge_tts_is_importable() -> None:
-    """确保 edge-tts 包可导入，LocalEdgeTTS 能正常构造。"""
-    from avalon.tts_backend import LocalEdgeTTS
-
-    s = LocalEdgeTTS()
-    assert s._voice == "zh-CN-XiaoxiaoNeural"
-
-
-def test_local_edge_tts_raises_when_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sys
-
-    from avalon import tts_backend
-
-    monkeypatch.setitem(sys.modules, "edge_tts", None)
-    with pytest.raises(SettingsError, match="edge-tts 未安装"):
-        tts_backend.LocalEdgeTTS()

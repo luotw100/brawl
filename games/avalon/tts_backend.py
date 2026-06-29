@@ -1,14 +1,11 @@
-"""TTS 合成后端：Protocol + AliCloudQwen3TTS + LocalEdgeTTS。
+"""TTS 合成后端：Protocol + AliCloudQwen3TTS。
 
-照搬 core.actor.ModelBackend 的 Protocol 模式：核心逻辑只调用 synthesize()，不关心后端是云还是本地。
+照搬 core.actor.ModelBackend 的 Protocol 模式：核心逻辑只调用 synthesize()，不关心具体云端实现。
 """
 
 from __future__ import annotations
 
 import asyncio
-import subprocess
-import tempfile
-from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -50,34 +47,3 @@ class AliCloudQwen3TTS:
                 dashboard.status(u, "Retry", f"sleep {2**i}s", i + 1)
                 await asyncio.sleep(2**i)
         raise AssertionError("unreachable")
-
-
-class LocalEdgeTTS:
-    """本地 Edge TTS：用微软免费语音合成（edge-tts），无需 API key。"""
-
-    def __init__(self, voice: str = "zh-CN-XiaoxiaoNeural") -> None:
-        try:
-            import edge_tts  # noqa: F401
-        except ImportError as err:
-            raise SettingsError("edge-tts 未安装，请执行：pip install edge-tts") from err
-        self._voice = voice
-
-    async def synthesize(self, dashboard: TtsDashboard, u: object) -> bytes:
-        from edge_tts import Communicate
-
-        dashboard.status(u, "Request", "EdgeTTS", 1)
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as mp3_tmp:
-            mp3_path = Path(mp3_tmp.name)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_tmp:
-            wav_path = Path(wav_tmp.name)
-        try:
-            await Communicate(u.text, self._voice).save(str(mp3_path))
-            dashboard.status(u, "Download", "mp3→wav", 1)
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", str(mp3_path), "-f", "wav", str(wav_path)],
-                check=True, capture_output=True,
-            )
-            return wav_path.read_bytes()
-        finally:
-            mp3_path.unlink(missing_ok=True)
-            wav_path.unlink(missing_ok=True)
