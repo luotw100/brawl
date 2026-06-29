@@ -44,9 +44,6 @@ class GameSetup:
             "strategies": self.strategies,
             "models": self.models,
             "roles": [r.value for r in self.roles],
-            "win_condition": self.board.win_condition,
-            "reveal_on_death": self.board.reveal_on_death,
-            "last_words": self.board.last_words,
         }
 
 

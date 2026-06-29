@@ -16,23 +16,12 @@ from rich.text import Text
 from werewolf import rules
 
 _SIDE_STYLE = {rules.Side.GOOD.value: "blue", rules.Side.WEREWOLF.value: "red"}
-_SIDE_LABEL = {rules.Side.GOOD.value: "好人阵营", rules.Side.WEREWOLF.value: "狼人阵营"}
-
-_DEATH_REASON = {
-    "wolf_kill": "狼刀",
-    "poison": "毒药",
-    "exile": "放逐",
-    "hunter_shot": "猎人开枪",
-}
-
-_WIN_REASON = {
-    "all_wolves_dead": "狼人全部出局",
-    "all_gods_dead": "神职全部出局",
-    "all_villagers_dead": "平民全部出局",
-}
+# 文案标签从 rules 取单一来源（与 prompts 同源），console 只额外管渲染样式。
+_SIDE_LABEL = {side.value: label for side, label in rules.SIDE_LABEL.items()}
+_DEATH_REASON = rules.DEATH_REASON_LABEL
+_WIN_REASON = rules.WIN_REASON_LABEL
 
 _PHASE_LABEL = {
-    "day_announce": "天亮",
     "last_words": "遗言",
     "discussion": "发言",
 }
@@ -212,6 +201,11 @@ class Renderer:
         body.append("\n")
         body.append(f"开枪目标：{_seat(ev['target_no'])}", style="bold red" if ev["target_no"] is not None else "bold")
         self.console.print(Panel(body, title=f"猎人 {ev['hunter_no']}号", title_align="left", border_style="red"))
+
+    def _on_banter(self, ev: dict[str, Any]) -> None:
+        side = ev["side"]
+        title = f"复盘 · {_seat(ev['seat_no'])}（{_side_label(side)}·{_role_label(ev.get('role'))}）"
+        self.console.print(Panel(_speech_body(ev.get("text"), ev.get("monologue")), title=title, title_align="left", border_style=_side_style(side)))
 
     def _on_game_end(self, ev: dict[str, Any]) -> None:
         winner = ev["winner"]

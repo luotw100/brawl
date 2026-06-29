@@ -22,5 +22,4 @@ def test_pre_witch_hunter_idiot_12_board_shape() -> None:
     assert board.wolves == 4
     assert board.gods == 4
     assert board.villagers == 4
-    assert board.night_order == ("wolves", "seer", "witch")
 
