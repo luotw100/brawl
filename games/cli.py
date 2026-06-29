@@ -21,10 +21,13 @@ from llmview import show as llm_view
 from llmview.show import ViewError
 from voicelab import forge as voice_forge
 from voicelab.forge import SettingsError as VoicelabSettingsError
+from werewolf import run as werewolf_run
+from werewolf.settings import SettingsError as WerewolfSettingsError
 
 # 子命令名(含中文别名)→ 该玩法的 main(argv) 入口
 GAMES: dict[str, Callable[[list[str]], None]] = {
     "avalon": avalon_run.main,
+    "werewolf": werewolf_run.main,
     "avalon-replay": avalon_replay.main,  # 回放一局 replay 快照（非生成，纯消费 events.jsonl）
     "avalon-tts": avalon_tts.main,  # 把一局公开发言合成音频，落 replay/tts/（柔性续合）
     "voice-forge": voice_forge.main,  # 音色铸造：嗓音描述 → 阿里云 voice_id + 试听 wav（跨玩法）
@@ -49,7 +52,7 @@ def main() -> int:
         return 2
     try:
         handler(rest)
-    except (AvalonSettingsError, AvalonTtsError, VoicelabSettingsError, ViewError, ValidationError) as e:
+    except (AvalonSettingsError, WerewolfSettingsError, AvalonTtsError, VoicelabSettingsError, ViewError, ValidationError) as e:
         # 用户配置错误(坏的 --config、字段校验失败):只打印消息,不甩 traceback。
         print(f"配置错误: {e}", file=sys.stderr)
         return 1
