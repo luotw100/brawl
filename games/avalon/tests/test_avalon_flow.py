@@ -128,7 +128,8 @@ async def test_history_is_public_ledger_of_all_proposals() -> None:
 async def test_replay_writes_three_files(tmp_path) -> None:
     """--replay 落一局完整快照：三件套齐全，events 非空，meta 含确定性开局方案。"""
     run_dir = tmp_path / "game1"
-    await run_game(AvalonSettings(player="random", players=5, seed=4, replay=run_dir))
+    cast = ["shade", "fox", "diva", "shy", "honest"]
+    await run_game(AvalonSettings(player="random", players=5, seed=4, replay=run_dir, cast=cast))
 
     events = (run_dir / "events.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert events, "events.jsonl 应记录整局事件时间线"
@@ -146,4 +147,19 @@ async def test_replay_writes_three_files(tmp_path) -> None:
     assert all(r["ok"] for r in records)  # 假后端产出永远合法、解析不该失败
 
     meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-    assert set(meta["setup"]) == {"cast", "host_cast", "names", "host_name", "voices", "host_voice", "strategies", "models", "roles", "first_leader", "lady_holder"}
+    assert set(meta["setup"]) == {
+        "cast",
+        "host_cast",
+        "names",
+        "host_name",
+        "voices",
+        "host_voice",
+        "voice_designs",
+        "host_voice_design",
+        "strategies",
+        "models",
+        "roles",
+        "first_leader",
+        "lady_holder",
+    }
+    assert meta["setup"]["voice_designs"] and meta["setup"]["host_voice_design"]

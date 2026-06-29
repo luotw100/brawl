@@ -1,8 +1,9 @@
 """`brawl avalon-tts <replay_dir>`：把一局 replay 的公开发言合成成音频。
 
-消费端，像 avalon-replay 一样只读快照、零对局逻辑。音色**全部从 meta.json 查**
-（setup.voices / setup.host_voice，开局时从 cast.yaml 快照进来）——本模块不读 cast.yaml，
-故 cast.yaml 之后再改也不影响老 replay 的配音。
+消费端，像 avalon-replay 一样只读快照、零对局逻辑。cloud 音色从 meta.json 查
+（setup.voices / setup.host_voice）；local 直接用 meta.json 快照的 voice design prompt
+（setup.voice_designs / setup.host_voice_design）——本模块不读 cast.yaml，故 cast.yaml 之后
+再改也不影响老 replay 的配音。
 
 柔性续合：产物写进 <replay_dir>/tts/，manifest.json 以 call_id 为键记录每条已合成发言。
 重复运行只补差集（events 里有、manifest 里没有或音频文件已丢的那些），已合成的跳过。
@@ -59,7 +60,10 @@ class TtsSettings(BaseSettings):
 
     dir: CliPositionalArg[Path]  # replay 目录（含 events.jsonl / meta.json）
     rps: float = 2.8  # DashScope 合成请求发起速率；qwen3-tts-vd 官方限流约 3 RPS，默认留一点余量
-    backend: Literal["cloud"] = "cloud"
+    backend: Literal["qwen3-tts-cloud", "qwen3-tts-local"] = "qwen3-tts-cloud"
+    vd_model: str = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    threads: int = 2
 
     @model_validator(mode="after")
     def _check(self) -> TtsSettings:
@@ -70,6 +74,8 @@ class TtsSettings(BaseSettings):
                 raise ValueError(f"{self.dir} 不是 replay 目录（缺 {name}）")
         if self.rps <= 0:
             raise ValueError(f"rps 必须 >0，收到 {self.rps}")
+        if self.threads < 1:
+            raise ValueError(f"threads 必须 ≥1，收到 {self.threads}")
         return self
 
     @classmethod
@@ -110,7 +116,7 @@ class Utterance:
     call_id: str
     speaker: str  # 显示用："3号" / "主持人"
     persona: str  # 人设 id（debug/溯源用）
-    voice_id: str  # TTS 音色 id（从 meta 查）
+    voice_id: str  # TTS 后端句柄：cloud 是 voice_id，local 是 voice design prompt
     text: str
 
 
@@ -322,16 +328,14 @@ async def _run(settings: TtsSettings, console: Console) -> None:
     meta = json.loads((settings.dir / "meta.json").read_text(encoding="utf-8"))["setup"]
     events = _read_events(settings.dir / "events.jsonl")
 
-    voices, host_voice = meta.get("voices"), meta.get("host_voice")
-    if voices is None or host_voice is None:
-        raise SettingsError(f"{settings.dir}/meta.json 不自包含音色（缺 setup.voices/host_voice）：用新版引擎重生成或手工补全")
+    voices, host_voice = _voices(settings, meta)
 
     utterances = _utterances(events, voices, host_voice, meta["cast"], meta["host_cast"])
 
-    # 边界前置校验：任一说话人没铸音色就别开工，免得合成到一半才炸。
+    # 边界前置校验：任一说话人缺 TTS 配置就别开工，免得合成到一半才炸。
     missing = sorted({f"{u.speaker}（{u.persona}）" for u in utterances if not u.voice_id})
     if missing:
-        raise SettingsError(f"以下说话人 meta 里无音色 id，无法合成：{'、'.join(missing)}")
+        raise SettingsError(f"以下说话人 meta 里无 TTS 配置，无法合成：{'、'.join(missing)}")
 
     tts_dir = settings.dir / "tts"
     tts_dir.mkdir(exist_ok=True)
@@ -339,23 +343,32 @@ async def _run(settings: TtsSettings, console: Console) -> None:
     manifest: dict[str, dict[str, Any]] = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
 
     # 差集：manifest 里有记录且音频文件还在的，算已完成，跳过。
-    todo = [u for u in utterances if not (u.call_id in manifest and (tts_dir / f"{u.call_id}.opus").is_file())]
+    todo = [u for u in utterances if not _is_done(u, settings.backend, manifest, tts_dir)]
     done = len(utterances) - len(todo)
     jobs = [TtsJob(i, u) for i, u in enumerate(todo, start=1)]
-    backend_label = "AliCloudQwen3TTS"
+    backend_label = "AliCloudQwen3TTS" if settings.backend == "qwen3-tts-cloud" else "LocalQwen3TTS"
     dashboard = TtsDashboard(settings, len(utterances), done, jobs, tts_dir, console, backend_label)
     if not todo:
         console.print(dashboard.render())
         return
 
-    clock = LaunchClock(settings.rps)
-
     with Live(dashboard.render(), console=console, refresh_per_second=8, vertical_overflow="ellipsis") as live:
-        async with httpx.AsyncClient(headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60) as client:
-            from avalon.tts_backend import AliCloudQwen3TTS
+        if settings.backend == "qwen3-tts-cloud":
+            clock = LaunchClock(settings.rps)
+            async with httpx.AsyncClient(headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60) as client:
+                from avalon.tts_backend import AliCloudQwen3TTS
 
-            synthesizer = AliCloudQwen3TTS(client)
-            failed = await _synthesize_all(synthesizer, todo, dashboard, clock, tts_dir, manifest, manifest_path, live)
+                synthesizer = AliCloudQwen3TTS(client)
+                failed = await _synthesize_all(synthesizer, settings.backend, todo, dashboard, clock, tts_dir, manifest, manifest_path, live)
+        else:
+            from avalon.tts_backend import LocalQwen3TTS
+
+            synthesizer = LocalQwen3TTS(
+                vd_model=settings.vd_model,
+                device=settings.device,
+                threads=settings.threads,
+            )
+            failed = await _synthesize_serial(synthesizer, settings.backend, todo, dashboard, tts_dir, manifest, manifest_path, live)
 
     if failed is not None:
         raise failed
@@ -363,8 +376,28 @@ async def _run(settings: TtsSettings, console: Console) -> None:
     console.print(f"完成：音频与 manifest.json 已写入 {tts_dir}")
 
 
+def _voices(settings: TtsSettings, meta: dict[str, Any]) -> tuple[list[str], str]:
+    if settings.backend == "qwen3-tts-cloud":
+        voices, host_voice = meta.get("voices"), meta.get("host_voice")
+        missing_msg = "缺 setup.voices/host_voice"
+    else:
+        voices, host_voice = meta.get("voice_designs"), meta.get("host_voice_design")
+        missing_msg = "缺 setup.voice_designs/host_voice_design；旧 replay 不兼容本地 TTS，请重新生成"
+    if voices is None or host_voice is None:
+        raise SettingsError(f"{settings.dir}/meta.json 不自包含音色（{missing_msg}）")
+    return voices, host_voice
+
+
+def _is_done(u: Utterance, backend: str, manifest: dict[str, dict[str, Any]], tts_dir: Path) -> bool:
+    record = manifest.get(u.call_id)
+    if record is None or not (tts_dir / f"{u.call_id}.opus").is_file():
+        return False
+    return record.get("backend", "qwen3-tts-cloud") == backend
+
+
 async def _synthesize_all(
     synthesizer: object,
+    backend: str,
     todo: list[Utterance],
     dashboard: TtsDashboard,
     clock: LaunchClock,
@@ -391,7 +424,7 @@ async def _synthesize_all(
         live.update(dashboard.render())
         done_tasks = {t for t in in_flight if t.done()}
         in_flight.difference_update(done_tasks)
-        failed = _collect_done(done_tasks, manifest, manifest_path, dashboard)
+        failed = _collect_done(done_tasks, backend, manifest, manifest_path, dashboard)
         live.update(dashboard.render())
         if failed is not None:
             break
@@ -399,7 +432,7 @@ async def _synthesize_all(
     while in_flight and failed is None:
         done_tasks, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
         in_flight.difference_update(done_tasks)
-        failed = _collect_done(done_tasks, manifest, manifest_path, dashboard)
+        failed = _collect_done(done_tasks, backend, manifest, manifest_path, dashboard)
         live.update(dashboard.render())
 
     if failed is not None:
@@ -410,8 +443,38 @@ async def _synthesize_all(
     return failed
 
 
+async def _synthesize_serial(
+    synthesizer: object,
+    backend: str,
+    todo: list[Utterance],
+    dashboard: TtsDashboard,
+    tts_dir: Path,
+    manifest: dict[str, dict[str, Any]],
+    manifest_path: Path,
+    live: Live,
+) -> Exception | None:
+    for u in todo:
+        task = asyncio.create_task(_one(synthesizer, u, dashboard, tts_dir))
+        live.update(dashboard.render())
+        await asyncio.wait({task})
+        failed = _collect_done({task}, backend, manifest, manifest_path, dashboard)
+        live.update(dashboard.render())
+        if failed is not None:
+            return failed
+    return None
+
+
+async def _one(synthesizer: object, u: Utterance, dashboard: TtsDashboard, tts_dir: Path) -> tuple[Utterance, int]:
+    wav = await synthesizer.synthesize(dashboard, u)
+    dashboard.status(u, "Transcode", "opus")
+    opus, duration_ms = _to_opus(wav)
+    _atomic_write_bytes(tts_dir / f"{u.call_id}.opus", opus)
+    return u, duration_ms
+
+
 def _collect_done(
     tasks: list[asyncio.Task[tuple[Utterance, int]]] | set[asyncio.Task[tuple[Utterance, int]]],
+    backend: str,
     manifest: dict[str, dict[str, Any]],
     manifest_path: Path,
     dashboard: TtsDashboard,
@@ -424,6 +487,7 @@ def _collect_done(
         manifest[u.call_id] = {
             "speaker": u.speaker,
             "persona": u.persona,
+            "backend": backend,
             "voice_id": u.voice_id,
             "text": u.text,
             "file": f"{u.call_id}.opus",

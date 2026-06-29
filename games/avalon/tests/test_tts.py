@@ -60,12 +60,12 @@ async def test_launch_clock_sends_at_requested_rps(monkeypatch: pytest.MonkeyPat
 
 def test_backend_defaults_to_cloud(tmp_path: Path) -> None:
     settings = TtsSettings.load([str(_replay_dir(tmp_path))])
-    assert settings.backend == "cloud"
+    assert settings.backend == "qwen3-tts-cloud"
 
 
-def test_backend_rejects_local(tmp_path: Path) -> None:
-    with pytest.raises(ValidationError):
-        TtsSettings.load([str(_replay_dir(tmp_path)), "--backend", "local"])
+def test_backend_accepts_local(tmp_path: Path) -> None:
+    settings = TtsSettings.load([str(_replay_dir(tmp_path)), "--backend", "qwen3-tts-local"])
+    assert settings.backend == "qwen3-tts-local"
 
 
 def test_backend_rejects_unknown_value(tmp_path: Path) -> None:

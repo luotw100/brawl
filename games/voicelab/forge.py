@@ -1,13 +1,8 @@
-"""`brawl voice-forge`:音色铸造——把一段嗓音描述(VD prompt)铸成阿里云 voice_id。
+"""`brawl voice-forge`:音色铸造——把一段嗓音描述(VD prompt)铸成可复用音色句柄。
 
-跨玩法通用,完全不认识 cast.yaml:输入嗓音描述,输出 voice_id + 一组试听 wav
-(预览 + 两个语气样本,验收"音色像不像"和"吃不吃 instructions"两件事)。
-试听产物落 /tmp 临时目录,不进 repo;听满意了把末尾打印的 yaml 片段拷进
-玩法自己的 cast.yaml,不满意就丢弃重铸(0.2 元/个,废弃音色留在云端,
-preferred_name 带日期方便将来辨认清理)。
+跨玩法通用,完全不认识 cast.yaml:输入嗓音描述,输出云端 voice_id 和一组试听 wav。
 
-API:阿里云百炼 Qwen3-TTS 声音设计(qwen-voice-design 创建 → qwen3-tts-vd 合成)。
-合成接口的 instructions(语气指令)不计费、官方文档未收录,实测有效。
+cloud:阿里云百炼 Qwen3-TTS 声音设计(qwen-voice-design 创建 → qwen3-tts-vd 合成)。
 """
 
 from __future__ import annotations
@@ -18,7 +13,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import httpx
 from dotenv import dotenv_values
@@ -63,6 +58,7 @@ class ForgeSettings(BaseSettings):
     _cli_args: ClassVar[list[str] | None] = None
 
     voice_prompt: CliPositionalArg[str]  # 嗓音描述(VD prompt),≤2048 字符
+    backend: Literal["qwen3-tts-cloud"] = "qwen3-tts-cloud"
     name: str = "voice"  # 一两个单词的短描述,拼上日期做云端 preferred_name(便于辨认/清理)
     preview_text: str = "我跳梅林？哥们，我要是梅林这局早就赢了好吧。"  # 用 cast 将来真会说的话来听
     emotion_samples: bool = True  # 铸完追加合成两个语气样本(急了/阴阳),验收 instructions 响应度
@@ -157,7 +153,7 @@ def _synthesize(client: httpx.Client, voice_id: str, text: str, instructions: st
     return client.get(body["output"]["audio"]["url"]).content
 
 
-def forge(s: ForgeSettings, console: Console) -> None:
+def _forge_cloud(s: ForgeSettings, console: Console) -> None:
     out_dir = s.out_dir or Path(tempfile.mkdtemp(prefix=f"voice-forge-{s.name}-"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -182,6 +178,10 @@ def forge(s: ForgeSettings, console: Console) -> None:
 
     console.print("\n听满意后,把下面片段拷进玩法的 cast.yaml 对应 persona:\n")
     console.print(f'    voice_id: {voice_id}\n    voice_design: "{s.voice_prompt}"')
+
+
+def forge(s: ForgeSettings, console: Console) -> None:
+    _forge_cloud(s, console)
 
 
 def main(argv: list[str]) -> None:

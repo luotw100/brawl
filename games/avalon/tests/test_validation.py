@@ -93,6 +93,14 @@ def test_host_cast_defaults_resolved_and_validated(registry: Registry) -> None:
             resolve_and_validate(AvalonSettings(player="random", players=5, host_cast=bad), registry, random.Random(0))
 
 
+def test_voice_design_snapshot_for_local_tts(registry: Registry) -> None:
+    """本地 Qwen3 VoiceDesign TTS 直接使用随 replay 快照的 voice prompt。"""
+    cast = ["shade", "fox", "diva", "shy", "honest"]
+    setup = resolve_and_validate(AvalonSettings(player="random", players=5, cast=cast), registry, random.Random(0))
+    assert len(setup.voice_designs) == 5
+    assert setup.host_voice_design
+
+
 def test_explicit_strategies_and_models_kept_and_validated(registry: Registry) -> None:
     """显式 --strategies/--models 照用；未知 id 在边界就炸。"""
     strategies = ["prudent"] * 5
