@@ -62,8 +62,14 @@ def create_app(settings: StageSettings, playback_gate: PlaybackGate | None = Non
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         task = asyncio.create_task(engine.run())
-        yield
-        task.cancel()
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     # 公网服务不送 API 地图：docs/openapi 全关
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)

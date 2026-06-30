@@ -1,4 +1,4 @@
-"""adapter 与 reducer 的不变量：全事件类型覆盖、未知类型即抛、状态折叠正确、feed 窗口护栏。"""
+"""阿瓦隆插件的不变量：全事件类型覆盖、未知类型即抛、状态折叠正确、feed 窗口护栏。"""
 
 from __future__ import annotations
 
@@ -7,23 +7,44 @@ import time
 
 import pytest
 
-from server import scene as avalon
-from server.protocol import FeedItem, Scene
+from server import replay
+from server.engine import FEED_CAP
+from server.games.avalon.plugin import AvalonPlugin
+from server.games.avalon.protocol import AvalonScene
+from server.games.base import AdaptContext
+from server.protocol import FeedItem
 from server.tests.conftest import EVENTS, write_replay
+
+PLUGIN = AvalonPlugin()
+
+
+def _ctx(replay_dir, replay_id="game1"):
+    return AdaptContext(
+        replay_id=replay_id,
+        tts=replay.load_tts(replay_dir),
+        names=replay.load_names(replay_dir),
+        host_name=replay.load_host_name(replay_dir),
+    )
 
 
 def _adapt_all(replay_root):
     d = replay_root / "game1"
-    host = avalon.load_host_name(d)
-    tts = avalon.load_tts(d)
-    names = avalon.load_names(d)
-    return [avalon.adapt(e, replay_id="game1", tts=tts, names=names, host_name=host) for e in EVENTS]
+    ctx = _ctx(d)
+    return [PLUGIN.adapt(e, ctx) for e in EVENTS]
 
 
-def _fold(directives) -> Scene:
-    scene = Scene()
+def _fold_one(scene: AvalonScene, directive, seq: int = 1) -> None:
+    """复刻引擎的一拍折叠：feed 入队 + 窗口护栏（玩法无关，引擎做）→ 玩法 reducer。"""
+    item = FeedItem(seq=seq, directive=directive, started_at=time.time(), duration=1.0)
+    scene.feed.append(item)
+    del scene.feed[:-FEED_CAP]
+    PLUGIN.apply(scene, item)
+
+
+def _fold(directives) -> AvalonScene:
+    scene = PLUGIN.new_scene()
     for seq, d in enumerate(directives, start=1):
-        avalon.apply(scene, FeedItem(seq=seq, directive=d, started_at=time.time(), duration=1.0))
+        _fold_one(scene, d, seq)
     return scene
 
 
@@ -36,17 +57,18 @@ def test_adapt_covers_every_event_type(replay_root):
     assert directives[1].name == "司仪"  # meta.setup.host_name（生成时快照，不读 cast.yaml）
 
 
-def test_adapt_unknown_event_raises(replay_root):
+def test_adapt_unknown_event_raises():
     with pytest.raises(ValueError, match="未知事件类型"):
-        avalon.adapt({"type": "nova"}, replay_id="g", tts={}, names={})
+        PLUGIN.adapt({"type": "nova"}, AdaptContext(replay_id="g", tts={}, names={}))
 
 
-def test_host_reveal_beat_not_staged(replay_root):
+def test_host_reveal_beat_not_staged():
     # 上帝视角全程亮身份，主持人复述身份的 reveal 拍不演 → adapt 返回 None（其余 host 拍照常出 directive）
+    ctx = AdaptContext(replay_id="g", tts={}, names={})
     reveal = {"type": "host", "beat": "reveal", "call_id": "5.1.host.reveal", "text": "现在公布全部身份：……"}
-    assert avalon.adapt(reveal, replay_id="g", tts={}, names={}) is None
+    assert PLUGIN.adapt(reveal, ctx) is None
     closing = {"type": "host", "beat": "closing", "call_id": "5.1.host.closing", "text": "下一局再见。"}
-    assert avalon.adapt(closing, replay_id="g", tts={}, names={}) is not None
+    assert PLUGIN.adapt(closing, ctx) is not None
 
 
 def test_persona_names_resolved(replay_root):
@@ -73,7 +95,7 @@ def test_state_folds_full_game(replay_root):
 
 def test_feed_capped(replay_root):
     scene = _fold(_adapt_all(replay_root))
-    assert len(scene.feed) == avalon.FEED_CAP
+    assert len(scene.feed) == FEED_CAP
 
 
 def test_timeline_accumulates_milestones(replay_root):
@@ -91,14 +113,14 @@ def test_timeline_accumulates_milestones(replay_root):
 def test_game_open_resets_timeline(replay_root):
     directives = _adapt_all(replay_root)
     scene = _fold(directives)
-    avalon.apply(scene, FeedItem(seq=99, directive=directives[0], started_at=time.time(), duration=1.0))
+    _fold_one(scene, directives[0], seq=99)
     assert scene.timeline == []
 
 
 def test_game_open_resets_previous_game(replay_root):
     directives = _adapt_all(replay_root)
     scene = _fold(directives)
-    avalon.apply(scene, FeedItem(seq=99, directive=directives[0], started_at=time.time(), duration=1.0))
+    _fold_one(scene, directives[0], seq=99)
     assert scene.winner is None and scene.missions == [None] * 5 and scene.seats == []
 
 
@@ -122,11 +144,11 @@ def test_audio_url_from_manifest(replay_root):
 def test_load_tts_missing_is_empty(replay_root):
     # 没有 TTS 的老 replay：空表，发言回退字数估算、不带音频
     bare = write_replay(replay_root, "no-tts", voiced=False)
-    assert avalon.load_tts(bare) == {}
+    assert replay.load_tts(bare) == {}
 
 
 def test_host_name_fallback(tmp_path):
     bare = tmp_path / "old-replay"
     bare.mkdir()
-    assert avalon.load_host_name(bare) == "主持人"  # 老 replay 无 meta 也不炸
-    assert avalon.load_names(bare) == {}  # 同样优雅降级：没 meta 就空表，座位回退裸 id
+    assert replay.load_host_name(bare) == "主持人"  # 老 replay 无 meta 也不炸
+    assert replay.load_names(bare) == {}  # 同样优雅降级：没 meta 就空表，座位回退裸 id

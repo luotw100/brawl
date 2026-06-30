@@ -1,21 +1,22 @@
-"""音效 cue 表单测：锁住一拍→音效映射（这张表必须与 web/src/stage/sfx.ts 手动同步）。"""
+"""阿瓦隆音效 cue 表单测：锁住一拍→音效映射（这张表必须与 web/src/stage/sfx.ts 手动同步）。"""
 
 from __future__ import annotations
 
-from server.protocol import (
+from server.games.avalon.plugin import AvalonPlugin
+from server.games.avalon.protocol import (
     Assassination,
     Deal,
     GameOpen,
     GameOver,
-    HostSpeech,
-    Intermission,
     QuestReveal,
     SeatInfo,
     SeatVote,
     Speech,
     VoteReveal,
 )
-from server.sfx import cues_for
+from server.protocol import HostSpeech, Intermission
+
+cues_for = AvalonPlugin().cues
 
 
 def test_simple_beats_one_cue_at_zero():

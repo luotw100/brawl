@@ -1,4 +1,5 @@
-// 协议形状（v2 "电视信号"）：与 server/protocol.py 一一对应。
+// 阿瓦隆协议形状（v2 "电视信号"）：与 server/protocol.py 的信封
+// + server/games/avalon/protocol.py 的玩法字段对应。
 // 客户端是纯渲染函数：没有 reducer、没有本地状态折叠，收到 StateMsg 画什么是什么。
 
 export interface SeatInfo {

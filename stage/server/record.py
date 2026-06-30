@@ -39,23 +39,10 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 
 from server.app import create_app
-from server.protocol import (
-    Assassination,
-    Deal,
-    Directive,
-    GameOpen,
-    GameOver,
-    HostSpeech,
-    Intermission,
-    NarrationCue,
-    QuestReveal,
-    SeatInfo,
-    Speech,
-    VoteReveal,
-)
+from server.protocol import NarrationCue
 from server.bgm import BGM_PLAYLIST, BGM_VOLUME
 from server.record_settings import RENDER_DEVICE, RecordSettings
-from server.sfx import SFX_VOLUME, cues_for
+from server.sfx import SFX_VOLUME
 from server.settings import EngineKnobs, StageSettings
 
 _WEB_SRC = Path(__file__).resolve().parent.parent / "web"  # 前端源码目录（stage/web）：每次录制现构建
@@ -89,47 +76,13 @@ class Timeline:
 
 # ---------------------------------------------------------------- 进度（节拍渲染）
 
-_PHASE = {"propose": "提案", "discuss": "讨论", "lady": "验人", "banter": "闲聊"}
+# 一拍 → (标签, 颜色, 详情) 的映射是玩法专属的，在各玩法插件的 summary 里（engine._plugin.summary）；
+# 这里只留与玩法无关的时间格式化。
 
 
 def _mmss(seconds: float) -> str:
     s = int(seconds)
     return f"{s // 60:02d}:{s % 60:02d}"
-
-
-def _snip(text: str, n: int = 36) -> str:
-    """台词压成一行预览：折叠空白、超长截断（节拍是进度而非全文）。"""
-    flat = " ".join(text.split())
-    return flat if len(flat) <= n else flat[: n - 1] + "…"
-
-
-def _seat_name(seats: list[SeatInfo], seat_no: int) -> str:
-    return next((s.name for s in seats if s.no == seat_no), f"{seat_no}号")
-
-
-def _beat_summary(d: Directive, seats: list[SeatInfo]) -> tuple[str, str, str]:
-    """一拍 → (标签, 颜色, 详情)，给 rich 打成一行进度。"""
-    match d:
-        case GameOpen():
-            return "开局", "cyan", f"{d.players} 人 · 善 {d.good} / 恶 {d.evil}"
-        case Deal():
-            return "发牌", "cyan", f"队长 {d.leader_no} 号"
-        case HostSpeech():
-            return "主持", "yellow", f"{d.name}：{_snip(d.text)}"
-        case Speech():
-            return _PHASE.get(d.phase, d.phase), "green", f"{_seat_name(seats, d.seat_no)}：{_snip(d.text)}"
-        case VoteReveal():
-            return "表决", "magenta", f"{'通过' if d.approved else '否决'} · 第 {d.quest}.{d.attempt} 队"
-        case QuestReveal():
-            return "任务", "blue", f"第 {d.quest} 任务 {d.result}（{d.fails} 失败）"
-        case Assassination():
-            return "刺杀", "red", "命中" if d.hit else "落空"
-        case GameOver():
-            return "终局", "bold red", f"{d.winner} 胜 · {d.win_reason}"
-        case Intermission():
-            return "幕间", "dim", ""
-        case _:
-            return "?", "white", type(d).__name__
 
 
 # ---------------------------------------------------------------- 纯函数（可单测）
@@ -298,7 +251,7 @@ def _tap_engine(engine) -> Timeline:
         feed = engine.scene.feed
         if feed:
             fi = feed[-1]
-            cues = cues_for(fi.directive, fi.duration)
+            cues = engine._plugin.cues(fi.directive, fi.duration)
             if fi.seq in by_seq:
                 beat = by_seq[fi.seq]
                 beat.started_at = fi.started_at
@@ -313,7 +266,7 @@ def _tap_engine(engine) -> Timeline:
             timeline.beats.append(beat)
             timeline.last_beat_ends_at = fi.started_at + fi.duration  # 逐拍更新（信息用，含 GameOver 之后的复盘等）
             elapsed = fi.started_at - timeline.beats[0].started_at  # 视频时间轴（以第一拍为零点）
-            tag, color, detail = _beat_summary(fi.directive, engine.scene.seats)
+            tag, color, detail = engine._plugin.summary(fi.directive, engine.scene)
             note = "[cyan]♪[/cyan]" if getattr(fi.directive, "audio_url", None) or fi.narrations else " "
             # 每拍固定一行：超宽（中文台词）裁切而非换行，进度日志更整齐
             _console.print(f"[dim]{_mmss(elapsed)}[/dim] {note} [{color}]{tag}[/{color}] {detail}", no_wrap=True)

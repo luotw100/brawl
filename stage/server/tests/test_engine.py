@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 
 from server.engine import Engine, StageBeat, _upcoming_audio
-from server.protocol import Deal, GameOpen, HostSpeech, QuestCard, QuestReveal, SeatVote, Speech, VoteReveal
+from server.games.avalon.protocol import Deal, GameOpen, QuestCard, QuestReveal, SeatVote, Speech, VoteReveal
+from server.protocol import HostSpeech
 from server.tests.conftest import EVENTS, write_replay
 
 
@@ -193,7 +194,8 @@ def test_library_includes_replay_with_missing_audio_file(settings):
 def test_public_scene_respects_feed_window(settings):
     engine, _ = make_engine(settings)
     engine.feed_window = 2
-    from server.protocol import FeedItem, GameOpen
+    from server.games.avalon.protocol import GameOpen
+    from server.protocol import FeedItem
 
     for i in range(5):
         engine.scene.feed.append(FeedItem(seq=i, directive=GameOpen(players=5, good=3, evil=2),
@@ -229,14 +231,16 @@ async def test_lady_audio_extends_dwell(settings):
     """仙女一拍压两次 LLM 调用（choose 私下决策 + announce 口播），事件用 announce_call_id
     标音频、无顶层 call_id。引擎按 adapt 拍板的 audio_url 取时长，整条 announce→audio_url→
     时长链路必须撑满这一拍——否则只按文字估算停留、口播被下一拍截断（曾经的真 bug）。"""
-    from server import scene as avalon
+    from server import replay
+    from server.games.avalon.plugin import AvalonPlugin
+    from server.games.base import AdaptContext
     from server.tests import conftest
 
     lady_event = next(e for e in conftest.EVENTS if e["type"] == "lady")
     tts = {lady_event["announce_call_id"]: {"file": "lady.opus", "duration_ms": 20000}}
-    directive = avalon.adapt(lady_event, replay_id="game1", tts=tts, names={}, host_name="司仪")
+    directive = AvalonPlugin().adapt(lady_event, AdaptContext(replay_id="game1", tts=tts, names={}, host_name="司仪"))
     engine, _ = make_engine(settings)  # pace=0 → 文字估算为 0
-    engine._durations = avalon.audio_durations("game1", tts)
+    engine._durations = replay.audio_durations("game1", tts)
     assert engine._duration(StageBeat(directive)) == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
 
 

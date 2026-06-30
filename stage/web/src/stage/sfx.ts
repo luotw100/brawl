@@ -1,7 +1,7 @@
 // 音效 cue 表 + 直播页播放调度。
 //
-// cuesFor 必须与后端 server/sfx.py 的 cues_for 保持同一套映射——跨语言没法共享代码，改一处
-// 就同步改另一处。音效文件由 Vite 从 web/public/sfx/ 托管在 /sfx/<name>.opus。
+// cuesFor 必须与后端 server/games/avalon/plugin.py 的 AvalonPlugin.cues 保持同一套映射——
+// 跨语言没法共享代码，改一处就同步改另一处。音效文件由 Vite 从 web/public/sfx/ 托管在 /sfx/<name>.opus。
 //
 // 播放对钟与人声 <Audio> 同一套：用 elapsedOf(started_at) 把 cue 的拍内偏移换算成"还差多少秒
 // 触发"，暂停/重连/中途进场都按服务端时间轴对齐。中途进场时已过去太久的 cue 不补放（LATE_GRACE），
@@ -26,7 +26,7 @@ const ALL: string[] = [
 export function cuesFor(d: Directive, duration: number): Cue[] {
   switch (d.kind) {
     case "game_open": return [{ sfx: "open", at: 0 }];
-    case "deal": return [];  // 发牌不配音效（"咔咔"声刺耳）——画面照常飞牌，server/sfx.py 同此
+    case "deal": return [];  // 发牌不配音效（"咔咔"声刺耳）——画面照常飞牌，AvalonPlugin.cues 同此
     case "speech": return d.monologue ? [{ sfx: "think", at: 0 }] : [];
     case "vote_reveal": {
       // 逐票"啪"盖章 + 结果音；错峰节奏与 Stage.tsx 的 --vote-stagger 同步

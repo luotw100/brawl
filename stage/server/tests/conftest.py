@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from server.scene import _VOICED
+from server.games.avalon.protocol import VOICED
 from server.settings import StageSettings
 
 # 一局覆盖全部 10 种事件类型的微型 replay（手工裁剪，形状与 avalon/nodes.py 的 emit 一致）
@@ -71,7 +71,7 @@ def _write_tts(replay_dir: Path, events: list[dict]) -> None:
     tts.mkdir()
     manifest: dict[str, dict] = {}
     for ev in events:
-        spec = _VOICED.get(ev["type"])
+        spec = VOICED.get(ev["type"])
         if spec is None:
             continue
         cid_field, text_field = spec
