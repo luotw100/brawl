@@ -22,6 +22,10 @@ label input[type="range"] { width: 100%; }
 .list li { display: flex; justify-content: space-between; align-items: center; padding: 6px 4px; border-bottom: 1px solid #232a3a; font-size: 14px; gap: 8px; }
 .list .empty { color: #5a6478; }
 .ops { display: flex; gap: 4px; }
+.replay-line { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag { border: 1px solid #3a4258; border-radius: 6px; color: #aeb7c8; font-size: 12px; line-height: 1.3; padding: 1px 6px; }
+.tag.game { border-color: #d9b96c; color: #f4d992; }
 .ov-form input { flex: 1; min-width: 100px; }
 .ov-form label input { width: 70px; }
 

@@ -180,7 +180,23 @@ def test_library_only_lists_broadcastable_replays(settings):
     unfinished = [e for e in EVENTS if e["type"] != "game_end"]  # 缺终局事件 = 没跑完
     write_replay(settings.replay_root, "running", events=unfinished)
     engine, _ = make_engine(settings)
-    assert engine.library() == ["game1", "silent"]
+    assert [item.id for item in engine.library()] == ["game1", "silent"]
+
+
+def test_library_recurses_and_tags_replays(settings):
+    nested = write_replay(settings.replay_root / "AvalonGames", "001")
+    nested.joinpath("video.mp4").write_bytes(b"mp4")
+    nested.joinpath("title.txt").write_text("标题\n副标题\n", encoding="utf-8")
+    nested.joinpath("covers").mkdir()
+    write_replay(settings.replay_root / "WerewolfGames", "draft001", voiced=False, game="werewolf")
+
+    engine, _ = make_engine(settings)
+    by_id = {item.id: item for item in engine.library()}
+
+    assert by_id["AvalonGames/001"].game == "avalon"
+    assert by_id["AvalonGames/001"].tags == ["TTS", "视频", "封面", "标题"]
+    assert by_id["WerewolfGames/draft001"].game == "werewolf"
+    assert by_id["WerewolfGames/draft001"].tags == ["无TTS"]
 
 
 def test_library_includes_replay_with_missing_audio_file(settings):
@@ -188,7 +204,7 @@ def test_library_includes_replay_with_missing_audio_file(settings):
     game = write_replay(settings.replay_root, "holey")
     next(game.joinpath("tts").glob("*.opus")).unlink()
     engine, _ = make_engine(settings)
-    assert "holey" in engine.library()
+    assert "holey" in engine.library_ids()
 
 
 def test_public_scene_respects_feed_window(settings):

@@ -118,9 +118,12 @@ class Engine:
 
     # ---------------------------------------------------------------- 对外状态
 
-    def library(self) -> list[str]:
+    def library(self) -> list[replay.LibraryItem]:
         """replay_root 下所有可播的局（边界过滤：对局跑完即可；TTS 柔性，详见 replay.is_broadcastable）。"""
-        return sorted(d.name for d in self._root.iterdir() if d.is_dir() and replay.is_broadcastable(d))
+        return replay.library(self._root)
+
+    def library_ids(self) -> list[str]:
+        return [item.id for item in self.library()]
 
     def public_scene(self) -> BaseScene:
         """下发给页面的 Scene：feed 按窗口旋钮裁剪（服务端硬上限只是内部护栏）。"""
@@ -192,7 +195,7 @@ class Engine:
             library = self.library()
             if not library:
                 return None
-            self._pool_pick = random.choice(library)
+            self._pool_pick = random.choice(library).id
         return self._pool_pick
 
     async def _play(self, replay_id: str) -> GameResult | None:

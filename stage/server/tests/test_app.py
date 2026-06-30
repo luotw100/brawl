@@ -35,7 +35,7 @@ def test_api_requires_console_token(client):
 
 def test_console_state_includes_ops_info(client):
     state = client.get(f"/api/state{API}").json()
-    assert state["library"] == ["game1"]
+    assert state["library"] == [{"id": "game1", "game": "avalon", "tags": ["TTS"]}]
     assert {"phase", "scene", "overlays", "queue", "knobs", "replay_id"} <= state.keys()
     assert state["knobs"]["feed_window"] == 2
 
@@ -121,3 +121,14 @@ def test_replay_audio_served_but_nothing_else(client, settings):
     assert client.get("/replays/game1/llm_calls.jsonl").status_code == 404
     assert client.get("/replays/game1/tts/../llm_calls.jsonl").status_code == 404
     assert client.get("/replays/game1/tts/nope.wav").status_code == 404
+
+
+def test_nested_replay_assets_and_queue_ids(client, settings):
+    from server.tests.conftest import write_replay
+
+    replay = write_replay(settings.replay_root / "AvalonGames", "001")
+    audio = replay / "tts" / "1.1.host.opening.wav"
+    audio.write_bytes(b"RIFF")
+    assert client.put(f"/api/queue{API}", json={"queue": ["AvalonGames/001"]}).status_code == 200
+    assert client.get("/replays/AvalonGames/001/tts/1.1.host.opening.wav").content == b"RIFF"
+    assert client.get("/replays/AvalonGames/001/tts/manifest.json").status_code == 404

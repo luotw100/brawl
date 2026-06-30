@@ -9,8 +9,19 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+
+@dataclass(frozen=True)
+class LibraryItem:
+    """导播台片库条目：id 是相对 replay_root 的稳定播放键，game/tags 是运营侧标签。"""
+
+    id: str
+    game: str
+    tags: list[str]
 
 
 def load_game_id(replay_dir: Path) -> str:
@@ -37,7 +48,7 @@ def load_tts(replay_dir: Path) -> dict[str, dict[str, Any]]:
 def audio_url(replay_id: str, call_id: str | None, tts: dict[str, dict[str, Any]]) -> str | None:
     """manifest 里有这条 call_id 才给 URL（manifest 是音频存在性的唯一真相，不再 stat 文件系统）。"""
     entry = tts.get(call_id or "")
-    return f"/replays/{replay_id}/tts/{entry['file']}" if entry else None
+    return f"/replays/{_url_path(replay_id)}/tts/{quote(entry['file'])}" if entry else None
 
 
 def audio_durations(replay_id: str, tts: dict[str, dict[str, Any]]) -> dict[str, float]:
@@ -58,8 +69,23 @@ def avatar_urls(replay_id: str, replay_dir: Path) -> dict[int, str]:
     avatars = replay_dir / "avatars"
     if not avatars.is_dir():
         return {}
-    return {int(f.stem): f"/replays/{replay_id}/avatars/{f.name}"
+    return {int(f.stem): f"/replays/{_url_path(replay_id)}/avatars/{quote(f.name)}"
             for f in avatars.iterdir() if f.is_file() and f.stem.isdigit()}
+
+
+def library(root: Path) -> list[LibraryItem]:
+    """递归发现 replay_root 下所有可播 replay，并补齐导播台标签。
+
+    replay id 统一用 POSIX 相对路径；播放、排队、音频 URL 都走同一个 id，因此 Docker 只挂
+    `~/Downloads` 也能发现 `AvalonGames/001`、`WerewolfGames/draft001` 这类二级目录。
+    """
+    candidates = (events.parent for events in root.rglob("events.jsonl") if events.is_file())
+    items = [
+        LibraryItem(id=_replay_id(root, d), game=load_game_id(d), tags=_tags(d))
+        for d in candidates
+        if is_broadcastable(d)
+    ]
+    return sorted(items, key=lambda item: item.id)
 
 
 def load_names(replay_dir: Path) -> dict[str, str]:
@@ -99,6 +125,26 @@ def is_broadcastable(replay_dir: Path) -> bool:
         return any(e.get("type") == "game_end" for e in events)
     except (OSError, json.JSONDecodeError, KeyError):
         return False
+
+
+def _tags(replay_dir: Path) -> list[str]:
+    tts = load_tts(replay_dir)
+    tags = ["TTS" if tts else "无TTS"]
+    if replay_dir.joinpath("video.mp4").is_file():
+        tags.append("视频")
+    if replay_dir.joinpath("covers").is_dir():
+        tags.append("封面")
+    if replay_dir.joinpath("title.txt").is_file():
+        tags.append("标题")
+    return tags
+
+
+def _replay_id(root: Path, replay_dir: Path) -> str:
+    return replay_dir.relative_to(root).as_posix()
+
+
+def _url_path(value: str) -> str:
+    return quote(value, safe="/")
 
 
 def _meta(replay_dir: Path) -> dict[str, Any]:

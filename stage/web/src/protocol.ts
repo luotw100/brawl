@@ -201,9 +201,15 @@ export interface StateMsg {
 }
 
 // 导播台专属（/api/state，带 token）
+export interface LibraryItem {
+  id: string;
+  game: string;
+  tags: string[];
+}
+
 export interface ConsoleState extends StateMsg {
   replay_id: string | null;
   queue: string[];
-  library: string[];
+  library: LibraryItem[];
   knobs: { pace: number; speed: number; intermission_seconds: number; loop_pool: boolean; feed_window: number };
 }

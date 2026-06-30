@@ -13,6 +13,7 @@ import asyncio
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -43,6 +44,25 @@ class Knobs(BaseModel):
 
 class QueuePayload(BaseModel):
     queue: list[str]
+
+
+def _public_replay_asset(root: Path, asset_path: str, bucket: str, exts: tuple[str, ...]) -> Path | None:
+    parts = Path(asset_path).parts
+    if len(parts) < 3 or parts[-2] != bucket:
+        return None
+    filename = parts[-1]
+    replay_parts = parts[:-2]
+    if any(p in ("", ".", "..") for p in (*replay_parts, filename)):
+        return None
+    if not filename.endswith(exts):
+        return None
+    root = root.resolve()
+    path = root.joinpath(*replay_parts, bucket, filename).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    return path if path.is_file() else None
 
 
 def create_app(settings: StageSettings, playback_gate: PlaybackGate | None = None) -> FastAPI:
@@ -130,7 +150,7 @@ def create_app(settings: StageSettings, playback_gate: PlaybackGate | None = Non
             **state_msg().model_dump(),
             "replay_id": engine.replay_id,
             "queue": list(engine.queue),
-            "library": engine.library(),
+            "library": [item.__dict__ for item in engine.library()],
             "knobs": {
                 "pace": engine.pace,
                 "speed": engine.speed,
@@ -164,7 +184,7 @@ def create_app(settings: StageSettings, playback_gate: PlaybackGate | None = Non
 
     @app.put("/api/queue", dependencies=guarded)
     async def put_queue(payload: QueuePayload) -> dict:
-        library = set(engine.library())
+        library = set(engine.library_ids())
         unknown = [r for r in payload.queue if r not in library]
         if unknown:
             raise HTTPException(status_code=422, detail=f"不在片库里：{unknown}")
@@ -182,24 +202,17 @@ def create_app(settings: StageSettings, playback_gate: PlaybackGate | None = Non
 
     # ---------------------------------------------------------------- 静态
 
-    # replay 产物里只暴露 tts 音频文件（events/llm_calls/meta/manifest 含全量 prompt、
-    # 配置、台词文本，不上公网）。扩展名白名单挡掉 manifest.json；路径段由路由模板切分，
-    # 天然无 ".." 穿越；不存在即 404。
-    @app.get("/replays/{replay_id}/tts/{filename}")
-    async def get_audio(replay_id: str, filename: str) -> FileResponse:
-        path = settings.replay_root / replay_id / "tts" / filename
-        if not (filename.endswith((".wav", ".mp3", ".opus", ".m4a")) and path.is_file()):
+    # replay 产物里只暴露 tts 音频与 avatars 头像（events/llm_calls/meta/manifest 含全量 prompt、
+    # 配置、台词文本，不上公网）。扩展名白名单挡掉 manifest.json；路径统一 resolve 后限制在
+    # replay_root 内，不存在即 404。
+    @app.get("/replays/{asset_path:path}")
+    async def get_replay_asset(asset_path: str) -> FileResponse:
+        path = _public_replay_asset(settings.replay_root, asset_path, "tts", (".wav", ".mp3", ".opus", ".m4a"))
+        if path is None:
+            path = _public_replay_asset(settings.replay_root, asset_path, "avatars", (".png", ".webp", ".jpg", ".jpeg"))
+        if path is None:
             raise HTTPException(status_code=404)
         # call_id 唯一、内容永不变：长缓存 + immutable，页面预取后正式播放零网络往返。
-        return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
-
-    # 厂商头像：录制时按座位烧进 avatars/<座位号>.png。同 tts，扩展名白名单 + 不存在即 404；
-    # 内容随该局固定不变，长缓存 + immutable。
-    @app.get("/replays/{replay_id}/avatars/{filename}")
-    async def get_avatar(replay_id: str, filename: str) -> FileResponse:
-        path = settings.replay_root / replay_id / "avatars" / filename
-        if not (filename.endswith((".png", ".webp", ".jpg", ".jpeg")) and path.is_file()):
-            raise HTTPException(status_code=404)
         return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     if settings.web_dist is not None:

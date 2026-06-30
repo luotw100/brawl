@@ -46,6 +46,7 @@ function Panel({ token }: { token: string }) {
 
   if (!st) return <div className="console"><h1>🎛️ 导播台</h1><p>加载中…</p></div>;
   const k = st.knobs;
+  const libraryById = new Map(st.library.map((item) => [item.id, item]));
   return (
     <div className="console">
       <header>
@@ -90,7 +91,10 @@ function Panel({ token }: { token: string }) {
           <ul className="list">
             {st.queue.map((r, i) => (
               <li key={`${r}-${i}`}>
-                <span>{i + 1}. {r}</span>
+                <span className="replay-line">
+                  <span>{i + 1}. {r}</span>
+                  {libraryById.get(r) && <ReplayTags game={libraryById.get(r)!.game} tags={libraryById.get(r)!.tags} />}
+                </span>
                 <span className="ops">
                   <button disabled={i === 0} onClick={() => act("PUT", "/api/queue", { queue: move(st.queue, i, -1) })}>↑</button>
                   <button disabled={i === st.queue.length - 1} onClick={() => act("PUT", "/api/queue", { queue: move(st.queue, i, 1) })}>↓</button>
@@ -102,10 +106,13 @@ function Panel({ token }: { token: string }) {
           </ul>
           <h2>片库</h2>
           <ul className="list">
-            {st.library.map((r) => (
-              <li key={r}>
-                <span>{r}</span>
-                <button onClick={() => act("PUT", "/api/queue", { queue: [...st.queue, r] })}>＋排片</button>
+            {st.library.map((item) => (
+              <li key={item.id}>
+                <span className="replay-line">
+                  <span>{item.id}</span>
+                  <ReplayTags game={item.game} tags={item.tags} />
+                </span>
+                <button onClick={() => act("PUT", "/api/queue", { queue: [...st.queue, item.id] })}>＋排片</button>
               </li>
             ))}
           </ul>
@@ -126,6 +133,15 @@ function Panel({ token }: { token: string }) {
         </section>
       </div>
     </div>
+  );
+}
+
+function ReplayTags({ game, tags }: { game: string; tags: string[] }) {
+  return (
+    <span className="tags">
+      <span className="tag game">{game}</span>
+      {tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}
+    </span>
   );
 }
 
