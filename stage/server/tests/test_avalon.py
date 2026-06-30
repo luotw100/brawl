@@ -12,7 +12,7 @@ from server.engine import FEED_CAP
 from server.games.avalon.plugin import AvalonPlugin
 from server.games.avalon.protocol import AvalonScene
 from server.games.base import AdaptContext
-from server.protocol import FeedItem
+from server.protocol import FeedItem, StateMsg
 from server.tests.conftest import EVENTS, write_replay
 
 PLUGIN = AvalonPlugin()
@@ -108,6 +108,32 @@ def test_timeline_accumulates_milestones(replay_root):
     assert prop.approves == [1, 2, 3, 4, 5] and prop.rejects == []
     assert (quest.quest, quest.team, quest.result, quest.fails) == (1, [2, 3], "fail", 1)
     assert quest.fail_seats == [2]  # 2 号出了破坏票（观众上帝视角看得到，公开只报张数）
+
+
+def test_timeline_serializes_concrete_fields_for_stage(replay_root):
+    # 回归：插件化后 timeline 一度按 TimelineEntry 基类序列化，只剩 {"kind": "..."}；
+    # 前端前情提要读取 team/approves/rejects 时会崩成黑屏。
+    scene = _fold(_adapt_all(replay_root))
+    dumped = StateMsg(phase="playing", scene=scene, overlays=[]).model_dump(mode="json")
+    proposal, quest = dumped["scene"]["timeline"]
+    assert proposal == {
+        "kind": "proposal",
+        "quest": 1,
+        "attempt": 1,
+        "leader_no": 2,
+        "team": [2, 3],
+        "approved": True,
+        "approves": [1, 2, 3, 4, 5],
+        "rejects": [],
+    }
+    assert quest == {
+        "kind": "quest",
+        "quest": 1,
+        "team": [2, 3],
+        "result": "fail",
+        "fails": 1,
+        "fail_seats": [2],
+    }
 
 
 def test_game_open_resets_timeline(replay_root):

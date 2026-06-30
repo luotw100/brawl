@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializeAsAny
 
 from server.protocol import BaseScene, Directive, FeedItem, TimelineEntry
 
@@ -159,7 +159,7 @@ class AvalonScene(BaseScene):
     speaking: int | None = None  # 正在发言的座位（高亮）
     winner: str | None = None
     win_reason: str | None = None
-    timeline: list[TimelineEntry] = Field(default_factory=list)  # 整局里程碑（提队/任务），前情回顾面板据此回放全程
+    timeline: list[SerializeAsAny[TimelineEntry]] = Field(default_factory=list)  # 整局里程碑（提队/任务），前情回顾面板据此回放全程
 
 
 # 每条公开发言事件的 (call_id 字段, 文本字段)。与 games/avalon/tts.py 的 _utterances 同一套名单：

@@ -1,6 +1,6 @@
 // 音效 cue 表 + 直播页播放调度。
 //
-// cuesFor 必须与后端 server/games/avalon/plugin.py 的 AvalonPlugin.cues 保持同一套映射——
+// cuesFor 必须与后端各玩法 plugin.py 的 cues 保持同一套映射——
 // 跨语言没法共享代码，改一处就同步改另一处。音效文件由 Vite 从 web/public/sfx/ 托管在 /sfx/<name>.opus。
 //
 // 播放对钟与人声 <Audio> 同一套：用 elapsedOf(started_at) 把 cue 的拍内偏移换算成"还差多少秒
@@ -39,6 +39,25 @@ export function cuesFor(d: Directive, duration: number): Cue[] {
     case "quest_reveal": return [{ sfx: d.result === "success" ? "quest-success" : "quest-fail", at: 0 }];
     case "assassination": return [{ sfx: d.hit ? "assassin-hit" : "assassin-miss", at: 0 }];
     case "game_over": return [{ sfx: d.winner === "good" ? "win-good" : "win-evil", at: 0 }];
+    case "ww_game_open": return [{ sfx: "open", at: 0 }];
+    case "ww_deal": return [];
+    case "ww_night_start": return [];
+    case "ww_wolf_kill": return [{ sfx: "assassin-hit", at: duration * 0.6 }];
+    case "ww_seer_check": return [];
+    case "ww_witch_action": return [];
+    case "ww_death_resolved": return [{ sfx: d.deaths.length ? "quest-fail" : "quest-success", at: 0 }];
+    case "ww_role_reveal": return [];
+    case "ww_idiot_reveal": return [];
+    case "ww_speech": return d.monologue ? [{ sfx: "think", at: 0 }] : [];
+    case "ww_vote_reveal": {
+      const n = d.votes.length;
+      const stagger = (duration * 0.62) / Math.max(n, 1);
+      const cues: Cue[] = d.votes.map((_, i) => ({ sfx: "stamp", at: i * stagger }));
+      cues.push({ sfx: d.exiled !== null ? "vote-fail" : "vote-pass", at: n * stagger });
+      return cues;
+    }
+    case "ww_hunter_shot": return [{ sfx: d.target_no !== null ? "assassin-hit" : "assassin-miss", at: 0 }];
+    case "ww_game_over": return [{ sfx: d.winner === "good" ? "win-good" : "win-evil", at: 0 }];
     case "host":
     case "intermission": return [];
   }

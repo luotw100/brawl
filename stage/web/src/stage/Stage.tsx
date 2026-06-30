@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
-  FeedItem, Intermission, NarrationCue, ProposalLog, QuestLog, Scene, SeatInfo,
+  AvalonScene, AvalonSeatInfo, FeedItem, Intermission, NarrationCue, ProposalLog, QuestLog,
+  StateMsg, WerewolfDeathInfo, WerewolfScene, WerewolfSeatInfo,
 } from "../protocol";
 import { type Channel, elapsedOf, useChannel } from "../useChannel";
 import { useSfx } from "./sfx";
@@ -46,7 +47,7 @@ const winReasonLabel = (winner: string, reason: string) => {
   return winner === "good" ? pair[0] : pair[1];
 };
 
-const CIRC = "①②③④⑤⑥⑦⑧⑨⑩";
+const CIRC = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫";
 const circ = (n: number) => CIRC[n - 1] ?? `${n}`;
 const seatList = (ns: number[]) => ns.map(circ).join("");
 const CN = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
@@ -63,9 +64,11 @@ function avatarStyle(persona: string): CSSProperties {
 }
 
 // 头像三态共用（座位/揭示/聚光）：有厂商 logo 就铺 logo（深底 contain），否则回退 hash 渐变 + 名字首字。
-const avaClass = (base: string, seat: SeatInfo | undefined): string => (seat?.avatar_url ? `${base} has-img` : base);
-const avaBg = (seat: SeatInfo | undefined): CSSProperties | undefined => (seat && !seat.avatar_url ? avatarStyle(seat.persona) : undefined);
-function AvaFill({ seat }: { seat: SeatInfo | undefined }) {
+type AnySeat = AvalonSeatInfo | WerewolfSeatInfo;
+
+const avaClass = (base: string, seat: AnySeat | undefined): string => (seat?.avatar_url ? `${base} has-img` : base);
+const avaBg = (seat: AnySeat | undefined): CSSProperties | undefined => (seat && !seat.avatar_url ? avatarStyle(seat.persona) : undefined);
+function AvaFill({ seat }: { seat: AnySeat | undefined }) {
   return seat?.avatar_url ? <img className="ava-img" src={seat.avatar_url} alt="" /> : <>{seat?.name.slice(0, 1) ?? "?"}</>;
 }
 
@@ -111,16 +114,20 @@ export default function Stage() {
 
   if (!state) return <div className="viewport" />;
   // 刺杀的闪屏不在起拍放（那会先于台词剧透生死），改由 AssassinView 在揭晓那一刻自己炸。
-  const flashKind = last && ["vote_reveal", "quest_reveal", "game_over"].includes(last.directive.kind)
+  const flashKind = last && ["vote_reveal", "quest_reveal", "game_over", "ww_vote_reveal", "ww_death_resolved", "ww_game_over"].includes(last.directive.kind)
     ? last.directive.kind : null;
+  if (scene?.game === "werewolf") {
+    return <WerewolfStage ch={ch} state={state} scene={scene} last={last} scale={scale} connected={ch.connected} flashKind={flashKind} />;
+  }
+  const avalonScene = scene as AvalonScene | undefined;
 
   return (
     <div className="viewport">
       <div className="canvas" style={{ width: W, height: H, transform: `scale(${scale})` }}>
         <div className="bg" />
         {flashKind && <div key={last!.seq} className={`flash flash-${flashKind}`} />}
-        {scene && <TopHud scene={scene} />}
-        {scene && <Arena ch={ch} scene={scene} last={last} />}
+        {avalonScene && <TopHud scene={avalonScene} />}
+        {avalonScene && <Arena ch={ch} scene={avalonScene} last={last} />}
         {last && <NarrationLayer ch={ch} item={last} />}
         {state.phase === "idle" && <Curtain title="稍候开演" sub="导播正在排片…" />}
         {last?.directive.kind === "intermission" && <IntermissionCard d={last.directive} />}
@@ -138,7 +145,7 @@ export default function Stage() {
   );
 }
 
-function TopHud({ scene }: { scene: Scene }) {
+function TopHud({ scene }: { scene: AvalonScene }) {
   const good = scene.missions.filter((m) => m === "success").length;
   const evil = scene.missions.filter((m) => m === "fail").length;
   return (
@@ -171,7 +178,7 @@ function TopHud({ scene }: { scene: Scene }) {
 // 观众补课。5s 一条，叠帧卷轴：传送带停住让人看清→缓缓上移，旧条从顶卷出、新条从底升入。
 const HOLD_MS = 7800;
 const SLIDE_MS = 900;
-function Carousel({ scene }: { scene: Scene }) {
+function Carousel({ scene }: { scene: AvalonScene }) {
   const items = buildItems(scene);
   const [idx, setIdx] = useState(0);
   const [sliding, setSliding] = useState(false);
@@ -204,7 +211,7 @@ function Carousel({ scene }: { scene: Scene }) {
   );
 }
 
-function buildItems(scene: Scene): ReactNode[] {
+function buildItems(scene: AvalonScene): ReactNode[] {
   const good = scene.missions.filter((m) => m === "success").length;
   const evil = scene.missions.filter((m) => m === "fail").length;
   const items: ReactNode[] = [
@@ -238,7 +245,7 @@ function buildItems(scene: Scene): ReactNode[] {
   return items;
 }
 
-function Arena({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem | undefined }) {
+function Arena({ ch, scene, last }: { ch: Channel; scene: AvalonScene; last: FeedItem | undefined }) {
   const n = scene.seats.length;
   const half = Math.ceil(n / 2);
   const d = last?.directive;
@@ -256,7 +263,7 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem 
   }
   if (d?.kind === "vote_reveal" && d.votes.length)
     (vars as Record<string, string>)["--vote-stagger"] = `${(dur * 0.62) / d.votes.length}s`;
-  const seat = (s: SeatInfo) => (
+  const seat = (s: AvalonSeatInfo) => (
     <Seat key={s.no} s={s} scene={scene} dealing={dealing} vote={votes[s.no]} card={cards[s.no]} />
   );
   return (
@@ -270,7 +277,7 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem 
 }
 
 function Seat({ s, scene, vote, card, dealing }: {
-  s: SeatInfo; scene: Scene; vote?: boolean; card?: boolean; dealing: boolean;
+  s: AvalonSeatInfo; scene: AvalonScene; vote?: boolean; card?: boolean; dealing: boolean;
 }) {
   // 未发牌：身份面朝下（不染阵营色、不亮角色）。deal 那拍 dealt=true，角色牌逐张翻面（dealing 触发动画）。
   const dealt = scene.dealt;
@@ -307,7 +314,7 @@ function Seat({ s, scene, vote, card, dealing }: {
   );
 }
 
-function CenterStage({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem | undefined }) {
+function CenterStage({ ch, scene, last }: { ch: Channel; scene: AvalonScene; last: FeedItem | undefined }) {
   const k = last?.directive.kind;
   // 终局起（game_over 大揭示 + 整个复盘期）常驻结算画面：胜负各一行头像不再被复盘发言顶掉。
   // 不按 last.seq 重挂，故复盘逐句切换时头像不重新弹入；当前复盘发言作为底部字幕滚动。
@@ -331,7 +338,7 @@ function CenterStage({ ch, scene, last }: { ch: Channel; scene: Scene; last: Fee
   );
 }
 
-function StageContent({ ch, scene, last }: { ch: Channel; scene: Scene; last: FeedItem }) {
+function StageContent({ ch, scene, last }: { ch: Channel; scene: AvalonScene; last: FeedItem }) {
   const d = last.directive;
   const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
 
@@ -387,7 +394,7 @@ function Feature({ cls, children }: { cls: string; children: ReactNode }) {
 
 // 逐人揭示用的大头像 + 大盖章：表决/发车/刺杀都把"谁出了什么"放中央放大，不再只靠座位旁的小印章。
 function RevealAvatar({ seat, no, mark, label, idx }: {
-  seat: SeatInfo | undefined; no: number; mark?: "yes" | "no"; label: string; idx: number;
+  seat: AnySeat | undefined; no: number; mark?: "yes" | "no" | "pending"; label: string; idx: number;
 }) {
   // mark 省略 = 尚未揭晓（如刺杀靶子在刺客说完之前）：盖一枚中性"待揭"印章。
   return (
@@ -402,7 +409,7 @@ function RevealAvatar({ seat, no, mark, label, idx }: {
 // 刺杀：先演刺客出刀 + 台词打字机（与音频同步），台词念完才翻牌定生死——命中/幸存印章、
 // 判决文案、阵营色与红色闪屏全 gate 在"台词念完"之后（与 LiveText 同口径 duration*0.62）。
 function AssassinView({ ch, scene, item, d }: {
-  ch: Channel; scene: Scene; item: FeedItem;
+  ch: Channel; scene: AvalonScene; item: FeedItem;
   d: Extract<FeedItem["directive"], { kind: "assassination" }>;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -439,9 +446,9 @@ function AssassinView({ ch, scene, item, d }: {
 
 // 结算：胜方一行、败方一行，各行左侧标"胜利/失败"（取代居中的"某方胜利"大字）。终局起常驻，
 // 数据取自折好的 scene（不随某一拍 directive），复盘期把当前发言作为底部字幕滚动。
-function OverView({ ch, scene, banter }: { ch: Channel; scene: Scene; banter?: FeedItem }) {
+function OverView({ ch, scene, banter }: { ch: Channel; scene: AvalonScene; banter?: FeedItem }) {
   const winner = scene.winner;
-  const rows: { tag: string; cls: string; seats: SeatInfo[] }[] = [
+  const rows: { tag: string; cls: string; seats: AvalonSeatInfo[] }[] = [
     { tag: "胜利", cls: "win", seats: scene.seats.filter((s) => s.side === winner) },
     { tag: "失败", cls: "lose", seats: scene.seats.filter((s) => s.side !== winner) },
   ];
@@ -492,7 +499,7 @@ function RevealRow({ stagger, children }: { stagger: number; children: ReactNode
 }
 
 function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, ladyNo, ladyEvil }: {
-  ch: Channel; item: FeedItem; seat: SeatInfo | undefined; no: number; tag: string;
+  ch: Channel; item: FeedItem; seat: AvalonSeatInfo | undefined; no: number; tag: string;
   text: string; audio: string | null; monologue: string;
   team?: number[]; ladyNo: number | null; ladyEvil: boolean;
 }) {
@@ -529,7 +536,7 @@ function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, lady
 }
 
 function VoteView({ ch, scene, item, d }: {
-  ch: Channel; scene: Scene; item: FeedItem;
+  ch: Channel; scene: AvalonScene; item: FeedItem;
   d: Extract<FeedItem["directive"], { kind: "vote_reveal" }>;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -593,7 +600,7 @@ function DealDeck({ ch, item, n }: { ch: Channel; item: FeedItem; n: number }) {
 
 // 飞牌层：每张牌从中央牌叠沿真实弧线飞到对应座位的头像（手中），位置纯由时钟逐帧反推。
 // 起飞错峰与发牌台同源（dealtCount），抵达即触发该座位身份牌翻面（CSS 延时 = 错峰 + 飞行）。
-function DealFlight({ ch, item, scene }: { ch: Channel; item: FeedItem; scene: Scene }) {
+function DealFlight({ ch, item, scene }: { ch: Channel; item: FeedItem; scene: AvalonScene }) {
   const n = scene.seats.length;
   const [now, setNow] = useState(() => Date.now());
   const [geo, setGeo] = useState<{ ox: number; oy: number; targets: Map<number, { x: number; y: number }> } | null>(null);
@@ -703,15 +710,420 @@ function Audio({ ch, item, url, at = item.content_at }: { ch: Channel; item: Fee
   return null;
 }
 
+const WW_ROLE: Record<string, string> = {
+  werewolf: "狼人", villager: "平民", seer: "预言家", witch: "女巫", hunter: "猎人", idiot: "白痴",
+};
+const WW_REASON: Record<string, string> = {
+  wolf_kill: "狼刀", poison: "毒杀", exile: "放逐", hunter_shot: "猎枪",
+};
+const WW_WIN_REASON: Record<string, [string, string]> = {
+  all_wolves_dead: ["狼人全灭", "狼人全灭"],
+  all_gods_dead: ["神职全灭", "神职全灭"],
+  all_villagers_dead: ["平民全灭", "平民全灭"],
+};
+const wwRole = (r: string) => WW_ROLE[r] ?? r;
+const wwReason = (r: string) => WW_REASON[r] ?? r;
+const wwWinReason = (winner: string, reason: string) => {
+  const pair = WW_WIN_REASON[reason];
+  if (!pair) return reason;
+  return winner === "good" ? pair[0] : pair[1];
+};
+
+function WerewolfStage({ ch, state, scene, last, scale, connected, flashKind }: {
+  ch: Channel; state: StateMsg; scene: WerewolfScene; last: FeedItem | undefined;
+  scale: number; connected: boolean; flashKind: string | null;
+}) {
+  return (
+    <div className="viewport">
+      <div className="canvas ww-canvas" style={{ width: W, height: H, transform: `scale(${scale})` }}>
+        <div className="bg ww-bg" />
+        {flashKind && <div key={last!.seq} className={`flash flash-${flashKind}`} />}
+        <WerewolfHud scene={scene} />
+        <WerewolfArena ch={ch} scene={scene} last={last} />
+        {last && <NarrationLayer ch={ch} item={last} />}
+        {state.phase === "idle" && <Curtain title="稍候开演" sub="导播正在排片…" />}
+        {last?.directive.kind === "intermission" && <IntermissionCard d={last.directive} />}
+        <div className="overlay-canvas">
+          {state.overlays.map((o) => (
+            <div key={o.id} className={`ov ov-${o.kind}`}
+              style={{ left: `${o.x}%`, top: `${o.y}%`, width: o.width ? `${o.width}%` : undefined, ...o.style }}>
+              {o.kind === "image" ? <img src={o.content} alt="" /> : <span>{o.content}</span>}
+            </div>
+          ))}
+        </div>
+        {!connected && <div className="conn-dot" title="重连中" />}
+      </div>
+    </div>
+  );
+}
+
+function WerewolfHud({ scene }: { scene: WerewolfScene }) {
+  const aliveWolves = scene.seats.filter((s) => s.side === "werewolf" && s.alive).length;
+  const aliveGood = scene.seats.filter((s) => s.side === "good" && s.alive).length;
+  return (
+    <div className="hud ww-hud">
+      <div className="hud-left">
+        <div className="brand">赛博物种观察日记</div>
+      </div>
+      <div className="hud-center ww-hud-center">
+        <div className="ww-day">第 {scene.day || 1} 天 · {scene.phase === "night" ? "黑夜" : scene.phase === "postgame" ? "复盘" : "白天"}</div>
+        <div className="ww-score">
+          <span className="track-score good"><i>好人</i>{aliveGood}</span>
+          <span className="ww-board">{scene.board_name || "狼人杀"}</span>
+          <span className="track-score evil">{aliveWolves}<i>狼人</i></span>
+        </div>
+        <WerewolfTicker scene={scene} />
+      </div>
+      <div className="hud-right">
+        <div className="show-badge">AI 狼人杀</div>
+      </div>
+    </div>
+  );
+}
+
+function WerewolfTicker({ scene }: { scene: WerewolfScene }) {
+  const items = werewolfItems(scene);
+  const [idx, setIdx] = useState(0);
+  const [sliding, setSliding] = useState(false);
+  useEffect(() => {
+    let hold: number, slide: number;
+    const tick = () => {
+      setSliding(true);
+      slide = window.setTimeout(() => {
+        setSliding(false);
+        setIdx((i) => i + 1);
+        hold = window.setTimeout(tick, HOLD_MS);
+      }, SLIDE_MS);
+    };
+    hold = window.setTimeout(tick, HOLD_MS);
+    return () => { window.clearTimeout(hold); window.clearTimeout(slide); };
+  }, [items.length]);
+  return (
+    <div className="carousel ww-carousel">
+      <span className="carousel-tag">场上信息</span>
+      <div className="belt">
+        <div className={`belt-track${sliding ? " slide" : ""}`}>
+          <div className="cline">{items[idx % items.length]}</div>
+          <div className="cline">{items[(idx + 1) % items.length]}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function werewolfItems(scene: WerewolfScene): ReactNode[] {
+  const alive = scene.seats.filter((s) => s.alive).map((s) => s.no);
+  const items: ReactNode[] = [
+    <span><span className="rc-when">存活</span> {seatList(alive)}</span>,
+  ];
+  scene.timeline.forEach((t) => {
+    if (t.kind === "ww_death") {
+      items.push(<span><span className="rc-when">第{cn(t.day)}天</span> {circ(t.seat_no)} 翻出 {wwRole(t.role)} · {wwReason(t.reason)}</span>);
+    } else {
+      items.push(
+        <span>
+          <span className="rc-when">第{cn(t.day)}天投票</span>
+          {"　"}{t.tied || t.exiled === null ? <span className="bad">平票</span> : <span className="bad">放逐 {circ(t.exiled)}</span>}
+        </span>,
+      );
+    }
+  });
+  return items;
+}
+
+function WerewolfArena({ ch, scene, last }: { ch: Channel; scene: WerewolfScene; last: FeedItem | undefined }) {
+  const half = Math.ceil(scene.seats.length / 2);
+  const d = last?.directive;
+  const votes = d?.kind === "ww_vote_reveal"
+    ? Object.fromEntries(d.votes.map((v) => [v.seat_no, v.target_no])) : {};
+  const marked = new Set<number>();
+  if (d?.kind === "ww_death_resolved") d.deaths.forEach((x) => marked.add(x.seat_no));
+  if (d?.kind === "ww_role_reveal") marked.add(d.seat_no);
+  if (d?.kind === "ww_idiot_reveal") marked.add(d.seat_no);
+  if (d?.kind === "ww_hunter_shot" && d.target_no !== null) marked.add(d.target_no);
+  const seat = (s: WerewolfSeatInfo) => (
+    <WerewolfSeat key={s.no} s={s} scene={scene} voteTarget={votes[s.no]} marked={marked.has(s.no)} />
+  );
+  return (
+    <div className="arena ww-arena">
+      <div className="col left">{scene.seats.slice(0, half).map(seat)}</div>
+      <div className="col right">{scene.seats.slice(half).map(seat)}</div>
+      <WerewolfCenter ch={ch} scene={scene} last={last} />
+    </div>
+  );
+}
+
+function WerewolfSeat({ s, scene, voteTarget, marked }: {
+  s: WerewolfSeatInfo; scene: WerewolfScene; voteTarget?: number; marked: boolean;
+}) {
+  const cls = [
+    "seat ww-seat", s.side, s.alive ? "alive" : "dead",
+    scene.speaking === s.no ? "speaking" : "",
+    scene.night_target === s.no || scene.last_exiled === s.no || marked ? "marked" : "",
+  ].join(" ");
+  return (
+    <div className={cls}>
+      <div className="avatar-wrap">
+        <div className={avaClass("avatar", s)} style={avaBg(s)}><AvaFill seat={s} /></div>
+        <span className="seat-no">{s.no}</span>
+        {!s.alive && <span className="badge stamp no">死</span>}
+        {!s.can_vote && <span className="badge stamp yes">白</span>}
+        {voteTarget !== undefined && <span className="badge stamp no">{circ(voteTarget)}</span>}
+      </div>
+      <div className="seat-info">
+        <div className="seat-name">{s.name}</div>
+        <div className={`seat-role ${s.side === "werewolf" ? "evil" : "good"}`}>{wwRole(s.role)}</div>
+        {s.model_display && <div className="seat-model">{s.model_display}</div>}
+      </div>
+    </div>
+  );
+}
+
+function WerewolfCenter({ ch, scene, last }: { ch: Channel; scene: WerewolfScene; last: FeedItem | undefined }) {
+  if (scene.winner) {
+    const banter = last?.directive.kind === "ww_speech" ? last : undefined;
+    return (
+      <div className="center-wrap">
+        <div className="center-stage tall">
+          <div className="stage-content"><WerewolfOverView ch={ch} scene={scene} banter={banter} /></div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="center-wrap">
+      <div className="center-stage tall ww-center">
+        {last && <div className="stage-content" key={last.seq}><WerewolfContent ch={ch} scene={scene} last={last} /></div>}
+      </div>
+    </div>
+  );
+}
+
+function WerewolfContent({ ch, scene, last }: { ch: Channel; scene: WerewolfScene; last: FeedItem }) {
+  const d = last.directive;
+  const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
+  switch (d.kind) {
+    case "ww_game_open":
+      return (
+        <Feature cls="feature-open ww-feature">
+          <div className="feature-icon"><StageIcon name="herald" size={64} /></div>
+          <div className="feature-title">{d.board_name}</div>
+          <div className="feature-sub">{d.players} 人 · 狼 {d.wolves} / 神 {d.gods} / 民 {d.villagers}</div>
+        </Feature>
+      );
+    case "ww_deal":
+      return (
+        <Feature cls="feature-deal ww-feature">
+          <div className="deck"><span className="deck-card top"><span className="deck-count">{d.seats.length}</span></span></div>
+          <div className="feature-title">身份发放完毕</div>
+        </Feature>
+      );
+    case "host":
+      return null;
+    case "ww_night_start":
+      return <WerewolfNotice title={`第 ${d.day} 天 · 天黑`} sub="狼人、预言家、女巫依次行动" />;
+    case "ww_wolf_kill":
+      return (
+        <div className="ww-card">
+          <div className="vote-title">狼人夜议</div>
+          <RevealRow stagger={0.16}>
+            {d.votes.map((v, i) => (
+              <RevealAvatar key={v.seat_no} seat={seatOf(v.seat_no)} no={v.seat_no} mark="no" label={`刀${circ(v.target_no)}`} idx={i} />
+            ))}
+          </RevealRow>
+          <div className="feature-sub">最终刀口：{circ(d.target_no)}号</div>
+        </div>
+      );
+    case "ww_seer_check":
+      return (
+        <WerewolfAction ch={ch} item={last} seat={seatOf(d.seat_no)} no={d.seat_no}
+          title="预言家查验" text={`${circ(d.target_no)}号是${d.result === "werewolf" ? "狼人" : "好人"}`}
+          monologue={d.monologue} audio={d.audio_url} danger={d.result === "werewolf"} />
+      );
+    case "ww_witch_action":
+      return (
+        <WerewolfAction ch={ch} item={last} seat={seatOf(d.seat_no)} no={d.seat_no}
+          title="女巫行动" text={d.save ? "使用解药" : d.poison_target_no !== null ? `毒杀${circ(d.poison_target_no)}号` : "未使用药剂"}
+          monologue={d.monologue} audio={d.audio_url} danger={d.poison_target_no !== null} />
+      );
+    case "ww_death_resolved":
+      return (
+        <div className={`reveal-view ww-card ${d.deaths.length ? "bad" : "ok"}`}>
+          <div className="vote-title">{d.deaths.length ? "昨夜死讯" : "平安夜"}</div>
+          {d.deaths.length > 0 && (
+            <RevealRow stagger={0.18}>
+              {d.deaths.map((x, i) => <RevealAvatar key={x.seat_no} seat={seatOf(x.seat_no)} no={x.seat_no} mark="no" label={wwReason(x.reason)} idx={i} />)}
+            </RevealRow>
+          )}
+        </div>
+      );
+    case "ww_role_reveal":
+      return <WerewolfReveal seat={seatOf(d.seat_no)} no={d.seat_no} title="翻牌" label={`${wwRole(d.role)} · ${wwReason(d.reason)}`} />;
+    case "ww_idiot_reveal":
+      return <WerewolfReveal seat={seatOf(d.seat_no)} no={d.seat_no} title="白痴翻牌" label="免死，失去投票权" ok />;
+    case "ww_speech":
+      return (
+        <WerewolfTalk ch={ch} item={last} seat={seatOf(d.seat_no)} no={d.seat_no}
+          tag={_WW_PHASE[d.phase] ?? d.phase} text={d.text} monologue={d.monologue} audio={d.audio_url} />
+      );
+    case "ww_vote_reveal":
+      return <WerewolfVoteView scene={scene} d={d} />;
+    case "ww_hunter_shot":
+      return (
+        <WerewolfAction ch={ch} item={last} seat={seatOf(d.hunter_no)} no={d.hunter_no}
+          title="猎人开枪" text={d.target_no === null ? "不开枪" : `带走${circ(d.target_no)}号`}
+          monologue={d.monologue} audio={d.audio_url} danger={d.target_no !== null} />
+      );
+    case "ww_game_over":
+      return null;
+    case "intermission":
+      return null;
+    default:
+      return null;
+  }
+}
+
+const _WW_PHASE: Record<string, string> = {
+  discussion: "白天发言", last_words: "遗言", hunter: "猎人", banter: "复盘",
+};
+
+function WerewolfNotice({ title, sub }: { title: string; sub: string }) {
+  return (
+    <Feature cls="feature-open ww-feature">
+      <div className="feature-title">{title}</div>
+      <div className="feature-sub">{sub}</div>
+    </Feature>
+  );
+}
+
+function WerewolfReveal({ seat, no, title, label, ok = false }: {
+  seat: WerewolfSeatInfo | undefined; no: number; title: string; label: string; ok?: boolean;
+}) {
+  return (
+    <div className={`reveal-view ww-card ${ok ? "ok" : "bad"}`}>
+      <div className="vote-title">{title}</div>
+      <RevealRow stagger={0}>
+        <RevealAvatar seat={seat} no={no} mark={ok ? "yes" : "no"} label={label} idx={0} />
+      </RevealRow>
+    </div>
+  );
+}
+
+function WerewolfAction({ ch, item, seat, no, title, text, monologue, audio, danger }: {
+  ch: Channel; item: FeedItem; seat: WerewolfSeatInfo | undefined; no: number; title: string;
+  text: string; monologue: string; audio: string | null; danger: boolean;
+}) {
+  return (
+    <div className={`spotlight ww-talk ${danger ? "bad" : "ok"}`}>
+      <div className="spot-head">
+        <div className={avaClass("spot-avatar", seat)} style={avaBg(seat)}><AvaFill seat={seat} /></div>
+        <div className="spot-id">
+          <div className="spot-name">{circ(no)} 号</div>
+          <div className="spot-tag">{title}{seat ? <> · {wwRole(seat.role)}</> : ""}</div>
+        </div>
+        {monologue && <div className="spot-think"><span className="think-mark">💭</span><span className="think-text">{monologue}</span></div>}
+      </div>
+      <div className="spot-text live-scroll"><div className="spot-text-inner"><LiveText ch={ch} item={item} text={text} /></div></div>
+      <Audio ch={ch} item={item} url={audio} />
+    </div>
+  );
+}
+
+function WerewolfTalk({ ch, item, seat, no, tag, text, monologue, audio }: {
+  ch: Channel; item: FeedItem; seat: WerewolfSeatInfo | undefined; no: number; tag: string;
+  text: string; monologue: string; audio: string | null;
+}) {
+  return (
+    <div className="spotlight ww-talk">
+      <div className="spot-head">
+        <div className={avaClass("spot-avatar", seat)} style={avaBg(seat)}><AvaFill seat={seat} /></div>
+        <div className="spot-id">
+          <div className="spot-name">{circ(no)} 号</div>
+          <div className="spot-tag">{tag}{seat ? <> · {wwRole(seat.role)}</> : ""}</div>
+        </div>
+        {monologue && <div className="spot-think"><span className="think-mark">💭</span><span className="think-text">{monologue}</span></div>}
+      </div>
+      <div className="spot-text live-scroll"><div className="spot-text-inner"><LiveText ch={ch} item={item} text={text} /></div></div>
+      <Audio ch={ch} item={item} url={audio} />
+    </div>
+  );
+}
+
+function WerewolfVoteView({ scene, d }: {
+  scene: WerewolfScene; d: Extract<FeedItem["directive"], { kind: "ww_vote_reveal" }>;
+}) {
+  const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
+  const counts = new Map<number, number>();
+  d.votes.forEach((v) => counts.set(v.target_no, (counts.get(v.target_no) ?? 0) + 1));
+  const ordered = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+  return (
+    <div className={`reveal-view vote-view ww-card ${d.exiled !== null ? "bad" : ""}`}>
+      <div className="vote-title">{d.tied ? "平票无人出局" : `放逐 ${circ(d.exiled ?? 0)}号`}</div>
+      <RevealRow stagger={0.12}>
+        {d.votes.map((v, i) => (
+          <RevealAvatar key={v.seat_no} seat={seatOf(v.seat_no)} no={v.seat_no}
+            mark={v.target_no === d.exiled ? "no" : "pending"} label={`投${circ(v.target_no)}`} idx={i} />
+        ))}
+      </RevealRow>
+      <div className="ww-vote-counts">
+        {ordered.map(([no, count]) => <span key={no}>{circ(no)}号 {count} 票</span>)}
+      </div>
+    </div>
+  );
+}
+
+function WerewolfOverView({ ch, scene, banter }: { ch: Channel; scene: WerewolfScene; banter?: FeedItem }) {
+  const winner = scene.winner;
+  const rows: { tag: string; cls: string; seats: WerewolfSeatInfo[] }[] = [
+    { tag: "胜利", cls: "win", seats: scene.seats.filter((s) => s.side === winner) },
+    { tag: "失败", cls: "lose", seats: scene.seats.filter((s) => s.side !== winner) },
+  ];
+  const speech = banter?.directive.kind === "ww_speech" ? banter.directive : undefined;
+  return (
+    <div className={`over-view ww-over ${winner}`}>
+      <div className="over-rows">
+        {rows.map((r) => (
+          <div key={r.cls} className={`over-row ${r.cls}`}>
+            <span className={`over-tag ${r.cls}`}>{r.tag}</span>
+            <div className="over-seats">
+              {r.seats.map((s, i) => (
+                <div key={s.no} className={`over-seat ${s.side === "werewolf" ? "evil" : "good"}`} style={{ animationDelay: `${i * 0.08}s` }}>
+                  <div className={avaClass("over-ava", s)} style={avaBg(s)}><AvaFill seat={s} /></div>
+                  <span className="over-no">{circ(s.no)}</span>
+                  <div className="over-role">{wwRole(s.role)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="over-talk">
+        {speech && banter ? (
+          <>
+            <div className="over-banter live-scroll" key={banter.seq}>
+              <div className="over-banter-inner"><span className="ob-who">{circ(speech.seat_no)}号</span>「<LiveText ch={ch} item={banter} text={speech.text} />」</div>
+            </div>
+            {speech.monologue && <div className="over-think"><span className="think-mark">💭</span><span className="think-text">{speech.monologue}</span></div>}
+            <Audio ch={ch} item={banter} url={speech.audio_url} />
+          </>
+        ) : (
+          <div className="over-reason">{winner ? `${winner === "good" ? "好人" : "狼人"}胜利 · ${wwWinReason(winner, scene.win_reason ?? "")}` : ""}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Curtain({ title, sub }: { title: string; sub: string }) {
   return <div className="curtain"><div className="curtain-title">{title}</div><div className="curtain-sub">{sub}</div></div>;
 }
 
 function IntermissionCard({ d }: { d: Intermission }) {
+  const reason = d.last_winner === "werewolf" ? wwWinReason(d.last_winner, d.last_reason ?? "") : winReasonLabel(d.last_winner ?? "good", d.last_reason ?? "");
   return (
     <div className="curtain dim">
       <div className="curtain-title">幕间休息</div>
-      {d.last_winner && <div className="curtain-sub">上局：{d.last_winner === "good" ? "蓝方胜" : "红方胜"}（{d.last_reason ? winReasonLabel(d.last_winner, d.last_reason) : ""}）</div>}
+      {d.last_winner && <div className="curtain-sub">上局：{d.last_winner === "good" ? "好人胜" : "狼人胜"}（{d.last_reason ? reason : ""}）</div>}
       <div className="curtain-sub">{d.next_ready ? "下一局即将开始" : "下一局排片中…"}</div>
     </div>
   );

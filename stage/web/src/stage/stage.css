@@ -336,3 +336,85 @@
 @keyframes marquee { to { transform: translateX(-100%); } }
 
 .conn-dot { position: absolute; top: 18px; right: 18px; width: 18px; height: 18px; border-radius: 50%; background: var(--c-evil); z-index: 20; }
+
+/* Werewolf --------------------------------------------------------------- */
+.ww-bg {
+  background:
+    linear-gradient(180deg, rgba(12,13,18,.15), rgba(12,8,8,.58)),
+    radial-gradient(circle at 50% 28%, rgba(119,34,48,.22), transparent 42%),
+    var(--scene-url);
+  background-size: cover;
+  background-position: center;
+}
+.ww-hud-center { gap: 8px; }
+.ww-day {
+  font: 900 28px var(--f-display);
+  color: var(--c-gold);
+  text-shadow: var(--ts-strong);
+  letter-spacing: .04em;
+}
+.ww-score { display: flex; align-items: center; gap: 24px; }
+.ww-board {
+  min-width: 250px;
+  text-align: center;
+  font: 800 20px var(--f-sans);
+  color: var(--c-text);
+  text-shadow: var(--ts-soft);
+}
+.ww-carousel .cline { font-size: 21px; }
+.ww-arena .col { gap: 9px; top: 144px; bottom: 26px; }
+.ww-arena .seat {
+  min-height: 118px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+.ww-seat.werewolf .avatar { border-color: var(--c-evil-line); box-shadow: 0 0 18px rgba(224,127,147,.45); }
+.ww-seat.good .avatar { border-color: var(--c-good-line); box-shadow: 0 0 18px rgba(111,168,224,.45); }
+.ww-seat.dead { opacity: .56; filter: grayscale(.35); }
+.ww-seat.dead .avatar::after {
+  content: "";
+  position: absolute;
+  inset: 9px;
+  border-top: 4px solid rgba(255,255,255,.86);
+  transform: rotate(-35deg);
+}
+.ww-seat.marked .avatar-wrap { animation: wwPulse .75s ease-in-out 2; }
+@keyframes wwPulse { 50% { transform: scale(1.08); filter: drop-shadow(0 0 18px rgba(224,127,147,.8)); } }
+.ww-seat .seat-role.good { color: #d8ecff; border-color: rgba(156,203,255,.45); background: rgba(23,53,92,.62); }
+.ww-seat .seat-role.werewolf,
+.ww-seat .seat-role.evil { color: #ffd6dc; border-color: rgba(236,154,166,.45); background: rgba(91,16,31,.62); }
+.ww-center.center-stage { height: 610px; }
+.ww-feature .feature-title { max-width: 760px; }
+.ww-card {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 34px;
+  text-align: center;
+}
+.ww-card.bad .vote-title { color: var(--c-evil-bright); }
+.ww-card.ok .vote-title { color: var(--c-good-bright); }
+.ww-talk .spot-tag { color: var(--c-gold); }
+.ww-talk.bad .spot-tag { color: var(--c-evil-bright); }
+.ww-talk.ok .spot-tag { color: var(--c-good-bright); }
+.ww-vote-counts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 14px;
+  margin-top: 14px;
+  font: 800 21px var(--f-sans);
+  color: var(--c-text-soft);
+}
+.ww-vote-counts span {
+  padding: 5px 13px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.12);
+}
+.ww-over .over-seat { width: 84px; }
+.ww-over .over-ava { width: 58px; height: 58px; }
+.ww-over .over-role { font-size: 15px; }

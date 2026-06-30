@@ -1,8 +1,8 @@
-// 阿瓦隆协议形状（v2 "电视信号"）：与 server/protocol.py 的信封
-// + server/games/avalon/protocol.py 的玩法字段对应。
+// 舞台协议形状（v2 "电视信号"）：与 server/protocol.py 的信封
+// + server/games/<game>/protocol.py 的玩法字段对应。
 // 客户端是纯渲染函数：没有 reducer、没有本地状态折叠，收到 StateMsg 画什么是什么。
 
-export interface SeatInfo {
+export interface AvalonSeatInfo {
   no: number;
   name: string;
   persona: string;
@@ -13,8 +13,8 @@ export interface SeatInfo {
   model_display?: string | null;  // 对外展示的模型名；头像下半透明白小字，缺则不显
 }
 
-export interface GameOpen { kind: "game_open"; players: number; good: number; evil: number; seats: SeatInfo[] }
-export interface Deal { kind: "deal"; seats: SeatInfo[]; leader_no: number; lady_holder: number | null }
+export interface GameOpen { kind: "game_open"; players: number; good: number; evil: number; seats: AvalonSeatInfo[] }
+export interface Deal { kind: "deal"; seats: AvalonSeatInfo[]; leader_no: number; lady_holder: number | null }
 export interface Speech {
   kind: "speech";
   phase: "propose" | "discuss" | "lady" | "banter";
@@ -41,7 +41,7 @@ export interface Assassination {
   kind: "assassination"; assassin_no: number; target_no: number; hit: boolean;
   text: string; monologue: string; audio_url: string | null;
 }
-export interface GameOver { kind: "game_over"; winner: "good" | "evil"; win_reason: string; seats: SeatInfo[] }
+export interface GameOver { kind: "game_over"; winner: "good" | "evil"; win_reason: string; seats: AvalonSeatInfo[] }
 export interface HostSpeech { kind: "host"; name: string; beat: string; text: string; audio_url: string | null }
 export interface NarrationCue {
   name: string;
@@ -55,8 +55,65 @@ export interface Intermission {
   kind: "intermission"; last_winner: string | null; last_reason: string | null; next_ready: boolean;
 }
 
-export type Directive =
+export type AvalonDirective =
   | GameOpen | Deal | Speech | VoteReveal | QuestReveal | Assassination | GameOver | HostSpeech | Intermission;
+
+export interface WerewolfSeatInfo {
+  no: number;
+  name: string;
+  persona: string;
+  role: string;
+  side: "good" | "werewolf";
+  model: string;
+  alive: boolean;
+  revealed: boolean;
+  can_vote: boolean;
+  avatar_url?: string | null;
+  model_display?: string | null;
+}
+export interface WerewolfGameOpen {
+  kind: "ww_game_open"; board_name: string; players: number; wolves: number; gods: number; villagers: number;
+  seats: WerewolfSeatInfo[];
+}
+export interface WerewolfDeal { kind: "ww_deal"; seats: WerewolfSeatInfo[] }
+export interface WerewolfNightStart { kind: "ww_night_start"; day: number }
+export interface WerewolfWolfVote { seat_no: number; target_no: number; speech: string; monologue: string }
+export interface WerewolfWolfKill { kind: "ww_wolf_kill"; day: number; target_no: number; votes: WerewolfWolfVote[] }
+export interface WerewolfSeerCheck {
+  kind: "ww_seer_check"; day: number; seat_no: number; target_no: number; result: "good" | "werewolf";
+  monologue: string; audio_url: string | null;
+}
+export interface WerewolfWitchAction {
+  kind: "ww_witch_action"; day: number; seat_no: number; save: boolean; poison_target_no: number | null;
+  monologue: string; audio_url: string | null;
+}
+export interface WerewolfDeathInfo { seat_no: number; role: string; reason: string; day: number }
+export interface WerewolfDeathResolved { kind: "ww_death_resolved"; day: number; deaths: WerewolfDeathInfo[] }
+export interface WerewolfRoleReveal { kind: "ww_role_reveal"; day: number; seat_no: number; role: string; reason: string }
+export interface WerewolfIdiotReveal { kind: "ww_idiot_reveal"; day: number; seat_no: number }
+export interface WerewolfSpeech {
+  kind: "ww_speech"; day: number | null; phase: "discussion" | "last_words" | "hunter" | "banter";
+  seat_no: number; text: string; monologue: string; audio_url: string | null;
+}
+export interface WerewolfExileVote { seat_no: number; target_no: number; monologue: string }
+export interface WerewolfVoteReveal {
+  kind: "ww_vote_reveal"; day: number; votes: WerewolfExileVote[]; exiled: number | null; tied: boolean;
+}
+export interface WerewolfHunterShot {
+  kind: "ww_hunter_shot"; day: number; hunter_no: number; target_no: number | null;
+  text: string; monologue: string; audio_url: string | null;
+}
+export interface WerewolfGameOver {
+  kind: "ww_game_over"; winner: "good" | "werewolf"; win_reason: string; day: number;
+  seats: WerewolfSeatInfo[]; deaths: WerewolfDeathInfo[];
+}
+
+export type WerewolfDirective =
+  | WerewolfGameOpen | WerewolfDeal | WerewolfNightStart | WerewolfWolfKill | WerewolfSeerCheck
+  | WerewolfWitchAction | WerewolfDeathResolved | WerewolfRoleReveal | WerewolfIdiotReveal
+  | WerewolfSpeech | WerewolfVoteReveal | WerewolfHunterShot | WerewolfGameOver | HostSpeech | Intermission;
+
+export type Directive = AvalonDirective | WerewolfDirective;
 
 export interface OverlayItem {
   id: string;
@@ -89,8 +146,9 @@ export interface FeedItem {
   narrations: NarrationCue[];
 }
 
-export interface Scene {
-  seats: SeatInfo[];
+export interface AvalonScene {
+  game: "avalon";
+  seats: AvalonSeatInfo[];
   dealt: boolean;
   leader_no: number | null;
   lady_holder: number | null;
@@ -105,6 +163,33 @@ export interface Scene {
   feed: FeedItem[];
   timeline: TimelineEntry[];
 }
+
+export interface WerewolfDeathLog {
+  kind: "ww_death"; day: number; seat_no: number; role: string; reason: string;
+}
+export interface WerewolfVoteLog {
+  kind: "ww_vote"; day: number; exiled: number | null; tied: boolean; votes: WerewolfExileVote[];
+}
+export type WerewolfTimelineEntry = WerewolfDeathLog | WerewolfVoteLog;
+
+export interface WerewolfScene {
+  game: "werewolf";
+  board_name: string;
+  seats: WerewolfSeatInfo[];
+  dealt: boolean;
+  day: number;
+  phase: "opening" | "night" | "day" | "postgame";
+  speaking: number | null;
+  night_target: number | null;
+  last_exiled: number | null;
+  winner: string | null;
+  win_reason: string | null;
+  deaths: WerewolfDeathInfo[];
+  feed: FeedItem[];
+  timeline: WerewolfTimelineEntry[];
+}
+
+export type Scene = AvalonScene | WerewolfScene;
 
 export interface StateMsg {
   type: "state";

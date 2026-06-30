@@ -41,6 +41,7 @@ default = true
 [tool.pytest.ini_options]
 testpaths = ["server/tests"]
 asyncio_mode = "auto"
+faulthandler_timeout = 60
 
 [tool.ruff]
 line-length = 120

@@ -11,11 +11,13 @@ from pathlib import Path
 from server import replay
 from server.games.avalon.plugin import AvalonPlugin
 from server.games.base import GamePlugin
+from server.games.werewolf.plugin import WerewolfPlugin
 
 DEFAULT_GAME = "avalon"
 
 _PLUGINS: dict[str, GamePlugin] = {
     "avalon": AvalonPlugin(),
+    "werewolf": WerewolfPlugin(),
 }
 
 
