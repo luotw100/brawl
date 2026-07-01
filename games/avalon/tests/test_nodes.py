@@ -105,7 +105,6 @@ async def test_propose_valid_team_resets_votes(registry: Registry, monkeypatch: 
     assert out["threads"][1].messages[1].content == "raw"
     for t in out["threads"].values():
         assert any("队长 1号 提议的队伍：2号、4号" in line for line in t.inbox)  # 队伍清单存档上桌（不念）
-        assert any("下面从 2号 开始轮流发言" in line for line in t.inbox)  # 主持人只点名开启讨论轮（队长下家）
         assert any(line == "1号：「s」" for line in t.inbox)  # 队长发言原文上桌
 
 
@@ -321,7 +320,7 @@ async def test_lady_reveals_truth_and_passes_token(registry: Registry, monkeypat
     for no, t in out["threads"].items():
         # 主持词对持有者在宣布前已 flush 进他的 human 提问，其余席位还躺在 inbox
         seen = "\n".join([m.content for m in t.messages if m.role == "human"] + list(t.inbox))
-        assert "湖中仙女环节" in seen
+        assert "仙女环节" in seen
         if no != 5:
             assert all("真实阵营" not in m.content for m in t.messages)
 

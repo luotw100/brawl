@@ -69,13 +69,13 @@ async def test_full_lineup_ten_player_game_runs() -> None:
 
 async def test_lady_of_the_lake_module_runs() -> None:
     """7 人 + 湖中仙女：跑通且令牌轨迹合法——历任持有者互不重复、每次传递都向全员广播过
-    一次当众宣布（以任一席位线程里的主持词「湖中仙女环节」计数）。"""
+    一次当众宣布（以任一席位线程里的主持词「仙女环节」计数）。"""
     for seed in range(6):
         final = await run_game(AvalonSettings(player="random", players=7, lady=True, seed=seed))
         _assert_outcome_consistent(final)
         assert final.lady_holder is not None
         assert len(final.lady_used) == len(set(final.lady_used))  # 不能重复持有
-        announcements = _thread_text(final, 1).count("湖中仙女环节")
+        announcements = _thread_text(final, 1).count("仙女环节")
         assert announcements == len(final.lady_used) - 1  # 每次传递对应一次当众宣布
 
 
@@ -83,7 +83,7 @@ async def test_lady_disabled_by_default() -> None:
     """不开 --lady：状态里令牌全程为空，不触发查验。"""
     final = await run_game(AvalonSettings(player="random", players=7, seed=1))
     assert final.lady_holder is None and final.lady_used == []
-    assert "湖中仙女环节" not in _thread_text(final, 1)
+    assert "仙女环节" not in _thread_text(final, 1)
 
 
 async def test_threads_never_leak_secrets() -> None:
