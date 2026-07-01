@@ -18,11 +18,15 @@ from server.record import (
     recorded_beats,
 )
 from server.record_settings import RENDER_DEVICE, RecordSettings
-from server.protocol import NarrationCue
+from server.protocol import AudioTrack
 from server.sfx import SFX_VOLUME
 
 ROOT = Path("/replays-root")
 SFX = Path("/sfx-root")
+
+
+def track(kind: str, url: str, start: float, volume: float = 1.0) -> AudioTrack:
+    return AudioTrack(kind=kind, audio_url=url, start=start, volume=volume)
 
 
 def test_record_settings_video_path_is_inside_replay_dir(tmp_path):
@@ -47,8 +51,8 @@ def test_record_settings_rejects_out_cli(tmp_path):
 def test_audio_segments_offsets_relative_to_origin():
     # origin = 开抓时刻 = 视频零点；偏移 = started_at − origin
     beats = [
-        Beat(seq=1, started_at=100.0, audio_url="/replays/g/tts/a.opus"),
-        Beat(seq=2, started_at=103.5, audio_url="/replays/g/tts/b.opus"),
+        Beat(seq=1, started_at=100.0, tracks=[track("main", "/replays/g/tts/a.opus", 0.0)]),
+        Beat(seq=2, started_at=103.5, tracks=[track("main", "/replays/g/tts/b.opus", 0.0)]),
     ]
     segs = audio_segments(beats, ROOT, SFX, shift=0.0, origin=99.0)
     assert segs == [
@@ -59,20 +63,24 @@ def test_audio_segments_offsets_relative_to_origin():
 
 def test_audio_segments_skips_silent_and_applies_shift_clamped():
     beats = [
-        Beat(seq=1, started_at=100.0, audio_url=None),  # 无声拍跳过
-        Beat(seq=2, started_at=101.0, audio_url="/replays/g/tts/b.opus"),
+        Beat(seq=1, started_at=100.0),  # 无声拍跳过
+        Beat(seq=2, started_at=101.0, tracks=[track("main", "/replays/g/tts/b.opus", 0.0)]),
     ]
     # origin=100 → b 在 1.0s；shift=-2 推到负，下钳到 0
     segs = audio_segments(beats, ROOT, SFX, shift=-2.0, origin=100.0)
     assert segs == [(ROOT / "g/tts/b.opus", 0.0, 1.0)]
 
 
-def test_audio_segments_sfx_cues_offset_on_top_of_beat():
-    # cue 的拍内偏移叠在拍起点上；音效走 sfx_dir + 压低增益
+def test_audio_segments_sfx_tracks_offset_on_top_of_beat():
+    # sfx track 的拍内偏移叠在拍起点上；音效走 sfx_dir + 压低增益
     beats = [
-        Beat(seq=1, started_at=100.0, audio_url=None),
-        Beat(seq=2, started_at=102.0, audio_url="/replays/g/tts/b.opus",
-             cues=[("stamp", 0.0), ("stamp", 0.5), ("vote-pass", 1.0)]),
+        Beat(seq=1, started_at=100.0),
+        Beat(seq=2, started_at=102.0, tracks=[
+            track("main", "/replays/g/tts/b.opus", 0.0),
+            track("sfx", "/sfx/stamp.opus", 0.0, SFX_VOLUME),
+            track("sfx", "/sfx/stamp.opus", 0.5, SFX_VOLUME),
+            track("sfx", "/sfx/vote-pass.opus", 1.0, SFX_VOLUME),
+        ]),
     ]
     segs = audio_segments(beats, ROOT, SFX, shift=0.0, origin=100.0)
     assert segs == [
@@ -88,10 +96,9 @@ def test_audio_segments_narrations_offset_inside_beat():
         Beat(
             seq=1,
             started_at=100.0,
-            audio_url="/replays/g/tts/main.opus",
-            narrations=[
-                NarrationCue(name="司仪", beat="opening", text="开场", audio_url="/replays/g/tts/host.opus", at=1.25),
-                NarrationCue(name="司仪", beat="silent", text="无声", audio_url=None, at=2.0),
+            tracks=[
+                track("main", "/replays/g/tts/main.opus", 0.0),
+                track("narration", "/replays/g/tts/host.opus", 1.25),
             ],
         ),
     ]
@@ -108,9 +115,9 @@ def test_audio_segments_empty():
 
 def test_recorded_beats_drop_preroll_before_capture_origin():
     beats = [
-        Beat(seq=1, started_at=99.0, audio_url="/replays/g/tts/open.opus"),
-        Beat(seq=2, started_at=100.0, audio_url="/replays/g/tts/deal.opus"),
-        Beat(seq=3, started_at=104.0, audio_url="/replays/g/tts/speech.opus"),
+        Beat(seq=1, started_at=99.0, tracks=[track("main", "/replays/g/tts/open.opus", 0.0)]),
+        Beat(seq=2, started_at=100.0, tracks=[track("main", "/replays/g/tts/deal.opus", 0.0)]),
+        Beat(seq=3, started_at=104.0, tracks=[track("main", "/replays/g/tts/speech.opus", 0.0)]),
     ]
 
     assert [b.seq for b in recorded_beats(beats, origin=100.0)] == [2, 3]

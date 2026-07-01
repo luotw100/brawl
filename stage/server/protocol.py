@@ -33,7 +33,8 @@ from pydantic import BaseModel, Field, SerializeAsAny
 
 
 class Directive(BaseModel):
-    """舞台指令基类：框架只依赖 `kind`（页面渲染分派用）与 `audio_url`（预取/录音按它取声）。
+    """舞台指令基类：框架只依赖 `kind` 做计划编译与页面渲染分派。
+    `audio_url` 是主语音载荷，PlayPlan 会把它投影成 tracks；直播/录制不直接重解它。
     具体玩法的指令子类化它、自带各自字段；框架引擎从不 match 具体子类。"""
 
     kind: str
@@ -42,7 +43,7 @@ class Directive(BaseModel):
 
 class HostSpeech(Directive):
     """主持人台词（games 层显式 Host 的 host 事件）：天然的过场与报幕。各玩法共用一个主持人，
-    故它是框架指令；`beat` 字符串的取值各玩法自定义（哪些 beat 算 lead-in 由 plugin 决定）。"""
+    故它是框架指令；`beat` 字符串的取值各玩法自定义（哪些 beat 算 lead-in 由 PlayPlan DSL 决定）。"""
 
     kind: Literal["host"] = "host"
     name: str  # 主持人显示名（meta.setup.host_name → cast.yaml；老 replay 无 host 事件，不存在缺名问题）
@@ -75,6 +76,23 @@ class NarrationCue(BaseModel):
     audio_url: str | None = None
     at: float = 0.0
     duration: float = 0.0
+
+
+class AudioTrack(BaseModel):
+    """一拍内的确定性音轨计划。直播页和 stage-record 都只消费这张轨道表。
+
+    start/duration 已经是拍内秒数，并已按 engine speed 压缩；播放侧把音频 playbackRate 同步设为
+    speed。sfx 轨使用 /sfx/<name>.opus，replay 人声使用 /replays/<id>/tts/<file>。
+    """
+
+    kind: str  # main | narration | sfx
+    audio_url: str | None = None
+    start: float = 0.0
+    duration: float = 0.0
+    volume: float = 1.0
+    text: str = ""
+    name: str | None = None
+    beat: str | None = None
 
 
 # ---------------------------------------------------------------- 前情回顾（timeline）
@@ -118,6 +136,7 @@ class FeedItem(BaseModel):
     speed: float = 1.0  # 时间轴倍速：duration 已按它压缩；播放侧据此把音频 playbackRate 提速贴合
     content_at: float = 0.0  # 主内容拍内偏移：前置主持旁白先说完，玩家发言再开始
     narrations: list[NarrationCue] = Field(default_factory=list)
+    tracks: list[AudioTrack] = Field(default_factory=list)
 
 
 class BaseScene(BaseModel):

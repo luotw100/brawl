@@ -1,4 +1,4 @@
-"""狼人杀插件：把 replay 事件翻成舞台指令、折进 WerewolfScene，并交付节奏/音效/进度。"""
+"""狼人杀插件：把 replay 事件翻成舞台指令、折进 WerewolfScene，并交付进度摘要。"""
 
 from __future__ import annotations
 
@@ -29,8 +29,6 @@ from server.games.werewolf.protocol import (
     WolfVote,
 )
 from server.protocol import BaseScene, Directive, FeedItem, GameResult, HostSpeech, Intermission
-
-_MAX_CHAR_DELAY = 0.06
 
 _PHASE = {
     "discussion": "白天发言",
@@ -209,52 +207,6 @@ class WerewolfPlugin:
             scene.deaths.append(death)
         self._replace_seat(scene, death.seat_no, alive=False, revealed=True, role=death.role)
 
-    def content_seconds(self, directive: Directive, pace: float) -> float:
-        char = pace * _MAX_CHAR_DELAY
-        unit = pace
-        match directive:
-            case Speech(text=text, monologue=monologue):
-                return (len(text) + len(monologue)) * char
-            case HunterShot(text=text, monologue=monologue):
-                return (len(text) + len(monologue)) * char
-            case GameOpen():
-                return unit * 4.0
-            case Deal():
-                return unit * (len(directive.seats) * 0.55 + 0.5)
-            case NightStart():
-                return unit * 2.5
-            case WolfKill():
-                return unit * (len(directive.votes) * 1.2 + 2.0)
-            case SeerCheck():
-                return unit * 3.0 + len(directive.monologue) * char
-            case WitchAction():
-                return unit * 3.0 + len(directive.monologue) * char
-            case DeathResolved():
-                return unit * (len(directive.deaths) * 1.5 + 2.0)
-            case RoleReveal():
-                return unit * 2.2
-            case IdiotReveal():
-                return unit * 3.0
-            case VoteReveal():
-                return unit * (len(directive.votes) * 0.55 + 3.0)
-            case GameOver():
-                return unit * 12.0
-            case _:
-                raise ValueError(f"未覆盖的指令类型：{type(directive).__name__}")
-
-    def tail_seconds(self, directive: Directive, pace: float) -> float:
-        tail = {Speech: 3.0, HunterShot: 5.0}.get(type(directive), 0.0)
-        return pace * tail
-
-    def reveal_paced_by_narration(self, directive: Directive) -> bool:
-        return isinstance(directive, (Deal, NightStart, DeathResolved, VoteReveal))
-
-    def speech_paced(self, directive: Directive) -> bool:
-        return isinstance(directive, (Speech, HunterShot))
-
-    def lead_in_beats(self) -> set[str]:
-        return {"night_start", "day_start", "vote_result"}
-
     def is_opening_anchor(self, directive: Directive) -> bool:
         return isinstance(directive, Deal)
 
@@ -262,29 +214,6 @@ class WerewolfPlugin:
         if isinstance(directive, GameOver):
             return GameResult(winner=directive.winner, win_reason=directive.win_reason)
         return None
-
-    def cues(self, directive: Directive, duration: float) -> list[tuple[str, float]]:
-        match directive:
-            case GameOpen():
-                return [("open", 0.0)]
-            case Speech():
-                return [("think", 0.0)] if directive.monologue else []
-            case WolfKill():
-                return [("assassin-hit", duration * 0.6)]
-            case DeathResolved():
-                return [("quest-fail", 0.0)] if directive.deaths else [("quest-success", 0.0)]
-            case VoteReveal():
-                n = len(directive.votes)
-                stagger = duration * 0.62 / max(n, 1)
-                cues = [("stamp", i * stagger) for i in range(n)]
-                cues.append(("vote-fail" if directive.exiled is not None else "vote-pass", n * stagger))
-                return cues
-            case HunterShot():
-                return [("assassin-hit" if directive.target_no is not None else "assassin-miss", 0.0)]
-            case GameOver():
-                return [("win-good" if directive.winner == "good" else "win-evil", 0.0)]
-            case _:
-                return []
 
     def summary(self, directive: Directive, scene: BaseScene) -> tuple[str, str, str]:
         seats = getattr(scene, "seats", [])

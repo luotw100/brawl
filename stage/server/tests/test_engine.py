@@ -228,8 +228,8 @@ async def test_audio_duration_overrides_text_estimate(settings):
     voiced = Speech(phase="propose", seat_no=2, text="我带3号。", monologue="稳一手。",
                     audio_url="/replays/game1/tts/a.opus")
     silent = Speech(phase="discuss", seat_no=3, text="行吧。", monologue="没看出问题。")
-    assert engine._duration(StageBeat(voiced)) == 9.5  # pace=0 文字估算为 0，音频撑满
-    assert engine._duration(StageBeat(silent)) == 0.0  # 无音频回退字数估算
+    assert engine._stage_beats([voiced])[0].duration == 9.5  # pace=0 文字估算为 0，音频撑满
+    assert engine._stage_beats([silent])[0].duration == 0.0  # 无音频回退字数估算
 
 
 async def test_speed_compresses_beat_duration(settings):
@@ -238,9 +238,9 @@ async def test_speed_compresses_beat_duration(settings):
     engine._durations = {"/replays/game1/tts/a.opus": 9.0}
     voiced = Speech(phase="propose", seat_no=2, text="我带3号。", monologue="稳一手。",
                     audio_url="/replays/game1/tts/a.opus")
-    assert engine._duration(StageBeat(voiced)) == 9.5  # speed=1.0 基准（9s 音频 + 0.5 余量）
+    assert engine._stage_beats([voiced])[0].duration == 9.5  # speed=1.0 基准（9s 音频 + 0.5 余量）
     engine.speed = 2.0
-    assert engine._duration(StageBeat(voiced)) == 4.75  # 2× → 拍减半
+    assert engine._stage_beats([voiced])[0].duration == 4.75  # 2× → 拍减半
 
 
 async def test_lady_audio_extends_dwell(settings):
@@ -257,7 +257,7 @@ async def test_lady_audio_extends_dwell(settings):
     directive = AvalonPlugin().adapt(lady_event, AdaptContext(replay_id="game1", tts=tts, names={}, host_name="司仪"))
     engine, _ = make_engine(settings)  # pace=0 → 文字估算为 0
     engine._durations = replay.audio_durations("game1", tts)
-    assert engine._duration(StageBeat(directive)) == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
+    assert engine._stage_beats([directive])[0].duration == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
 
 
 async def test_host_speech_collapses_into_adjacent_stage_beat(settings):
@@ -274,6 +274,7 @@ async def test_host_speech_collapses_into_adjacent_stage_beat(settings):
     assert [b.directive.kind for b in beats] == ["game_open", "deal", "speech", "vote_reveal"]
     assert [(n.beat, n.audio_url) for n in beats[1].narrations] == [("opening", "/h1")]
     assert [(n.beat, n.audio_url) for n in beats[3].narrations] == [("vote_result", "/h2")]
+    assert [t.audio_url for t in beats[1].tracks if t.kind == "narration"] == ["/h1"]
 
 
 async def test_lead_host_delays_player_content(settings):
@@ -286,13 +287,14 @@ async def test_lead_host_delays_player_content(settings):
     assert len(beats) == 1
     assert beats[0].content_at == 2.2
     assert beats[0].narrations[0].at == 0.0
+    assert beats[0].tracks[0].kind == "narration"
 
 
 async def test_reveal_animation_duration_follows_narration(settings):
     engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
     engine._durations = {"/h": 3.0}
     host = HostSpeech(name="司仪", beat="vote_result", text="十票赞成", audio_url="/h")
-    beat = StageBeat(
+    beats = engine._stage_beats([
         VoteReveal(
             quest=1,
             attempt=1,
@@ -300,27 +302,27 @@ async def test_reveal_animation_duration_follows_narration(settings):
             approved=True,
             rejections=0,
         ),
-        narrations=[engine._narration(host, 0.0)],
-    )
-    assert engine._duration(beat) == 3.2
+        host,
+    ])
+    assert beats[0].duration == 3.2
 
 
 async def test_deal_animation_duration_follows_opening_narration(settings):
     engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
     engine._durations = {"/h": 5.0}
     host = HostSpeech(name="司仪", beat="opening", text="欢迎来到阿瓦隆", audio_url="/h")
-    beat = StageBeat(
+    beats = engine._stage_beats([
         Deal(seats=[], leader_no=5, lady_holder=4),
-        narrations=[engine._narration(host, 0.0)],
-    )
-    assert engine._duration(beat) == 5.2
+        host,
+    ])
+    assert beats[0].duration == 5.2
 
 
 async def test_quest_animation_duration_follows_narration(settings):
     engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
     engine._durations = {"/h": 4.0}
     host = HostSpeech(name="司仪", beat="quest_result", text="任务成功", audio_url="/h")
-    beat = StageBeat(
+    beats = engine._stage_beats([
         QuestReveal(
             quest=1,
             team=[1, 2, 3],
@@ -329,9 +331,9 @@ async def test_quest_animation_duration_follows_narration(settings):
             fails_required=1,
             result="success",
         ),
-        narrations=[engine._narration(host, 0.0)],
-    )
-    assert engine._duration(beat) == 4.2
+        host,
+    ])
+    assert beats[0].duration == 4.2
 
 
 async def test_broken_replay_skipped_channel_survives(settings):

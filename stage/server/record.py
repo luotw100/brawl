@@ -39,10 +39,9 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 
 from server.app import create_app
-from server.protocol import NarrationCue
+from server.protocol import AudioTrack
 from server.bgm import BGM_PLAYLIST, BGM_VOLUME
 from server.record_settings import RENDER_DEVICE, RecordSettings
-from server.sfx import SFX_VOLUME
 from server.settings import EngineKnobs, StageSettings
 
 _WEB_SRC = Path(__file__).resolve().parent.parent / "web"  # 前端源码目录（stage/web）：每次录制现构建
@@ -52,15 +51,11 @@ _console = Console()  # 进度输出：录制节拍 + ffmpeg 步骤（与捕获/
 
 @dataclass
 class Beat:
-    """一拍的录制时间线条目：seq 去重，started_at 定位偏移，audio_url 指向待拼的人声，
-    narrations 是挂在视觉拍下的主持旁白，cues 是这拍要叠的音效（名字 + 拍内偏移秒，tap 时由
-    cues_for 算好）。"""
+    """一拍的录制时间线条目：tracks 是 engine 下发给直播页的同一份确定性音轨计划。"""
 
     seq: int
     started_at: float
-    audio_url: str | None
-    narrations: list[NarrationCue] = field(default_factory=list)
-    cues: list[tuple[str, float]] = field(default_factory=list)
+    tracks: list[AudioTrack] = field(default_factory=list)
 
 
 @dataclass
@@ -93,24 +88,23 @@ def audio_segments(
 ) -> list[tuple[Path, float, float]]:
     """各拍 → (opus 文件路径, 在视频里的起始秒, 增益)。人声增益 1.0；音效压在 SFX_VOLUME。
     以 origin（= x11grab 开抓时刻 = 视频零点）为零点折算偏移：base = started_at − origin + shift，
-    下钳到 0。音效偏移在拍起点上再加 cue 的拍内偏移。
+    下钳到 0。所有拍内偏移来自 PlayPlan tracks。
 
     audio_url 形如 /replays/<id>/tts/<file>，剥掉 /replays/ 前缀即 replay_root 下的相对路径
     （与 app.py 的 get_audio 静态路由同一套构造，反过来落回文件系统）；音效在 sfx_dir/<name>.opus。"""
     segs: list[tuple[Path, float, float]] = []
     for b in beats:
         base = b.started_at - origin + shift
-        if b.audio_url:
-            segs.append((replay_root / b.audio_url.removeprefix("/replays/"), max(0.0, base), 1.0))
-        for narration in b.narrations:
-            if narration.audio_url:
-                segs.append((
-                    replay_root / narration.audio_url.removeprefix("/replays/"),
-                    max(0.0, base + narration.at),
-                    1.0,
-                ))
-        for name, at in b.cues:
-            segs.append((sfx_dir / f"{name}.opus", max(0.0, base + at), SFX_VOLUME))
+        for track in b.tracks:
+            if not track.audio_url:
+                continue
+            if track.audio_url.startswith("/replays/"):
+                path = replay_root / track.audio_url.removeprefix("/replays/")
+            elif track.audio_url.startswith("/sfx/"):
+                path = sfx_dir / track.audio_url.removeprefix("/sfx/")
+            else:
+                continue
+            segs.append((path, max(0.0, base + track.start), track.volume))
     return segs
 
 
@@ -251,23 +245,20 @@ def _tap_engine(engine) -> Timeline:
         feed = engine.scene.feed
         if feed:
             fi = feed[-1]
-            cues = engine._plugin.cues(fi.directive, fi.duration)
             if fi.seq in by_seq:
                 beat = by_seq[fi.seq]
                 beat.started_at = fi.started_at
-                beat.audio_url = getattr(fi.directive, "audio_url", None)
-                beat.narrations = fi.narrations
-                beat.cues = cues
+                beat.tracks = fi.tracks
                 timeline.last_beat_ends_at = fi.started_at + fi.duration
                 await orig()
                 return
-            beat = Beat(fi.seq, fi.started_at, getattr(fi.directive, "audio_url", None), fi.narrations, cues)
+            beat = Beat(fi.seq, fi.started_at, fi.tracks)
             by_seq[fi.seq] = beat
             timeline.beats.append(beat)
             timeline.last_beat_ends_at = fi.started_at + fi.duration  # 逐拍更新（信息用，含 GameOver 之后的复盘等）
             elapsed = fi.started_at - timeline.beats[0].started_at  # 视频时间轴（以第一拍为零点）
             tag, color, detail = engine._plugin.summary(fi.directive, engine.scene)
-            note = "[cyan]♪[/cyan]" if getattr(fi.directive, "audio_url", None) or fi.narrations else " "
+            note = "[cyan]♪[/cyan]" if fi.tracks else " "
             # 每拍固定一行：超宽（中文台词）裁切而非换行，进度日志更整齐
             _console.print(f"[dim]{_mmss(elapsed)}[/dim] {note} [{color}]{tag}[/{color}] {detail}", no_wrap=True)
         await orig()

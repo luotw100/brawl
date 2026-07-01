@@ -1,8 +1,7 @@
 """音效共享常量。
 
-一拍 → 该放哪些音效（名字 + 拍内偏移秒）的映射是**玩法专属**的，在各玩法插件的 `cues`
-（如 games/avalon/plugin.py 的 AvalonPlugin.cues）里；直播页（web/src/stage/sfx.ts 的 cuesFor）
-与离线录制（record.py 的 mux）共用同一套语义，跨语言没法共享代码，所以两边手动保持一致。
+一拍 → 该放哪些音效（名字 + 拍内偏移秒）的映射由 `server/plans/<game>.yaml` 描述，
+通用 playplan compiler 产出 sfx tracks。直播页和离线录制都消费同一份 tracks，不再有两套 cue 表。
 
 音效文件在 web/public/sfx/<name>.opus（构建后落到 web_dist/sfx/）。名字即契约：换素材只换
 同名文件，映射不动。本模块只放两侧都要的统一音量。

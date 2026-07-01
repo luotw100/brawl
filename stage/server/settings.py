@@ -19,7 +19,7 @@ class EngineKnobs(BaseSettings):
     """引擎节奏/画面旋钮：直播(StageSettings)与离线录制(RecordSettings)共享的唯一真源。
 
     收分叉：这些旋钮原本在两套 settings 里各写一遍、还要在 record 起引擎的桥里手抄同步——
-    飘移成本高（viewport 竖屏 bug 就是这么飘出来的）。抽成共享基类后，新旋钮只在这里加一次、
+    飘移成本高（画面/节奏配置 bug 就是这么飘出来的）。抽成共享基类后，新旋钮只在这里加一次、
     校验也只写一遍，两侧自动都有；record 起引擎时按本基类字段名机械转移（见 record.py 的
     _capture），不再逐字段手抄。
 

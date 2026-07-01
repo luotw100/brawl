@@ -2,7 +2,7 @@
 
 为什么自合成：构建环境无外网，下不到 Freesound/Pixabay 的素材。这些 .opus 是**可热插拔**
 的占位——拿到更好的无版权素材后，同名覆盖 web/public/sfx/<name>.opus 即可，前后端代码不动
-（cue 名是唯一契约，见 web/src/stage/sfx.ts 与 server/sfx.py）。
+（cue 名是唯一契约，映射写在 server/plans/<game>.yaml，公共音量见 server/sfx.py）。
 
 每条音效用纯 ffmpeg lavfi 生成：音符型走 aevalsrc（正弦叠加 + 指数衰减包络 + 软起音），
 噪声型（洗牌/盖章/命中）走 anoisesrc + 带通/淡入淡出。统一 alimiter 压峰防爆、尾部 5ms

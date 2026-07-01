@@ -1,4 +1,4 @@
-"""阿瓦隆插件：把 replay 的 god-view 事件翻成舞台指令、折进 AvalonScene，并交付节奏/音效/进度。
+"""阿瓦隆插件：把 replay 的 god-view 事件翻成舞台指令、折进 AvalonScene，并交付进度摘要。
 
 这是引擎里唯一懂"阿瓦隆"的地方——engine/record/registry 全是玩法无关的，只通过 GamePlugin
 认识它。将来加玩法 = 并列一个同样实现 GamePlugin 的插件，引擎零分叉。
@@ -37,9 +37,6 @@ from server.protocol import (
     HostSpeech,
     Intermission,
 )
-
-# pace=1 时的每字停顿上限（与 replay.py 的口径一致）
-_MAX_CHAR_DELAY = 0.06
 
 _PHASE = {"propose": "提案", "discuss": "讨论", "lady": "验人", "banter": "闲聊"}
 
@@ -195,45 +192,6 @@ class AvalonPlugin:
             case Intermission():
                 pass  # speaking 已清空
 
-    # ---------------------------------------------------------------- 节奏
-
-    def content_seconds(self, directive: Directive, pace: float) -> float:
-        """主内容秒数（视觉动画/朗读，已含 pace 缩放，未计音频地板与 speed）。基准节奏写死在此：
-        发言按字数、发牌每张约 0.75s、表决逐个亮票、大场面敢留白。pace=0 全归零（整局瞬间倾倒）。"""
-        char = pace * _MAX_CHAR_DELAY
-        unit = pace
-        match directive:
-            case Speech(text=text, monologue=monologue):
-                return (len(text) + len(monologue)) * char
-            case Assassination(text=text, monologue=monologue):
-                return (len(text) + len(monologue)) * char
-            case GameOpen():
-                return unit * 4.0
-            case Deal():
-                return unit * (len(directive.seats) * 0.75 + 0.5)  # 逐张发牌 ~0.75s/张（2x 加速，前端 stagger/fly 由 dur 反推自动跟随）
-            case VoteReveal():
-                return unit * (len(directive.votes) * 0.8 + 2.5)  # 逐个亮票 + 判定 hold
-            case QuestReveal():
-                return unit * 6.0  # 慢起→摊牌→翻轨→闪屏
-            case GameOver():
-                return unit * 12.0  # 逐个翻底牌的大结局
-            case _:
-                raise ValueError(f"未覆盖的指令类型：{type(directive).__name__}")
-
-    def tail_seconds(self, directive: Directive, pace: float) -> float:
-        """尾部气口秒数（已含 pace 缩放，未计 speed）：给有台词的拍留发言间留白。"""
-        tail = {Speech: 3.0, Assassination: 6.0}.get(type(directive), 0.0)
-        return pace * tail
-
-    def reveal_paced_by_narration(self, directive: Directive) -> bool:
-        return isinstance(directive, (Deal, VoteReveal, QuestReveal))
-
-    def speech_paced(self, directive: Directive) -> bool:
-        return isinstance(directive, (Speech, Assassination))
-
-    def lead_in_beats(self) -> set[str]:
-        return {"propose_intro", "lady"}
-
     # ---------------------------------------------------------------- 框架挂钩 / 演出
 
     def is_opening_anchor(self, directive: Directive) -> bool:
@@ -243,32 +201,6 @@ class AvalonPlugin:
         if isinstance(directive, GameOver):
             return GameResult(winner=directive.winner, win_reason=directive.win_reason)
         return None
-
-    def cues(self, directive: Directive, duration: float) -> list[tuple[str, float]]:
-        """一拍 → [(音效名, 拍内偏移秒)]。无音效的拍（主持/发言无内心戏/幕间）返回空。
-        与 web/src/stage/sfx.ts 的 cuesFor 手动保持一致——改这里就同步改那边。"""
-        match directive:
-            case GameOpen():
-                return [("open", 0.0)]
-            case Deal():
-                return []  # 发牌不配音效（"咔咔"声刺耳）——画面照常飞牌，sfx.ts 同此
-            case Speech():
-                return [("think", 0.0)] if directive.monologue else []
-            case VoteReveal():
-                # 逐票"啪"盖章 + 结果音；错峰节奏 = duration*0.62/n，与 Stage.tsx 的 --vote-stagger 同步
-                n = len(directive.votes)
-                stagger = duration * 0.62 / max(n, 1)
-                cues = [("stamp", i * stagger) for i in range(n)]
-                cues.append(("vote-pass" if directive.approved else "vote-fail", n * stagger))
-                return cues
-            case QuestReveal():
-                return [("quest-success" if directive.result == "success" else "quest-fail", 0.0)]
-            case Assassination():
-                return [("assassin-hit" if directive.hit else "assassin-miss", 0.0)]
-            case GameOver():
-                return [("win-good" if directive.winner == "good" else "win-evil", 0.0)]
-            case _:
-                return []
 
     def summary(self, directive: Directive, scene: BaseScene) -> tuple[str, str, str]:
         """一拍 → (标签, 颜色, 详情)，给录制进度条打成一行。"""

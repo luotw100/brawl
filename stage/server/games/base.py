@@ -5,11 +5,11 @@
 
 钩子分三组：
 - 适配/折叠：`adapt`（replay 事件→舞台指令）、`apply`（把一拍折进玩法 Scene）、`new_scene`。
-- 节奏：`content_seconds`/`tail_seconds`（每条指令的视觉/朗读秒数与尾部气口，未计音频/倍速——
-  音频地板与 speed 由引擎统一套）、`reveal_paced_by_narration`/`speech_paced`（两条编排谓词，
-  见 engine._duration / _stage_beats）、`lead_in_beats`（哪些主持 beat 当前置报幕先播完）。
 - 框架挂钩与演出：`is_opening_anchor`（哪条指令是"首帧门"，录制等它 paint 再开抓）、
-  `result`（终局指令→中性 GameResult 喂幕间）、`cues`（一拍叠哪些音效）、`summary`（录制进度条一行）。
+  `result`（终局指令→中性 GameResult 喂幕间）、`summary`（录制进度条一行）。
+
+分镜节奏、主持贴靠、音效 cue 不在插件里；这些全部由 `server/plans/<game>.yaml` 描述，
+再由通用 playplan compiler 编译成直播和录制共用的确定性轨道表。
 """
 
 from __future__ import annotations
@@ -51,27 +51,6 @@ class GamePlugin(Protocol):
         """把一拍折进玩法 Scene（feed 入队与窗口护栏由引擎统一做，这里只折玩法状态）。"""
         ...
 
-    # ---- 节奏 ----
-    def content_seconds(self, directive: Directive, pace: float) -> float:
-        """这条指令的主内容秒数（视觉动画/朗读，未计音频地板与 speed）。pace 0~1 线性缩放。"""
-        ...
-
-    def tail_seconds(self, directive: Directive, pace: float) -> float:
-        """这条指令演完后的尾部气口秒数（发言间留白；未计 speed）。无尾巴返回 0。"""
-        ...
-
-    def reveal_paced_by_narration(self, directive: Directive) -> bool:
-        """这条指令是否是"动画时长由主持旁白撑满"的揭晓拍（发牌/表决/任务开牌）。"""
-        ...
-
-    def speech_paced(self, directive: Directive) -> bool:
-        """这条指令是否带玩家口白（其后的主持旁白要等口白说完再起）。"""
-        ...
-
-    def lead_in_beats(self) -> set[str]:
-        """哪些主持 beat 作为 lead-in 先播完、再让玩家正文开始（其余 host 事件压在相邻视觉拍上）。"""
-        ...
-
     # ---- 框架挂钩 / 演出 ----
     def is_opening_anchor(self, directive: Directive) -> bool:
         """这条指令是否是开场"首帧门"——录制据此等页面 paint 出这一帧后才开抓、对齐视频零点。"""
@@ -79,10 +58,6 @@ class GamePlugin(Protocol):
 
     def result(self, directive: Directive) -> GameResult | None:
         """若这条是终局指令，给出中性的胜负摘要（喂幕间页）；否则 None。"""
-        ...
-
-    def cues(self, directive: Directive, duration: float) -> list[tuple[str, float]]:
-        """一拍 → [(音效名, 拍内偏移秒)]。无音效的拍返回空。"""
         ...
 
     def summary(self, directive: Directive, scene: BaseScene) -> tuple[str, str, str]:

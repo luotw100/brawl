@@ -51,6 +51,16 @@ export interface NarrationCue {
   at: number;
   duration: number;
 }
+export interface AudioTrack {
+  kind: "main" | "narration" | "sfx" | string;
+  audio_url: string | null;
+  start: number;
+  duration: number;
+  volume: number;
+  text: string;
+  name: string | null;
+  beat: string | null;
+}
 export interface Intermission {
   kind: "intermission"; last_winner: string | null; last_reason: string | null; next_ready: boolean;
 }
@@ -144,6 +154,7 @@ export interface FeedItem {
   speed: number;
   content_at: number;
   narrations: NarrationCue[];
+  tracks: AudioTrack[];
 }
 
 export interface AvalonScene {

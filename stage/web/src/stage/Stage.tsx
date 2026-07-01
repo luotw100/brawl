@@ -1,10 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
-  AvalonScene, AvalonSeatInfo, FeedItem, Intermission, NarrationCue, ProposalLog, QuestLog,
+  AvalonScene, AvalonSeatInfo, FeedItem, Intermission, ProposalLog, QuestLog,
   StateMsg, WerewolfDeathInfo, WerewolfScene, WerewolfSeatInfo,
 } from "../protocol";
 import { type Channel, elapsedOf, useChannel } from "../useChannel";
-import { useSfx } from "./sfx";
 import { useBgm } from "./bgm";
 import { StageIcon, roleIconName } from "./StageIcon";
 import "./stage.css";
@@ -93,7 +92,6 @@ export default function Stage() {
     }
   }, [state?.prefetch]);
 
-  useSfx(ch, last);
   useBgm(state?.phase);
   useEffect(() => {
     if (!window.__brawlRecordFirstFramePainted || state?.phase !== "playing" || !last) return;
@@ -128,7 +126,7 @@ export default function Stage() {
         {flashKind && <div key={last!.seq} className={`flash flash-${flashKind}`} />}
         {avalonScene && <TopHud scene={avalonScene} />}
         {avalonScene && <Arena ch={ch} scene={avalonScene} last={last} />}
-        {last && <NarrationLayer ch={ch} item={last} />}
+        {last && <AudioLayer ch={ch} item={last} />}
         {state.phase === "idle" && <Curtain title="稍候开演" sub="导播正在排片…" />}
         {last?.directive.kind === "intermission" && <IntermissionCard d={last.directive} />}
         <div className="overlay-canvas">
@@ -439,7 +437,6 @@ function AssassinView({ ch, scene, item, d }: {
           {d.hit ? "正中梅林！红方翻盘！" : "刺空了！蓝方守住胜利！"}
         </div>
       )}
-      <Audio ch={ch} item={item} url={d.audio_url} />
     </div>
   );
 }
@@ -483,7 +480,6 @@ function OverView({ ch, scene, banter }: { ch: Channel; scene: AvalonScene; bant
                 <span className="think-mark">💭</span><span className="think-text">{speech.monologue}</span>
               </div>
             )}
-            <Audio ch={ch} item={banter} url={speech.audio_url} />
           </>
         ) : (
           <div className="over-reason">{winReasonLabel(winner ?? "good", scene.win_reason ?? "")}</div>
@@ -530,7 +526,6 @@ function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, lady
         </div>
       )}
       <div className="spot-text live-scroll"><div className="spot-text-inner"><LiveText ch={ch} item={item} text={text} /></div></div>
-      <Audio ch={ch} item={item} url={audio} />
     </div>
   );
 }
@@ -672,19 +667,20 @@ function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: strin
   return <span ref={ref}>{text.slice(0, Math.max(n, 0))}{n < text.length && <span className="caret">▌</span>}</span>;
 }
 
-function NarrationLayer({ ch, item }: { ch: Channel; item: FeedItem }) {
+function AudioLayer({ ch, item }: { ch: Channel; item: FeedItem }) {
   return (
     <>
-      {item.narrations.map((n) => <NarrationAudio key={`${item.seq}-${n.beat}-${n.at}`} ch={ch} item={item} cue={n} />)}
+      {item.tracks.map((track, i) => (
+        <Audio key={`${item.seq}-${i}-${track.kind}-${track.start}`} ch={ch} item={item}
+          url={track.audio_url} at={track.start} volume={track.volume} />
+      ))}
     </>
   );
 }
 
-function NarrationAudio({ ch, item, cue }: { ch: Channel; item: FeedItem; cue: NarrationCue }) {
-  return <Audio ch={ch} item={item} url={cue.audio_url} at={cue.at} />;
-}
-
-function Audio({ ch, item, url, at = item.content_at }: { ch: Channel; item: FeedItem; url: string | null | undefined; at?: number }) {
+function Audio({ ch, item, url, at = item.content_at, volume = 1.0 }: {
+  ch: Channel; item: FeedItem; url: string | null | undefined; at?: number; volume?: number;
+}) {
   useEffect(() => {
     if (!url) return;
     let timer = 0;
@@ -693,6 +689,7 @@ function Audio({ ch, item, url, at = item.content_at }: { ch: Channel; item: Fee
       el = new window.Audio(url);
       // 时间轴倍速：拍被压缩了 speed 倍，音频也按 speed 提速才放得进、对得齐（中途加入时音频位置同乘 speed）。
       el.playbackRate = item.speed;
+      el.volume = volume;
       el.currentTime = Math.max(offset * item.speed, 0);
       el.play().catch(() => {});
     };
@@ -706,7 +703,7 @@ function Audio({ ch, item, url, at = item.content_at }: { ch: Channel; item: Fee
       if (timer) window.clearTimeout(timer);
       el?.pause();
     };
-  }, [url, item.seq, at]);
+  }, [url, item.seq, item.speed, at, volume]);
   return null;
 }
 
@@ -740,7 +737,7 @@ function WerewolfStage({ ch, state, scene, last, scale, connected, flashKind }: 
         {flashKind && <div key={last!.seq} className={`flash flash-${flashKind}`} />}
         <WerewolfHud scene={scene} />
         <WerewolfArena ch={ch} scene={scene} last={last} />
-        {last && <NarrationLayer ch={ch} item={last} />}
+        {last && <AudioLayer ch={ch} item={last} />}
         {state.phase === "idle" && <Curtain title="稍候开演" sub="导播正在排片…" />}
         {last?.directive.kind === "intermission" && <IntermissionCard d={last.directive} />}
         <div className="overlay-canvas">
@@ -1024,7 +1021,6 @@ function WerewolfAction({ ch, item, seat, no, title, text, monologue, audio, dan
         {monologue && <div className="spot-think"><span className="think-mark">💭</span><span className="think-text">{monologue}</span></div>}
       </div>
       <div className="spot-text live-scroll"><div className="spot-text-inner"><LiveText ch={ch} item={item} text={text} /></div></div>
-      <Audio ch={ch} item={item} url={audio} />
     </div>
   );
 }
@@ -1044,7 +1040,6 @@ function WerewolfTalk({ ch, item, seat, no, tag, text, monologue, audio }: {
         {monologue && <div className="spot-think"><span className="think-mark">💭</span><span className="think-text">{monologue}</span></div>}
       </div>
       <div className="spot-text live-scroll"><div className="spot-text-inner"><LiveText ch={ch} item={item} text={text} /></div></div>
-      <Audio ch={ch} item={item} url={audio} />
     </div>
   );
 }
@@ -1104,7 +1099,6 @@ function WerewolfOverView({ ch, scene, banter }: { ch: Channel; scene: WerewolfS
               <div className="over-banter-inner"><span className="ob-who">{circ(speech.seat_no)}号</span>「<LiveText ch={ch} item={banter} text={speech.text} />」</div>
             </div>
             {speech.monologue && <div className="over-think"><span className="think-mark">💭</span><span className="think-text">{speech.monologue}</span></div>}
-            <Audio ch={ch} item={banter} url={speech.audio_url} />
           </>
         ) : (
           <div className="over-reason">{winner ? `${winner === "good" ? "好人" : "狼人"}胜利 · ${wwWinReason(winner, scene.win_reason ?? "")}` : ""}</div>
