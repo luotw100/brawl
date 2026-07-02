@@ -99,5 +99,5 @@ def replay_root(tmp_path: Path) -> Path:
 def settings(replay_root: Path) -> StageSettings:
     return StageSettings(
         replay_root=replay_root, stage_token="st4ge", console_token="t0k3n",
-        pace=0.0, intermission_seconds=0.0, loop_pool=False,
+        intermission_seconds=0.0, loop_pool=False,
     )

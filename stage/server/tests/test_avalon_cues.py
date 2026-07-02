@@ -20,50 +20,55 @@ from server.protocol import HostSpeech, Intermission
 PLAN = load_plan(plan_path("avalon"))
 
 
-def sfx_for(directive, pace: float = 1.0) -> list[tuple[str | None, float]]:
-    beats = compile_stage_beats([directive], PLAN, {}, pace=pace, speed=1.0)
+def fallback_text_window(*parts: str) -> float:
+    return len("".join(parts)) / PLAN.fallback_cps + PLAN.audio_margin
+
+
+def sfx_for(directive) -> list[tuple[str | None, float]]:
+    beats = compile_stage_beats([directive], PLAN, {}, speed=1.0)
     if not beats:
         return []
     return [(t.name, t.start) for t in beats[0].tracks if t.kind == "sfx"]
 
 
 def test_simple_beats_one_cue_at_zero():
-    assert sfx_for(GameOpen(players=6, good=4, evil=2), 1.0) == [("open", 0.0)]
+    assert sfx_for(GameOpen(players=6, good=4, evil=2)) == [("open", 0.0)]
 
 
 def test_deal_has_no_sfx():
     # 发牌不配音效（"咔咔"声刺耳）——画面照常飞牌，但无任何 cue。
     seats = [SeatInfo(no=i, name=f"P{i}", persona=f"p{i}", role="servant", side="good", model="m") for i in range(1, 4)]
-    assert sfx_for(Deal(seats=seats, leader_no=1, lady_holder=None), 9.0) == []
-    assert sfx_for(Deal(seats=[], leader_no=1, lady_holder=None), 1.0) == []
+    assert sfx_for(Deal(seats=seats, leader_no=1, lady_holder=None)) == []
+    assert sfx_for(Deal(seats=[], leader_no=1, lady_holder=None)) == []
 
 
 def test_quest_and_game_over_branch_on_outcome():
     ok = QuestReveal(quest=1, team=[1, 2], cards=[], fails=0, fails_required=1, result="success")
     bad = ok.model_copy(update={"result": "fail"})
-    assert sfx_for(ok, 1.0) == [("quest-success", 0.0)]
-    assert sfx_for(bad, 1.0) == [("quest-fail", 0.0)]
+    assert sfx_for(ok) == [("quest-success", 0.0)]
+    assert sfx_for(bad) == [("quest-fail", 0.0)]
     win = GameOver(winner="good", win_reason="三战全胜", seats=[])
-    assert sfx_for(win, 1.0) == [("win-good", 0.0)]
-    assert sfx_for(win.model_copy(update={"winner": "evil"}), 1.0) == [("win-evil", 0.0)]
+    assert sfx_for(win) == [("win-good", 0.0)]
+    assert sfx_for(win.model_copy(update={"winner": "evil"})) == [("win-evil", 0.0)]
 
 
 def test_assassination_branches_on_hit():
-    a = Assassination(assassin_no=1, target_no=2, hit=True, text="", monologue="")
-    assert sfx_for(a, 1.0) == [("assassin-hit", 6.0 * 0.62)]
-    assert sfx_for(a.model_copy(update={"hit": False}), 1.0) == [("assassin-miss", 6.0 * 0.62)]
+    a = Assassination(assassin_no=1, target_no=2, hit=True, text="就是你。", monologue="")
+    expected = fallback_text_window("就是你。") * 0.8
+    assert sfx_for(a) == [("assassin-hit", expected)]
+    assert sfx_for(a.model_copy(update={"hit": False})) == [("assassin-miss", expected)]
 
 
 def test_lady_reveal_has_intro_and_result_cues():
-    d = LadyReveal(holder_no=1, target_no=2, truth="evil", text="", monologue="", choose_monologue="")
-    assert sfx_for(d, 1.0) == [("open", 0.0), ("stamp", 4.0 * 0.54)]
+    d = LadyReveal(holder_no=1, target_no=2, truth="evil", text="二号是红方。", monologue="", choose_monologue="")
+    assert sfx_for(d) == [("open", 0.0), ("stamp", fallback_text_window("二号是红方。") * 0.54)]
 
 
 def test_speech_think_only_when_monologue():
     voiced = Speech(phase="discuss", seat_no=1, text="hi", monologue="盘算中")
     silent = voiced.model_copy(update={"monologue": ""})
-    assert sfx_for(voiced, 1.0) == [("think", 0.0)]
-    assert sfx_for(silent, 1.0) == []
+    assert sfx_for(voiced) == [("think", 0.0)]
+    assert sfx_for(silent) == []
 
 
 def test_vote_reveal_staggered_stamps_then_result():

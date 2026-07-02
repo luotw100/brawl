@@ -67,10 +67,6 @@ function Panel({ token }: { token: string }) {
             <button onClick={() => act("POST", "/api/playback", { action: "skip" })}>⏭ 跳下一局</button>
           </div>
           <h2>节奏</h2>
-          <label>语速 pace {k.pace.toFixed(2)}
-            <input type="range" min="0" max="1" step="0.05" defaultValue={k.pace}
-              onChange={(e) => act("POST", "/api/knobs", { pace: Number(e.target.value) })} />
-          </label>
           <label>幕间停留 {k.intermission_seconds}s
             <input type="range" min="0" max="120" step="5" defaultValue={k.intermission_seconds}
               onChange={(e) => act("POST", "/api/knobs", { intermission_seconds: Number(e.target.value) })} />

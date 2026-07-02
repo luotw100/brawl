@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from server.engine import Engine, PlaybackGate
 from server.hub import Hub
@@ -35,7 +35,8 @@ class PlaybackAction(BaseModel):
 
 
 class Knobs(BaseModel):
-    pace: float | None = None
+    model_config = ConfigDict(extra="forbid")
+
     speed: float | None = None
     intermission_seconds: float | None = None
     loop_pool: bool | None = None
@@ -152,7 +153,6 @@ def create_app(settings: StageSettings, playback_gate: PlaybackGate | None = Non
             "queue": list(engine.queue),
             "library": [item.__dict__ for item in engine.library()],
             "knobs": {
-                "pace": engine.pace,
                 "speed": engine.speed,
                 "intermission_seconds": engine.intermission_seconds,
                 "loop_pool": engine.loop_pool,
@@ -173,8 +173,6 @@ def create_app(settings: StageSettings, playback_gate: PlaybackGate | None = Non
 
     @app.post("/api/knobs", dependencies=guarded)
     async def post_knobs(payload: Knobs) -> dict:
-        if payload.pace is not None and not 0.0 <= payload.pace <= 1.0:
-            raise HTTPException(status_code=422, detail="pace 必须在 0~1 之间")
         if payload.speed is not None and payload.speed <= 0:
             raise HTTPException(status_code=422, detail="speed 必须为正")
         if payload.feed_window is not None and not 1 <= payload.feed_window <= 3:

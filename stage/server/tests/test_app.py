@@ -85,9 +85,10 @@ def test_queue_rejects_unknown_replay(client):
 def test_playback_and_knobs_validation(client):
     assert client.post(f"/api/playback{API}", json={"action": "step"}).status_code == 200
     assert client.post(f"/api/playback{API}", json={"action": "warp"}).status_code == 422
-    assert client.post(f"/api/knobs{API}", json={"pace": 2.0}).status_code == 422
+    assert client.post(f"/api/knobs{API}", json={"unknown": 2.0}).status_code == 422
+    assert client.post(f"/api/knobs{API}", json={"speed": 0}).status_code == 422
     assert client.post(f"/api/knobs{API}", json={"feed_window": 9}).status_code == 422
-    assert client.post(f"/api/knobs{API}", json={"pace": 0.3, "feed_window": 1}).status_code == 200
+    assert client.post(f"/api/knobs{API}", json={"feed_window": 1}).status_code == 200
 
 
 def test_static_shell_requires_token(settings, tmp_path):

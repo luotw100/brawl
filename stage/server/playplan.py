@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from server.protocol import AudioTrack, Directive, HostSpeech, NarrationCue
 from server.sfx import SFX_VOLUME
 
-_DEFAULT_CHAR_DELAY = 0.06
+_DEFAULT_FALLBACK_CPS = 1 / 0.06
 _DEFAULT_AUDIO_MARGIN = 0.5
 _DEFAULT_NARRATION_MARGIN = 0.2
 
@@ -32,8 +32,8 @@ class StagePlanSpec(BaseModel):
     directives: dict[str, dict[str, Any]]
 
     @property
-    def char_delay(self) -> float:
-        return self.audio.get("char_delay", _DEFAULT_CHAR_DELAY)
+    def fallback_cps(self) -> float:
+        return self.audio.get("fallback_cps", _DEFAULT_FALLBACK_CPS)
 
     @property
     def audio_margin(self) -> float:
@@ -67,18 +67,16 @@ def compile_stage_beats(
     spec: StagePlanSpec,
     durations: dict[str, float],
     *,
-    pace: float,
     speed: float,
 ) -> list[StageBeat]:
-    compiler = _Compiler(spec, durations, pace=pace, speed=speed)
+    compiler = _Compiler(spec, durations, speed=speed)
     return compiler.compile(directives)
 
 
 class _Compiler:
-    def __init__(self, spec: StagePlanSpec, durations: dict[str, float], *, pace: float, speed: float) -> None:
+    def __init__(self, spec: StagePlanSpec, durations: dict[str, float], *, speed: float) -> None:
         self.spec = spec
         self.durations = durations
-        self.pace = pace
         self.speed = speed
 
     def compile(self, directives: list[Directive]) -> list[StageBeat]:
@@ -193,23 +191,22 @@ class _Compiler:
         narration_end = max((n.at + n.duration for n in beat.narrations), default=0.0)
         if beat.narrations and self._directive_spec(beat.directive).get("reveal_paced_by_narration", False):
             return narration_end
-        return beat.content_at + self._content_duration(beat.directive) + self._tail_duration(beat.directive)
+        return beat.content_at + self._content_duration(beat.directive)
 
     def _content_duration(self, directive: Directive) -> float:
-        content = self._content_spec_seconds(directive)
-        audio = self._raw_audio_duration(getattr(directive, "audio_url", None) or "")
+        visual = self._visual_spec_seconds(directive)
+        audio = self._main_audio_seconds(directive)
         if audio is not None:
-            content = max(content, audio + self.spec.audio_margin)
-        return content / self.speed
-
-    def _tail_duration(self, directive: Directive) -> float:
-        return self.pace * float(self._directive_spec(directive).get("tail", 0.0)) / self.speed
+            visual = max(visual, audio + self.spec.audio_margin)
+        return visual / self.speed
 
     def _narration_duration(self, host: HostSpeech) -> float:
-        content = len(host.text) * self.pace * self.spec.char_delay
         audio = self._raw_audio_duration(host.audio_url or "")
         if audio is not None:
-            content = max(content, audio + self.spec.narration_margin)
+            return (audio + self.spec.narration_margin) / self.speed
+        content = self._text_seconds(host.text)
+        if content > 0:
+            content += self.spec.narration_margin
         return content / self.speed
 
     def _audio_duration(self, audio_url: str, margin: float) -> float:
@@ -219,14 +216,27 @@ class _Compiler:
     def _raw_audio_duration(self, audio_url: str) -> float | None:
         return self.durations.get(audio_url)
 
-    def _content_spec_seconds(self, directive: Directive) -> float:
+    def _visual_spec_seconds(self, directive: Directive) -> float:
         spec = self._directive_spec(directive).get("content", {})
-        total = float(spec.get("fixed", 0.0)) * self.pace
+        total = float(spec.get("fixed", 0.0))
         if per_item := spec.get("per_item"):
-            total += len(self._field(directive, per_item["field"], [])) * float(per_item["seconds"]) * self.pace
-        for field_name in spec.get("chars", []):
-            total += len(str(self._field(directive, field_name, ""))) * self.pace * self.spec.char_delay
+            total += len(self._field(directive, per_item["field"], [])) * float(per_item["seconds"])
         return total
+
+    def _main_audio_seconds(self, directive: Directive) -> float | None:
+        audio = self._raw_audio_duration(getattr(directive, "audio_url", None) or "")
+        if audio is not None:
+            return audio
+        text = "".join(str(self._field(directive, field_name, "")) for field_name in self._char_fields(directive))
+        if not text:
+            return None
+        return self._text_seconds(text)
+
+    def _text_seconds(self, text: str) -> float:
+        return len(text) / self.spec.fallback_cps
+
+    def _char_fields(self, directive: Directive) -> list[str]:
+        return list(self._directive_spec(directive).get("content", {}).get("chars", []))
 
     def _directive_spec(self, directive: Directive) -> dict[str, Any]:
         try:

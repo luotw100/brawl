@@ -10,9 +10,8 @@
 publish 是注入的回调（app 层把"当前完整状态"广播给所有页面）；任何状态变化（每一拍、
 旋钮、队列）都调一次 publish——客户端是纯渲染函数，收到什么画什么。
 
-节奏模型由 PlayPlan DSL 驱动：pace 0~1 线性缩放每字停顿与事件间气口。
-有离线 TTS 时（tts/manifest.json），一拍时长取 max(文字估算, 音频时长+余量)，
-保证音频永远放得完；文字打字机始终先于音频收尾。
+节奏模型由 PlayPlan DSL 驱动：有离线 TTS 时（tts/manifest.json），文本拍以音频时长加余量为准；
+无音频时把文本长度折成一段假音频时长。视觉 reveal 拍用 plan 里的固定秒数。
 """
 
 from __future__ import annotations
@@ -88,7 +87,6 @@ class Engine:
         self._plan: StagePlanSpec = load_plan(plan_path(self._plugin.id))
         self.scene: BaseScene = self._plugin.new_scene()
         self.queue: list[str] = []
-        self.pace = settings.pace
         self.speed = settings.speed
         self.intermission_seconds = settings.intermission_seconds
         self.loop_pool = settings.loop_pool
@@ -124,11 +122,9 @@ class Engine:
     async def step(self) -> None:
         self._step = True
 
-    async def set_knobs(self, *, pace: float | None = None, speed: float | None = None,
+    async def set_knobs(self, *, speed: float | None = None,
                         intermission_seconds: float | None = None,
                         loop_pool: bool | None = None, feed_window: int | None = None) -> None:
-        if pace is not None:
-            self.pace = pace
         if speed is not None:
             self.speed = speed
         if intermission_seconds is not None:
@@ -257,7 +253,7 @@ class Engine:
     async def _dwell(self, seconds: float) -> bool:
         """这一拍在台上停留：跳局立即返回 False（break 整局），下一拍提前结束返回 True（推进下一拍）。
 
-        pace=0 时时长为 0，也必须让出一次事件循环——否则引擎独占线程，
+        时长为 0 时也必须让出一次事件循环——否则引擎独占线程，
         WS 广播、控制 API 全部饿死（实测会把内存吃爆）。"""
         await asyncio.sleep(0)
         remaining = seconds
@@ -283,7 +279,7 @@ class Engine:
 
     def _stage_beats(self, directives) -> list[StageBeat]:
         """Compile replay directives into the single play plan consumed by live and record."""
-        return compile_stage_beats(directives, self._plan, self._durations, pace=self.pace, speed=self.speed)
+        return compile_stage_beats(directives, self._plan, self._durations, speed=self.speed)
 
     def _duration(self, beat: StageBeat) -> float:
         return beat.duration

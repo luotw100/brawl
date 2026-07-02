@@ -17,9 +17,10 @@ declare global {
 const W = 1920;
 const H = 1080;
 
-// 发牌节奏（全部按本拍 duration 反推，pace=0 时 duration→0 一切瞬时）：
+// 发牌节奏全部按本拍 duration 反推：
 // 起飞错峰占 0.8·dur，单张飞行时长占 DEAL_FLY_FRAC·dur。
 const DEAL_FLY_FRAC = 0.28;
+const TEXT_REVEAL_FRACTION = 0.8;
 // 从中央牌叠已飞出的张数：纯由时钟反推，发牌台与飞牌共用同一公式，保证两边张数一致。
 function dealtCount(elapsed: number, dur: number, n: number): number {
   const stagger = (dur * 0.8) / Math.max(n, 1);
@@ -533,7 +534,7 @@ function QuestCardTile({ seat, card, revealed, idx }: {
 }
 
 // 刺杀：先演刺客出刀 + 台词打字机（与音频同步），台词念完才翻牌定生死——命中/幸存印章、
-// 判决文案、阵营色与红色闪屏全 gate 在"台词念完"之后（与 LiveText 同口径 duration*0.62）。
+// 判决文案、阵营色与红色闪屏全 gate 在"台词念完"之后（与 LiveText 同口径）。
 function AssassinView({ ch, scene, item, d }: {
   ch: Channel; scene: AvalonScene; item: FeedItem;
   d: Extract<FeedItem["directive"], { kind: "assassination" }>;
@@ -544,7 +545,7 @@ function AssassinView({ ch, scene, item, d }: {
     return () => window.clearInterval(t);
   }, [item.seq]);
   const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
-  const revealed = elapsedOf(ch, item.started_at, now) >= revealAt(item, 0.62);
+  const revealed = elapsedOf(ch, item.started_at, now) >= revealAt(item, TEXT_REVEAL_FRACTION);
   return (
     <div className={`reveal-view assassin-view ${revealed ? (d.hit ? "hit" : "miss") : ""}`}>
       <NarrationLine ch={ch} item={item} now={now} />
@@ -624,7 +625,7 @@ function OverView({ ch, scene, banter }: { ch: Channel; scene: AvalonScene; bant
   );
 }
 
-// 错峰节奏由本拍 duration 反推（与发牌/亮票同源）；pace=0 时 duration→0、stagger→0，瞬间倾倒。
+// 错峰节奏由本拍 duration 反推（与发牌/亮票同源）；duration→0 时 stagger→0，瞬间倾倒。
 function RevealRow({ stagger, children }: { stagger: number; children: ReactNode }) {
   return <div className="reveal-row" style={{ "--rv-stagger": `${stagger}s` } as CSSProperties}>{children}</div>;
 }
@@ -791,7 +792,7 @@ function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: strin
     const t = window.setInterval(() => setNow(Date.now()), 50);
     return () => window.clearInterval(t);
   }, [item.seq]);
-  const budget = mainTextWindow(item) * 0.62;
+  const budget = mainTextWindow(item) * TEXT_REVEAL_FRACTION;
   const elapsed = elapsedOf(ch, item.started_at, now) - item.content_at;
   const n = Math.min(Math.floor((elapsed / budget) * text.length), text.length);
   // 文字铺满后把最近的滚动容器（.live-scroll：发言区/复盘字幕共用契约）拉到底，最新一行始终可见。

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from server.engine import Engine, StageBeat, _upcoming_audio
 from server.games.avalon.protocol import Deal, GameOpen, QuestCard, QuestReveal, SeatVote, Speech, VoteReveal
 from server.protocol import HostSpeech
@@ -57,6 +59,10 @@ def make_engine(settings, playback_gate=None) -> tuple[Engine, Recorder]:
     return engine, rec
 
 
+def fast(settings):
+    return settings.model_copy(update={"speed": 1000.0})
+
+
 async def _run_until(engine: Engine, predicate, timeout: float = 5.0) -> None:
     task = asyncio.create_task(engine.run())
     try:
@@ -68,7 +74,7 @@ async def _run_until(engine: Engine, predicate, timeout: float = 5.0) -> None:
 
 
 async def test_plays_full_game_then_intermission(settings):
-    engine, rec = make_engine(settings)
+    engine, rec = make_engine(fast(settings))
     await engine.set_queue(["game1"])
     await _run_until(engine, lambda: "intermission" in rec.kinds())
     kinds = rec.kinds()
@@ -85,7 +91,7 @@ async def test_playback_gate_starts_on_deal_frame(settings):
         async def before_intermission(self) -> None:
             pass
 
-    engine, rec = make_engine(settings, Gate())
+    engine, rec = make_engine(fast(settings), Gate())
     await engine.set_queue(["game1"])
     await _run_until(engine, lambda: len([s for _, s in rec.states if s.feed and s.feed[-1].seq == 2]) >= 2)
     deal_items = [scene.feed[-1] for _, scene in rec.states if scene.feed and scene.feed[-1].seq == 2]
@@ -104,7 +110,7 @@ async def test_playback_gate_runs_before_intermission_is_published(settings):
             self.stopped = True
 
     gate = Gate()
-    engine, rec = make_engine(settings, gate)
+    engine, rec = make_engine(fast(settings), gate)
     await engine.set_queue(["game1"])
     await _run_until(engine, lambda: "intermission" in rec.kinds())
     intermission_index = next(i for i, (_, scene) in enumerate(rec.states)
@@ -131,7 +137,6 @@ async def test_loop_pool_feeds_when_queue_empty(settings):
 
 async def test_step_advances_past_dwell(settings):
     """下一拍：本拍停留还没走完就提前结束、推进到下一拍（不像跳局那样 break 整局）。"""
-    settings = settings.model_copy(update={"pace": 1.0})  # 长停留，确保不是自然走完
     engine, rec = make_engine(settings)
     await engine.set_queue(["game1"])
     task = asyncio.create_task(engine.run())
@@ -148,7 +153,6 @@ async def test_step_advances_past_dwell(settings):
 
 
 async def test_skip_jumps_to_intermission(settings):
-    settings = settings.model_copy(update={"pace": 1.0})
     engine, rec = make_engine(settings)
     await engine.set_queue(["game1"])
     task = asyncio.create_task(engine.run())
@@ -228,8 +232,8 @@ async def test_audio_duration_overrides_text_estimate(settings):
     voiced = Speech(phase="propose", seat_no=2, text="我带3号。", monologue="稳一手。",
                     audio_url="/replays/game1/tts/a.opus")
     silent = Speech(phase="discuss", seat_no=3, text="行吧。", monologue="没看出问题。")
-    assert engine._stage_beats([voiced])[0].duration == 9.5  # pace=0 文字估算为 0，音频撑满
-    assert engine._stage_beats([silent])[0].duration == 0.0  # 无音频回退字数估算
+    assert engine._stage_beats([voiced])[0].duration == 9.5  # 有音频：音频时长 + 余量撑满
+    assert engine._stage_beats([silent])[0].duration == pytest.approx(9 / engine._plan.fallback_cps + 0.5)
 
 
 async def test_speed_compresses_beat_duration(settings):
@@ -255,7 +259,7 @@ async def test_lady_audio_extends_dwell(settings):
     lady_event = next(e for e in conftest.EVENTS if e["type"] == "lady")
     tts = {lady_event["announce_call_id"]: {"file": "lady.opus", "duration_ms": 20000}}
     directive = AvalonPlugin().adapt(lady_event, AdaptContext(replay_id="game1", tts=tts, names={}, host_name="司仪"))
-    engine, _ = make_engine(settings)  # pace=0 → 文字估算为 0
+    engine, _ = make_engine(settings)
     engine._durations = replay.audio_durations("game1", tts)
     assert engine._stage_beats([directive])[0].duration == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
 
@@ -291,7 +295,7 @@ async def test_lead_host_delays_player_content(settings):
 
 
 async def test_reveal_animation_duration_follows_narration(settings):
-    engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
+    engine, _ = make_engine(settings)
     engine._durations = {"/h": 3.0}
     host = HostSpeech(name="司仪", beat="vote_result", text="十票赞成", audio_url="/h")
     beats = engine._stage_beats([
@@ -308,7 +312,7 @@ async def test_reveal_animation_duration_follows_narration(settings):
 
 
 async def test_deal_animation_duration_follows_opening_narration(settings):
-    engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
+    engine, _ = make_engine(settings)
     engine._durations = {"/h": 5.0}
     host = HostSpeech(name="司仪", beat="opening", text="欢迎来到阿瓦隆", audio_url="/h")
     beats = engine._stage_beats([
@@ -319,7 +323,7 @@ async def test_deal_animation_duration_follows_opening_narration(settings):
 
 
 async def test_quest_animation_duration_follows_narration(settings):
-    engine, _ = make_engine(settings.model_copy(update={"pace": 1.0}))
+    engine, _ = make_engine(settings)
     engine._durations = {"/h": 4.0}
     host = HostSpeech(name="司仪", beat="quest_result", text="任务成功", audio_url="/h")
     beats = engine._stage_beats([
@@ -342,7 +346,7 @@ async def test_broken_replay_skipped_channel_survives(settings):
         {"type": "game_start", "players": 5, "good": 3, "evil": 2},
         {"type": "nova_unknown"},
     ])
-    engine, rec = make_engine(settings)
+    engine, rec = make_engine(fast(settings))
     await engine.set_queue(["broken", "game1"])
     await _run_until(engine, lambda: "game_over" in rec.kinds(), timeout=8)
     assert "intermission" in rec.kinds()  # 坏局之后照常进了幕间并播完了 game1
@@ -350,7 +354,7 @@ async def test_broken_replay_skipped_channel_survives(settings):
 
 async def test_real_schema_full_replay(settings):
     """夹具 schema 与真实生成器对齐的守门员：整局喂进引擎必须零异常播到底。"""
-    engine, rec = make_engine(settings)
+    engine, rec = make_engine(fast(settings))
     await engine.set_queue(["game1"])
     await _run_until(engine, lambda: "intermission" in rec.kinds())
     assert rec.kinds().count("game_over") == 1

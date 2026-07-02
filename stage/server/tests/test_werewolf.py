@@ -161,7 +161,7 @@ def _make_engine(replay_root) -> tuple[Engine, _Recorder]:
         replay_root=replay_root,
         stage_token="st4ge",
         console_token="t0k3n",
-        pace=0.0,
+        speed=1000.0,
         intermission_seconds=0.0,
         loop_pool=False,
     )

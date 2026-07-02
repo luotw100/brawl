@@ -405,7 +405,7 @@ class RecordPlaybackGate:
 async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tuple[list[Beat], float, Path]:
     """起一次性 stage + Xvfb 虚拟屏 + 带头 Chromium，x11grab 实时抓屏单趟编码。
     返回 (时间线, origin=开抓时刻=视频零点, 视频 mp4 路径)。"""
-    # 引擎旋钮按 EngineKnobs 字段名机械转移（pace/speed/feed_window/prefetch_factor）——
+    # 引擎旋钮按 EngineKnobs 字段名机械转移（speed/feed_window/prefetch_factor）——
     # 共享基类是唯一真源，新旋钮在那加一次这里自动带上，不再逐字段手抄（收分叉）。
     stage_settings = StageSettings(
         replay_root=settings.dir.parent,
@@ -553,7 +553,7 @@ async def _record(settings: RecordSettings) -> None:
     limit = f" · 上限 {settings.limit_seconds:g}s" if settings.limit_seconds else ""
     _console.rule(f"[bold]录制 {settings.dir.name}[/bold]")
     speed = f" · speed {settings.speed:g}×" if settings.speed != 1.0 else ""
-    _console.print(f"[dim]→ {settings.video_path} · {settings.width}×{settings.height} · 编码 {settings.encoder} · pace {settings.pace:g}{speed}{limit}[/dim]")
+    _console.print(f"[dim]→ {settings.video_path} · {settings.width}×{settings.height} · 编码 {settings.encoder}{speed}{limit}[/dim]")
     with tempfile.TemporaryDirectory(prefix="stage-record-") as tmp:
         tmpdir = Path(tmp)
         web_dist = _build_web(tmpdir)  # 每局现构建前端，永远录最新（无 --web-dist、无旧 dist 地雷）

@@ -22,7 +22,7 @@ def test_host_reveal_is_skipped_by_dsl():
     plan = load_plan(plan_path("avalon"))
     beats = compile_stage_beats([
         HostSpeech(name="司仪", beat="reveal", text="公布身份", audio_url="/h"),
-    ], plan, {"/h": 10.0}, pace=1.0, speed=1.0)
+    ], plan, {"/h": 10.0}, speed=1.0)
 
     assert beats == []
 
@@ -44,7 +44,6 @@ def test_lady_host_lead_in_delays_main_track():
         [host, speech],
         plan,
         {"/host": 4.0, "/main": 11.0},
-        pace=1.0,
         speed=1.0,
     )[0]
 
@@ -53,7 +52,7 @@ def test_lady_host_lead_in_delays_main_track():
         ("narration", "/host", 0.0),
         ("main", "/main", 4.2),
     ]
-    assert beat.duration == 4.2 + 11.5 + 4.0
+    assert beat.duration == 4.2 + 11.5
 
 
 def test_record_audio_segments_use_compiled_tracks_without_reinterpretation():
@@ -72,7 +71,6 @@ def test_record_audio_segments_use_compiled_tracks_without_reinterpretation():
         [host, speech],
         plan,
         {"/replays/g/tts/host.opus": 4.0, "/replays/g/tts/main.opus": 11.0},
-        pace=1.0,
         speed=1.0,
     )[0]
 

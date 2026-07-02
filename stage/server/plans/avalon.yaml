@@ -1,7 +1,7 @@
 version: 1
 
 audio:
-  char_delay: 0.06
+  fallback_cps: 16.6666667
   audio_margin: 0.5
   narration_margin: 0.2
 
@@ -31,7 +31,6 @@ directives:
   speech:
     content:
       chars: [text, monologue]
-    tail: 3.0
     post_narration_after_main: true
     cues:
       - name: think
@@ -42,7 +41,6 @@ directives:
   lady_reveal:
     content:
       chars: [text, monologue, choose_monologue]
-    tail: 4.0
     post_narration_after_main: true
     cues:
       - name: open
@@ -90,7 +88,6 @@ directives:
   assassination:
     content:
       chars: [text, monologue]
-    tail: 6.0
     post_narration_after_main: true
     cues:
       - name:
@@ -98,7 +95,7 @@ directives:
           true: assassin-hit
           false: assassin-miss
         at:
-          fraction: 0.62
+          fraction: 0.8
 
   game_over:
     content:

@@ -1,7 +1,7 @@
 version: 1
 
 audio:
-  char_delay: 0.06
+  fallback_cps: 16.6666667
   audio_margin: 0.5
   narration_margin: 0.2
 
@@ -80,7 +80,6 @@ directives:
   ww_speech:
     content:
       chars: [text, monologue]
-    tail: 3.0
     post_narration_after_main: true
     cues:
       - name: think
@@ -115,7 +114,6 @@ directives:
   ww_hunter_shot:
     content:
       chars: [text, monologue]
-    tail: 5.0
     post_narration_after_main: true
     cues:
       - name:

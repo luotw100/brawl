@@ -232,5 +232,5 @@ export interface ConsoleState extends StateMsg {
   replay_id: string | null;
   queue: string[];
   library: LibraryItem[];
-  knobs: { pace: number; speed: number; intermission_seconds: number; loop_pool: boolean; feed_window: number };
+  knobs: { speed: number; intermission_seconds: number; loop_pool: boolean; feed_window: number };
 }
