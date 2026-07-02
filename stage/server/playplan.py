@@ -168,7 +168,7 @@ class _Compiler:
         ))
 
     def _add_cue_tracks(self, beat: StageBeat) -> None:
-        duration = self._duration_without_cues(beat)
+        duration = self._cue_duration(beat)
         for cue in self._cue_specs(beat.directive):
             for name, at in self._expand_cue(beat.directive, cue, duration):
                 beat.tracks.append(AudioTrack(
@@ -179,6 +179,11 @@ class _Compiler:
                     name=name,
                     volume=SFX_VOLUME,
                 ))
+
+    def _cue_duration(self, beat: StageBeat) -> float:
+        if self._directive_spec(beat.directive).get("post_narration_after_main", False):
+            return beat.content_at + self._content_duration(beat.directive)
+        return self._duration_without_cues(beat)
 
     def _duration(self, beat: StageBeat) -> float:
         content = self._duration_without_cues(beat)

@@ -8,6 +8,7 @@ from server.games.avalon.protocol import (
     GameOpen,
     GameOver,
     LadyCheck,
+    LadyChoose,
     QuestReveal,
     SeatInfo,
     SeatVote,
@@ -59,9 +60,11 @@ def test_assassination_branches_on_hit():
     assert sfx_for(a.model_copy(update={"hit": False})) == [("assassin-miss", expected)]
 
 
-def test_lady_check_has_intro_and_result_cues():
-    d = LadyCheck(holder_no=1, target_no=2, truth="evil", choose_monologue="")
-    assert sfx_for(d) == [("open", 0.0), ("stamp", 4.0 * 0.54)]
+def test_lady_choose_and_check_split_cues():
+    choose = LadyChoose(holder_no=1, target_no=2, choose_monologue="")
+    check = LadyCheck(holder_no=1, target_no=2, truth="evil")
+    assert sfx_for(choose) == [("open", 0.0)]
+    assert sfx_for(check) == [("stamp", 3.2 * 0.54)]
 
 
 def test_speech_think_only_when_monologue():

@@ -20,6 +20,7 @@ from server.games.avalon.protocol import (
     GameOpen,
     GameOver,
     LadyCheck,
+    LadyChoose,
     ProposalLog,
     QuestCard,
     QuestLog,
@@ -99,12 +100,16 @@ class AvalonPlugin:
             )
         if t == "lady":
             return [
+                LadyChoose(
+                    holder_no=event["holder_no"], target_no=event["target_no"],
+                    choose_monologue=event.get("choose_monologue", ""),
+                ),
                 LadyCheck(
                     holder_no=event["holder_no"], target_no=event["target_no"], truth=event["truth"],
-                    choose_monologue=event.get("choose_monologue", ""),
                 ),
                 Speech(
                     phase="lady", seat_no=event["holder_no"], text=event["speech"], monologue=event["monologue"],
+                    lady_target=event["target_no"], lady_truth=event["truth"],
                     audio_url=replay.audio_url(ctx.replay_id, event.get("announce_call_id"), ctx.tts),
                 ),
             ]
@@ -169,6 +174,8 @@ class AvalonPlugin:
                     scene.leader_no = directive.seat_no
                 if directive.lady_target is not None:
                     scene.lady_holder = directive.lady_target  # 令牌传给被查者
+            case LadyChoose():
+                scene.speaking = directive.holder_no
             case LadyCheck():
                 scene.speaking = directive.holder_no
                 scene.lady_holder = directive.target_no  # 本拍内由前端按 directive 演令牌交接
@@ -223,6 +230,8 @@ class AvalonPlugin:
                 return "主持", "yellow", f"{directive.name}：{_snip(directive.text)}"
             case Speech():
                 return _PHASE.get(directive.phase, directive.phase), "green", f"{_seat_name(seats, directive.seat_no)}：{_snip(directive.text)}"
+            case LadyChoose():
+                return "选验", "green", f"{_seat_name(seats, directive.holder_no)} 选择 {_seat_name(seats, directive.target_no)}"
             case LadyCheck():
                 return "验人", "green", f"{_seat_name(seats, directive.holder_no)} 查 {_seat_name(seats, directive.target_no)}"
             case VoteReveal():

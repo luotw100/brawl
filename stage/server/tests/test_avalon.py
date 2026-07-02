@@ -59,11 +59,12 @@ def _fold(directives) -> AvalonScene:
 
 def test_adapt_covers_every_event_type(replay_root):
     directives = _adapt_all(replay_root)
-    assert len(directives) == len(EVENTS) + 1
+    assert len(directives) == len(EVENTS) + 2
     kinds = [d.kind for d in directives]
     assert kinds == ["game_open", "host", "deal", "speech", "speech", "vote_reveal",
-                     "quest_reveal", "lady_check", "speech", "assassination", "game_over", "speech"]
+                     "quest_reveal", "lady_choose", "lady_check", "speech", "assassination", "game_over", "speech"]
     assert directives[1].name == "司仪"  # meta.setup.host_name（生成时快照，不读 cast.yaml）
+    assert directives[9].lady_target == 2 and directives[9].lady_truth == "evil"
 
 
 def test_adapt_unknown_event_raises():

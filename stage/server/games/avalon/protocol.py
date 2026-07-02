@@ -62,14 +62,22 @@ class Speech(Directive):
     lady_truth: str | None = None  # 仅 lady：真实阵营（god-view 旁注）
 
 
+class LadyChoose(Directive):
+    """湖中仙女选择动画：只展示持有者选择了谁与选择时内心戏，不揭阵营。"""
+
+    kind: Literal["lady_choose"] = "lady_choose"
+    holder_no: int
+    target_no: int
+    choose_monologue: str = ""
+
+
 class LadyCheck(Directive):
-    """湖中仙女查验动画：持有者、被查者、god-view 真实阵营与选择时内心戏。"""
+    """湖中仙女揭牌动画：持有者、被查者与真实阵营。"""
 
     kind: Literal["lady_check"] = "lady_check"
     holder_no: int
     target_no: int
     truth: Literal["good", "evil"]
-    choose_monologue: str = ""
 
 
 class SeatVote(BaseModel):
@@ -186,6 +194,6 @@ VOICED = {
 
 __all__ = [
     "Assassination", "AvalonScene", "Deal", "FeedItem", "GameOpen", "GameOver",
-    "LadyCheck", "ProposalLog", "QuestCard", "QuestLog", "QuestReveal", "SeatInfo", "SeatVote",
+    "LadyCheck", "LadyChoose", "ProposalLog", "QuestCard", "QuestLog", "QuestReveal", "SeatInfo", "SeatVote",
     "Speech", "VoteReveal", "VOICED",
 ]

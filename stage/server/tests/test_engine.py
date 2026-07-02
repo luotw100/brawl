@@ -248,8 +248,8 @@ async def test_speed_compresses_beat_duration(settings):
 
 
 async def test_lady_announce_audio_extends_speech_dwell(settings):
-    """仙女事件拆成查验拍 + 玩家发言拍；玩家发言用 announce_call_id 标音频、无顶层 call_id。
-    引擎按 adapt 拍板的 audio_url 取时长，announce→audio_url→时长链路必须撑满第二拍。"""
+    """仙女事件拆成选择拍 + 揭牌拍 + 玩家发言拍；玩家发言用 announce_call_id 标音频、无顶层 call_id。
+    引擎按 adapt 拍板的 audio_url 取时长，announce→audio_url→时长链路必须撑满第三拍。"""
     from server import replay
     from server.games.avalon.plugin import AvalonPlugin
     from server.games.base import AdaptContext
@@ -260,8 +260,8 @@ async def test_lady_announce_audio_extends_speech_dwell(settings):
     directives = AvalonPlugin().adapt(lady_event, AdaptContext(replay_id="game1", tts=tts, names={}, host_name="司仪"))
     engine, _ = make_engine(settings)
     engine._durations = replay.audio_durations("game1", tts)
-    assert [d.kind for d in directives] == ["lady_check", "speech"]
-    assert engine._stage_beats(directives)[1].duration == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
+    assert [d.kind for d in directives] == ["lady_choose", "lady_check", "speech"]
+    assert engine._stage_beats(directives)[2].duration == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
 
 
 async def test_host_speech_collapses_into_adjacent_stage_beat(settings):
@@ -294,7 +294,7 @@ async def test_lead_host_delays_player_content(settings):
     assert beats[0].tracks[0].kind == "narration"
 
 
-async def test_reveal_animation_duration_follows_narration(settings):
+async def test_vote_result_narration_waits_for_reveal_animation(settings):
     engine, _ = make_engine(settings)
     engine._durations = {"/h": 3.0}
     host = HostSpeech(name="司仪", beat="vote_result", text="十票赞成", audio_url="/h")
@@ -308,7 +308,8 @@ async def test_reveal_animation_duration_follows_narration(settings):
         ),
         host,
     ])
-    assert beats[0].duration == 3.2
+    assert beats[0].narrations[0].at == pytest.approx(10.5)
+    assert beats[0].duration == pytest.approx(13.7)
 
 
 async def test_deal_animation_duration_follows_opening_narration(settings):
@@ -322,7 +323,7 @@ async def test_deal_animation_duration_follows_opening_narration(settings):
     assert beats[0].duration == 5.2
 
 
-async def test_quest_animation_duration_follows_narration(settings):
+async def test_quest_result_narration_waits_for_reveal_animation(settings):
     engine, _ = make_engine(settings)
     engine._durations = {"/h": 4.0}
     host = HostSpeech(name="司仪", beat="quest_result", text="任务成功", audio_url="/h")
@@ -337,7 +338,8 @@ async def test_quest_animation_duration_follows_narration(settings):
         ),
         host,
     ])
-    assert beats[0].duration == 4.2
+    assert beats[0].narrations[0].at == pytest.approx(6.0)
+    assert beats[0].duration == pytest.approx(10.2)
 
 
 async def test_broken_replay_skipped_channel_survives(settings):

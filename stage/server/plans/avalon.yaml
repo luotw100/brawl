@@ -38,14 +38,19 @@ directives:
           truthy: monologue
         at: 0.0
 
-  lady_check:
+  lady_choose:
     content:
-      fixed: 4.0
+      fixed: 2.5
       chars: [choose_monologue]
-    reveal_paced_by_narration: true
     cues:
       - name: open
         at: 0.0
+
+  lady_check:
+    content:
+      fixed: 3.2
+    reveal_paced_by_narration: true
+    cues:
       - name: stamp
         at:
           fraction: 0.54
@@ -57,6 +62,7 @@ directives:
         field: votes
         seconds: 0.8
     reveal_paced_by_narration: true
+    post_narration_after_main: true
     cues:
       - name: stamp
         each:
@@ -78,6 +84,7 @@ directives:
     content:
       fixed: 6.0
     reveal_paced_by_narration: true
+    post_narration_after_main: true
     cues:
       - name:
           field: result

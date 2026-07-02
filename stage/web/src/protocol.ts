@@ -33,6 +33,11 @@ export interface LadyCheck {
   holder_no: number;
   target_no: number;
   truth: "good" | "evil";
+}
+export interface LadyChoose {
+  kind: "lady_choose";
+  holder_no: number;
+  target_no: number;
   choose_monologue: string;
 }
 export interface SeatVote { seat_no: number; approve: boolean; monologue: string }
@@ -73,7 +78,7 @@ export interface Intermission {
 }
 
 export type AvalonDirective =
-  | GameOpen | Deal | Speech | LadyCheck | VoteReveal | QuestReveal | Assassination | GameOver | HostSpeech | Intermission;
+  | GameOpen | Deal | Speech | LadyChoose | LadyCheck | VoteReveal | QuestReveal | Assassination | GameOver | HostSpeech | Intermission;
 
 export interface WerewolfSeatInfo {
   no: number;
