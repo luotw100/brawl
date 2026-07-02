@@ -19,6 +19,8 @@ from avalon.settings import SettingsError as AvalonSettingsError
 from avalon.tts import SettingsError as AvalonTtsError
 from llmview import show as llm_view
 from llmview.show import ViewError
+from slim_audio import cli as slim_audio_cli
+from slim_audio.cli import SlimAudioError
 from voicelab import forge as voice_forge
 from voicelab.forge import SettingsError as VoicelabSettingsError
 from werewolf import run as werewolf_run
@@ -32,6 +34,7 @@ GAMES: dict[str, Callable[[list[str]], None]] = {
     "avalon-tts": avalon_tts.main,  # 把一局公开发言合成音频，落 replay/tts/（柔性续合）
     "voice-forge": voice_forge.main,  # 音色铸造：嗓音描述 → 阿里云 voice_id + 试听 wav（跨玩法）
     "chat-view": llm_view.main,  # 把 llm_calls.jsonl 第 N 行渲染成聊天记录（跨玩法）
+    "slim-audio": slim_audio_cli.main,  # 危险维护工具：把 replay/tts/*.opus 覆盖为固定长度静音
 }
 
 
@@ -52,7 +55,15 @@ def main() -> int:
         return 2
     try:
         handler(rest)
-    except (AvalonSettingsError, WerewolfSettingsError, AvalonTtsError, VoicelabSettingsError, ViewError, ValidationError) as e:
+    except (
+        AvalonSettingsError,
+        WerewolfSettingsError,
+        AvalonTtsError,
+        VoicelabSettingsError,
+        ViewError,
+        SlimAudioError,
+        ValidationError,
+    ) as e:
         # 用户配置错误(坏的 --config、字段校验失败):只打印消息,不甩 traceback。
         print(f"配置错误: {e}", file=sys.stderr)
         return 1

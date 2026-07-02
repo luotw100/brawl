@@ -48,7 +48,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 # editable 安装靠 .pth 把 games/ 加进路径，顶层 cli.py 与各包都从源实时生效。
 # 不用 force-include 复制 cli.py——那会在 site-packages 留一份副本遮蔽源文件。
-packages = ["core", "avalon", "werewolf", "voicelab", "llmview"]
+packages = ["core", "avalon", "werewolf", "voicelab", "llmview", "slim_audio"]
 
 [tool.uv]
 conflicts = [
@@ -94,6 +94,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # 测试随玩法自包含：一个文件夹一个玩法、各自带 tests/（不变量 #7）。加玩法在此追加其路径。
-testpaths = ["avalon/tests", "werewolf/tests"]
+testpaths = ["avalon/tests", "werewolf/tests", "slim_audio/tests"]
 # 各玩法的测试文件同名（test_nodes.py 等）：importlib 导入模式按路径区分，无需 __init__.py
 addopts = ["--import-mode=importlib"]
