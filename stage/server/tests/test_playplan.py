@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from server.engine import Engine
-from server.games.avalon.protocol import Speech
+from server.games.avalon.protocol import LadyReveal, Speech
 from server.playplan import compile_stage_beats, load_plan, plan_path
 from server.protocol import HostSpeech
 from server.record import Beat, audio_segments
@@ -30,13 +30,13 @@ def test_host_reveal_is_skipped_by_dsl():
 def test_lady_host_lead_in_delays_main_track():
     plan = load_plan(plan_path("avalon"))
     host = HostSpeech(name="司仪", beat="lady", text="仙女环节", audio_url="/host")
-    speech = Speech(
-        phase="lady",
-        seat_no=5,
+    speech = LadyReveal(
+        holder_no=5,
+        target_no=8,
+        truth="good",
         text="我查验八号，是蓝方。",
         monologue="",
-        lady_target=8,
-        lady_truth="good",
+        choose_monologue="",
         audio_url="/main",
     )
 
@@ -53,19 +53,19 @@ def test_lady_host_lead_in_delays_main_track():
         ("narration", "/host", 0.0),
         ("main", "/main", 4.2),
     ]
-    assert beat.duration == 4.2 + 11.5 + 3.0
+    assert beat.duration == 4.2 + 11.5 + 4.0
 
 
 def test_record_audio_segments_use_compiled_tracks_without_reinterpretation():
     plan = load_plan(plan_path("avalon"))
     host = HostSpeech(name="司仪", beat="lady", text="仙女环节", audio_url="/replays/g/tts/host.opus")
-    speech = Speech(
-        phase="lady",
-        seat_no=5,
+    speech = LadyReveal(
+        holder_no=5,
+        target_no=8,
+        truth="good",
         text="我查验八号，是蓝方。",
         monologue="",
-        lady_target=8,
-        lady_truth="good",
+        choose_monologue="",
         audio_url="/replays/g/tts/main.opus",
     )
     stage_beat = compile_stage_beats(

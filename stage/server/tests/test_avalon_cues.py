@@ -7,6 +7,7 @@ from server.games.avalon.protocol import (
     Deal,
     GameOpen,
     GameOver,
+    LadyReveal,
     QuestReveal,
     SeatInfo,
     SeatVote,
@@ -49,8 +50,13 @@ def test_quest_and_game_over_branch_on_outcome():
 
 def test_assassination_branches_on_hit():
     a = Assassination(assassin_no=1, target_no=2, hit=True, text="", monologue="")
-    assert sfx_for(a, 1.0) == [("assassin-hit", 0.0)]
-    assert sfx_for(a.model_copy(update={"hit": False}), 1.0) == [("assassin-miss", 0.0)]
+    assert sfx_for(a, 1.0) == [("assassin-hit", 6.0 * 0.62)]
+    assert sfx_for(a.model_copy(update={"hit": False}), 1.0) == [("assassin-miss", 6.0 * 0.62)]
+
+
+def test_lady_reveal_has_intro_and_result_cues():
+    d = LadyReveal(holder_no=1, target_no=2, truth="evil", text="", monologue="", choose_monologue="")
+    assert sfx_for(d, 1.0) == [("open", 0.0), ("stamp", 4.0 * 0.54)]
 
 
 def test_speech_think_only_when_monologue():

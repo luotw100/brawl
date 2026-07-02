@@ -53,7 +53,7 @@ def test_adapt_covers_every_event_type(replay_root):
     assert len(directives) == len(EVENTS)
     kinds = [d.kind for d in directives]
     assert kinds == ["game_open", "host", "deal", "speech", "speech", "vote_reveal",
-                     "quest_reveal", "speech", "assassination", "game_over", "speech"]
+                     "quest_reveal", "lady_reveal", "assassination", "game_over", "speech"]
     assert directives[1].name == "司仪"  # meta.setup.host_name（生成时快照，不读 cast.yaml）
 
 

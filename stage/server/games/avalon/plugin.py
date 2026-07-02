@@ -19,6 +19,7 @@ from server.games.avalon.protocol import (
     Deal,
     GameOpen,
     GameOver,
+    LadyReveal,
     ProposalLog,
     QuestCard,
     QuestLog,
@@ -97,9 +98,9 @@ class AvalonPlugin:
                 fails=event["fails"], fails_required=event["fails_required"], result=event["result"],
             )
         if t == "lady":
-            return Speech(
-                phase="lady", seat_no=event["holder_no"], text=event["speech"], monologue=event["monologue"],
-                lady_target=event["target_no"], lady_truth=event["truth"],
+            return LadyReveal(
+                holder_no=event["holder_no"], target_no=event["target_no"], truth=event["truth"],
+                text=event["speech"], monologue=event["monologue"], choose_monologue=event.get("choose_monologue", ""),
                 audio_url=replay.audio_url(ctx.replay_id, event.get("announce_call_id"), ctx.tts),
             )
         if t == "assassination":
@@ -163,6 +164,9 @@ class AvalonPlugin:
                     scene.leader_no = directive.seat_no
                 if directive.lady_target is not None:
                     scene.lady_holder = directive.lady_target  # 令牌传给被查者
+            case LadyReveal():
+                scene.speaking = directive.holder_no
+                scene.lady_holder = directive.target_no  # 本拍内由前端按 directive 演令牌交接
             case VoteReveal():
                 # 里程碑入账要在清队之前（被否会清空 scene.team）。leader/team 由刚才的 propose 拍落定。
                 scene.timeline.append(ProposalLog(
@@ -214,6 +218,8 @@ class AvalonPlugin:
                 return "主持", "yellow", f"{directive.name}：{_snip(directive.text)}"
             case Speech():
                 return _PHASE.get(directive.phase, directive.phase), "green", f"{_seat_name(seats, directive.seat_no)}：{_snip(directive.text)}"
+            case LadyReveal():
+                return "验人", "green", f"{_seat_name(seats, directive.holder_no)} 查 {_seat_name(seats, directive.target_no)}"
             case VoteReveal():
                 return "表决", "magenta", f"{'通过' if directive.approved else '否决'} · 第 {directive.quest}.{directive.attempt} 队"
             case QuestReveal():

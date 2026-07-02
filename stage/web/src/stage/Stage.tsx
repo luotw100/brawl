@@ -262,7 +262,7 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: AvalonScene; last: Fee
   if (d?.kind === "vote_reveal" && d.votes.length)
     (vars as Record<string, string>)["--vote-stagger"] = `${(dur * 0.62) / d.votes.length}s`;
   const seat = (s: AvalonSeatInfo) => (
-    <Seat key={s.no} s={s} scene={scene} dealing={dealing} vote={votes[s.no]} card={cards[s.no]} />
+    <Seat key={s.no} s={s} scene={scene} current={d} dealing={dealing} vote={votes[s.no]} card={cards[s.no]} />
   );
   return (
     <div className="arena" style={vars}>
@@ -274,15 +274,23 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: AvalonScene; last: Fee
   );
 }
 
-function Seat({ s, scene, vote, card, dealing }: {
-  s: AvalonSeatInfo; scene: AvalonScene; vote?: boolean; card?: boolean; dealing: boolean;
+function Seat({ s, scene, current, vote, card, dealing }: {
+  s: AvalonSeatInfo; scene: AvalonScene; current: FeedItem["directive"] | undefined; vote?: boolean; card?: boolean; dealing: boolean;
 }) {
   // 未发牌：身份面朝下（不染阵营色、不亮角色）。deal 那拍 dealt=true，角色牌逐张翻面（dealing 触发动画）。
   const dealt = scene.dealt;
+  const ladyFocus = current?.kind === "lady_reveal"
+    ? current.holder_no === s.no ? "lady-source" : current.target_no === s.no ? "lady-target" : ""
+    : "";
+  const showLadyBadge = scene.lady_holder === s.no || (current?.kind === "lady_reveal" && current.holder_no === s.no);
+  const ladyBadge = current?.kind === "lady_reveal"
+    ? current.holder_no === s.no ? " leaving" : current.target_no === s.no ? " receiving" : ""
+    : "";
   const cls = [
     "seat", dealt ? s.side : "facedown",
     scene.speaking === s.no ? "speaking" : "",
     scene.team.includes(s.no) ? "on-team" : "",
+    ladyFocus,
     dealing ? "dealing" : "",
   ].join(" ");
   return (
@@ -293,7 +301,7 @@ function Seat({ s, scene, vote, card, dealing }: {
         </div>
         <span className="seat-no">{s.no}</span>
         {scene.leader_no === s.no && <span className="badge crown"><StageIcon name="crown" size={28} /></span>}
-        {scene.lady_holder === s.no && <span className="badge lady"><StageIcon name="lady" size={16} /></span>}
+        {showLadyBadge && <span className={`badge lady${ladyBadge}`}><StageIcon name="lady" size={16} /></span>}
         {vote !== undefined && <span className={`badge stamp ${vote ? "yes" : "no"}`}>{vote ? "赞" : "反"}</span>}
         {card !== undefined && <span className={`badge stamp ${card ? "yes" : "no"}`}>{card ? "成" : "破"}</span>}
       </div>
@@ -362,6 +370,8 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: AvalonScene; la
           ladyNo={d.lady_target} ladyEvil={d.lady_truth === "evil"} />
       );
     }
+    case "lady_reveal":
+      return <LadyView ch={ch} scene={scene} item={last} d={d} />;
     case "vote_reveal":
       return <VoteView ch={ch} scene={scene} item={last} d={d} />;
     case "quest_reveal":
@@ -404,6 +414,66 @@ function RevealAvatar({ seat, no, mark, label, idx }: {
   );
 }
 
+function mainTextWindow(item: FeedItem): number {
+  const mainEnds = item.tracks
+    .filter((track) => track.kind === "main")
+    .map((track) => track.start + track.duration);
+  if (mainEnds.length > 0) return Math.max(Math.max(...mainEnds) - item.content_at, 0.001);
+  return Math.max(item.duration - item.content_at, 0.001);
+}
+
+function revealAt(item: FeedItem, fraction: number): number {
+  return item.content_at + mainTextWindow(item) * fraction;
+}
+
+function activeNarration(ch: Channel, item: FeedItem, now: number) {
+  const elapsed = elapsedOf(ch, item.started_at, now);
+  return item.narrations.find((n) => elapsed >= n.at && elapsed <= n.at + n.duration);
+}
+
+function NarrationLine({ ch, item, now }: { ch: Channel; item: FeedItem; now: number }) {
+  const cue = activeNarration(ch, item, now);
+  if (!cue) return null;
+  return <div className="narration-line">{cue.name}：{cue.text}</div>;
+}
+
+function LadyView({ ch, scene, item, d }: {
+  ch: Channel; scene: AvalonScene; item: FeedItem;
+  d: Extract<FeedItem["directive"], { kind: "lady_reveal" }>;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 60);
+    return () => window.clearInterval(t);
+  }, [item.seq]);
+  const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
+  const revealed = elapsedOf(ch, item.started_at, now) >= revealAt(item, 0.54);
+  const evil = d.truth === "evil";
+  return (
+    <div className={`reveal-view lady-view ${revealed ? (evil ? "bad" : "ok") : ""}`}>
+      <NarrationLine ch={ch} item={item} now={now} />
+      <div className="vote-title">湖中仙女</div>
+      <div className="lady-flow">
+        <RevealAvatar seat={seatOf(d.holder_no)} no={d.holder_no} mark="yes" label="持有者" idx={0} />
+        <span className={`lady-beam${revealed ? " revealed" : ""}`}><StageIcon name="lady" size={48} /></span>
+        <RevealAvatar seat={seatOf(d.target_no)} no={d.target_no}
+          mark={revealed ? (evil ? "no" : "yes") : undefined}
+          label={revealed ? (evil ? "红方" : "蓝方") : "查验中"} idx={1} />
+      </div>
+      {d.choose_monologue && (
+        <div className="lady-secret"><span className="think-mark">💭</span><span className="think-text">{d.choose_monologue}</span></div>
+      )}
+      {revealed && (
+        <div className={`lady-result ${evil ? "bad" : "ok"}`}>真实阵营：{evil ? "红方" : "蓝方"} · 令牌传给 {circ(d.target_no)}号</div>
+      )}
+      <div className="lady-speech">「<LiveText ch={ch} item={item} text={d.text} />」</div>
+      {d.monologue && (
+        <div className="lady-think"><span className="think-mark">💭</span><span className="think-text">{d.monologue}</span></div>
+      )}
+    </div>
+  );
+}
+
 // 刺杀：先演刺客出刀 + 台词打字机（与音频同步），台词念完才翻牌定生死——命中/幸存印章、
 // 判决文案、阵营色与红色闪屏全 gate 在"台词念完"之后（与 LiveText 同口径 duration*0.62）。
 function AssassinView({ ch, scene, item, d }: {
@@ -416,9 +486,10 @@ function AssassinView({ ch, scene, item, d }: {
     return () => window.clearInterval(t);
   }, [item.seq]);
   const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
-  const revealed = elapsedOf(ch, item.started_at, now) >= item.duration * 0.62;
+  const revealed = elapsedOf(ch, item.started_at, now) >= revealAt(item, 0.62);
   return (
     <div className={`reveal-view assassin-view ${revealed ? (d.hit ? "hit" : "miss") : ""}`}>
+      <NarrationLine ch={ch} item={item} now={now} />
       {revealed && <div key={item.seq} className="flash flash-assassination local" />}
       <div className="vote-title">刺杀</div>
       <div className="vs-row">
@@ -656,7 +727,7 @@ function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: strin
     const t = window.setInterval(() => setNow(Date.now()), 50);
     return () => window.clearInterval(t);
   }, [item.seq]);
-  const budget = Math.max((item.duration - item.content_at) * 0.62, 0.001);
+  const budget = mainTextWindow(item) * 0.62;
   const elapsed = elapsedOf(ch, item.started_at, now) - item.content_at;
   const n = Math.min(Math.floor((elapsed / budget) * text.length), text.length);
   // 文字铺满后把最近的滚动容器（.live-scroll：发言区/复盘字幕共用契约）拉到底，最新一行始终可见。

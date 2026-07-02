@@ -39,6 +39,18 @@ directives:
           truthy: monologue
         at: 0.0
 
+  lady_reveal:
+    content:
+      chars: [text, monologue, choose_monologue]
+    tail: 4.0
+    post_narration_after_main: true
+    cues:
+      - name: open
+        at: 0.0
+      - name: stamp
+        at:
+          fraction: 0.54
+
   vote_reveal:
     content:
       fixed: 2.5
@@ -85,7 +97,8 @@ directives:
           bool_field: hit
           true: assassin-hit
           false: assassin-miss
-        at: 0.0
+        at:
+          fraction: 0.62
 
   game_over:
     content:
