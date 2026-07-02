@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from avalon import prompts
 from avalon.registry import ModelSpec
-from avalon.state import Assassination, LadyChoice, Proposal, QuestCard, Role, Side, Statement, TeamVote
+from avalon.state import Assassination, LadyChoice, Proposal, ProposalRecord, QuestCard, Role, Side, Statement, TeamVote
 from core.actor import LiveBackend, LLMActor, ModelBackend
 from core.recorder import Recorder
 from core.threads import ThreadMessage
@@ -44,6 +44,7 @@ class PlayerView:
     lady_seen: str | None = None
     tone: str = ""
     strategy: str = ""
+    history: list[ProposalRecord] = field(default_factory=list)
     messages: list[ThreadMessage] = field(default_factory=list)
     prompt: str = ""
 

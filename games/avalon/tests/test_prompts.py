@@ -13,7 +13,7 @@ import pytest
 
 from avalon import prompts
 from avalon.player import PlayerView
-from avalon.state import Role
+from avalon.state import ProposalRecord, Role
 
 _LINEUP = [Role.MERLIN, Role.PERCIVAL, Role.SERVANT, Role.SERVANT, Role.SERVANT, Role.SERVANT,
            Role.ASSASSIN, Role.MORGANA, Role.MORDRED, Role.OBERON]
@@ -35,6 +35,8 @@ def test_system_renders_for_every_role(role: Role) -> None:
     assert "你的角色：" in text and prompts._ROLE_LABEL[role] in text
     assert "本局角色阵容（公开）" in text
     assert "本局共 10 人，座位号 1~10" in text
+    assert "本局任务表：M1 3人/1破坏失败" in text and "M5 5人/1破坏失败" in text
+    assert "游戏基本功" not in text and "派西维尔基本功" not in text
     assert "你是 1 号" in text
     assert text.startswith("你是一名《阿瓦隆》玩家。")  # 嗓音可缺省，身份句由 system 自带；网名绝不进 prompt
 
@@ -49,6 +51,36 @@ def test_hammer_warning_only_on_fifth_attempt() -> None:
     """第 5 次组队渲染"再否决红方直接获胜"警告，平时不渲染。"""
     assert "红方直接获胜" in prompts.situation(_view(Role.SERVANT, attempt=5))
     assert "红方直接获胜" not in prompts.situation(_view(Role.SERVANT, attempt=2))
+    text = prompts.situation(_view(Role.SERVANT, attempt=2))
+    assert "前情回顾" in text and "M4 5人/2破坏失败" in text and "M5 5人/1破坏失败" in text
+    assert "已否决 1 次" in text and "蓝方 1 : 0 红方" in text
+    assert "公开账本：暂无历史提案" in text
+
+
+def test_situation_marks_player_claims_as_uncertain() -> None:
+    """每轮前情回顾提醒事实分层：只把系统事实和自己的私有视角当确定事实。"""
+    text = prompts.situation(_view(Role.SERVANT))
+    assert "系统公开事实和你自己的私有视角才是确定事实" in text
+    assert "身份声明、任务出牌自述、湖中仙女公布结果" in text
+    assert "只是玩家声称，可能为真也可能为假" in text
+    assert "不能当作事实前提" in text
+
+
+def test_situation_carries_public_vote_ledger() -> None:
+    """前情回顾带公开账本：历史队伍、逐席票型、通过/否决与任务结果都可见。"""
+    view = _view(Role.SERVANT)
+    view.history = [
+        ProposalRecord(quest=1, attempt=1, leader_no=3, team=[1, 3, 5], votes={1: True, 2: False, 3: True}, approved=False),
+        ProposalRecord(
+            quest=1, attempt=2, leader_no=4, team=[2, 4, 6], votes={1: True, 2: True, 3: False},
+            approved=True, fails=1, result="fail",
+        ),
+    ]
+    text = prompts.situation(view)
+    assert "M1.1 队长3号 队伍[1号、3号、5号]" in text
+    assert "票型：1号赞成、2号反对、3号赞成；结果：否决" in text
+    assert "M1.2 队长4号 队伍[2号、4号、6号]" in text
+    assert "结果：通过，任务失败，破坏票 1 张" in text
 
 
 def test_asks_carry_label_lines() -> None:

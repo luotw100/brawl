@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from avalon import rules
 from avalon.state import Role, Side
 
 if TYPE_CHECKING:
@@ -45,7 +46,7 @@ RULES = """\
 对局方式：
 - 接下来我会持续把桌面上公开发生的事播报给你，并在轮到你行动时向你提问。
 - 作答时你可以先自由思考、随便写，但回复的最后必须按提问要求给出标签行（如「发言：」「投票：」），每个标签独占一行。
-- 「发言：」行的内容会被一字不差地公布上桌，全场可见，所以你的推理、身份、计划绝不要写进「发言：」行。
+- 「发言：」行的内容会被一字不差地公布上桌，全场可见，所以身份、夜晚情报和真实计划只有在你明确判断收益大于风险时才公开；不想暴露时，用公开证据包装你的判断。
 - 「内心戏：」行是说给观众听的一句短话，场上玩家看不到；标签行之外的自由发挥同样不会上桌，只有你自己下次行动时还能看到。
 
 发言要求（观众在看，桌上交锋是节目的全部看点）：
@@ -100,12 +101,41 @@ def _lineup_block(view: PlayerView) -> str:
     return "本局角色阵容（公开）：" + _lineup_label(view.lineup)
 
 
+def _mission_table(players: int) -> str:
+    parts = []
+    for quest in range(1, rules.QUESTS + 1):
+        parts.append(f"M{quest} {rules.team_size(players, quest)}人/{rules.fails_required(players, quest)}破坏失败")
+    return "；".join(parts)
+
+
+def _compact_votes(votes: dict[int, bool]) -> str:
+    return "、".join(f"{no}号{'赞成' if ok else '反对'}" for no, ok in sorted(votes.items()))
+
+
+def _public_history(view: PlayerView) -> str:
+    if not view.history:
+        return "公开账本：暂无历史提案。"
+    rows = []
+    for rec in view.history:
+        team = "、".join(f"{no}号" for no in rec.team)
+        if rec.approved:
+            result = "成功" if rec.result == "success" else "失败"
+            outcome = f"通过，任务{result}，破坏票 {rec.fails} 张"
+        else:
+            outcome = "否决"
+        rows.append(f"M{rec.quest}.{rec.attempt} 队长{rec.leader_no}号 队伍[{team}]；票型：{_compact_votes(rec.votes)}；结果：{outcome}。")
+    return "公开账本：\n" + "\n".join(rows)
+
+
+_REASONING_BASELINE = "推理基准：系统公开事实和你自己的私有视角才是确定事实；其他玩家的任何说法，包括身份声明、任务出牌自述、湖中仙女公布结果，都只是玩家声称，可能为真也可能为假；可以参考，但不能当作事实前提。"
+
+
 def system_text(view: PlayerView) -> str:
     """整局固定的 system：规则 + 本局构成 + 该席位的身份与夜晚情报。整局逐字不变（缓存前缀）。"""
     return (
         f"你是一名《阿瓦隆》玩家。{view.tone}\n\n"
         f"{RULES}\n\n"
-        f"本局共 {view.players} 人，座位号 1~{view.players}。{_lineup_block(view)}\n\n"
+        f"本局共 {view.players} 人，座位号 1~{view.players}。{_lineup_block(view)}。本局任务表：{_mission_table(view.players)}。\n\n"
         f"你是 {view.seat_no} 号。{_role_brief(view)}\n\n"
         f"你的打法取向：{view.strategy}"
     )
@@ -254,9 +284,13 @@ def line_votes(votes: dict[int, bool]) -> str:
 
 def situation(view: PlayerView) -> str:
     hammer = "（注意：这已是第 5 次组队，再否决红方直接获胜）" if view.attempt >= 5 else ""
+    rejected = view.attempt - 1
     return (
-        f"当前局面：第 {view.quest_no} 个任务、第 {view.attempt} 次组队{hammer}，队伍需要 {view.team_size} 人，"
-        f"破坏票满 {view.fails_required} 张任务即失败。当前队长：{view.leader_no}号。任务轨：蓝 {view.succeeded} : {view.failed} 红。"
+        f"前情回顾：本局任务表：{_mission_table(view.players)}。当前 M{view.quest_no}，第 {view.attempt} 次组队{hammer}，"
+        f"已否决 {rejected} 次，当前队长 {view.leader_no}号，队伍需要 {view.team_size} 人，"
+        f"破坏票满 {view.fails_required} 张任务即失败。任务轨：蓝方 {view.succeeded} : {view.failed} 红方。\n"
+        f"{_REASONING_BASELINE}\n"
+        f"{_public_history(view)}"
     )
 
 

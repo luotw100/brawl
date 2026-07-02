@@ -81,6 +81,7 @@ def _ask_view(
         lady_used=list(state.lady_used),
         lady_target=lady_target,
         lady_seen=lady_seen,
+        history=list(state.history),
         messages=list(threads[seat.no].messages),
     )
     context = prompts.situation(view) if with_situation else ""
