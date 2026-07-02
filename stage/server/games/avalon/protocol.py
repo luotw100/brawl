@@ -62,15 +62,13 @@ class Speech(Directive):
     lady_truth: str | None = None  # 仅 lady：真实阵营（god-view 旁注）
 
 
-class LadyReveal(Directive):
-    """湖中仙女查验：持有者、被查者、god-view 真实阵营与持有者公开发言。"""
+class LadyCheck(Directive):
+    """湖中仙女查验动画：持有者、被查者、god-view 真实阵营与选择时内心戏。"""
 
-    kind: Literal["lady_reveal"] = "lady_reveal"
+    kind: Literal["lady_check"] = "lady_check"
     holder_no: int
     target_no: int
     truth: Literal["good", "evil"]
-    text: str
-    monologue: str
     choose_monologue: str = ""
 
 
@@ -188,6 +186,6 @@ VOICED = {
 
 __all__ = [
     "Assassination", "AvalonScene", "Deal", "FeedItem", "GameOpen", "GameOver",
-    "LadyReveal", "ProposalLog", "QuestCard", "QuestLog", "QuestReveal", "SeatInfo", "SeatVote",
+    "LadyCheck", "ProposalLog", "QuestCard", "QuestLog", "QuestReveal", "SeatInfo", "SeatVote",
     "Speech", "VoteReveal", "VOICED",
 ]

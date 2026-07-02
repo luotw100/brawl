@@ -54,9 +54,8 @@ def audio_url(replay_id: str, call_id: str | None, tts: dict[str, dict[str, Any]
 def audio_durations(replay_id: str, tts: dict[str, dict[str, Any]]) -> dict[str, float]:
     """audio_url → 时长（秒）。键就是指令上的 audio_url（复用 audio_url 同一套构造）：引擎据此让一拍
     停满音频。刻意不让引擎自己从 raw event 捞 call_id——多数事件一拍一次调用、call_id 和音频键一致，
-    但仙女一拍压两次调用（choose 私下决策 + announce 口播），音频键是 announce_call_id、并无顶层
-    call_id。把"播哪条音频"统一收到 adapt 拍板的 audio_url 上，引擎按同一条音频取时长，divergence
-    从结构上消除。"""
+    但仙女事件含 choose 私下决策与 announce 公开发言，音频键是 announce_call_id、并无顶层 call_id。
+    把"播哪条音频"统一收到 adapt 拍板的 audio_url 上，引擎按同一条音频取时长，divergence 从结构上消除。"""
     return {url: e["duration_ms"] / 1000 for cid, e in tts.items()
             if (url := audio_url(replay_id, cid, tts)) is not None}
 

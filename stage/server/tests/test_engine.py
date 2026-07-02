@@ -247,10 +247,9 @@ async def test_speed_compresses_beat_duration(settings):
     assert engine._stage_beats([voiced])[0].duration == 4.75  # 2× → 拍减半
 
 
-async def test_lady_audio_extends_dwell(settings):
-    """仙女一拍压两次 LLM 调用（choose 私下决策 + announce 口播），事件用 announce_call_id
-    标音频、无顶层 call_id。引擎按 adapt 拍板的 audio_url 取时长，整条 announce→audio_url→
-    时长链路必须撑满这一拍——否则只按文字估算停留、口播被下一拍截断（曾经的真 bug）。"""
+async def test_lady_announce_audio_extends_speech_dwell(settings):
+    """仙女事件拆成查验拍 + 玩家发言拍；玩家发言用 announce_call_id 标音频、无顶层 call_id。
+    引擎按 adapt 拍板的 audio_url 取时长，announce→audio_url→时长链路必须撑满第二拍。"""
     from server import replay
     from server.games.avalon.plugin import AvalonPlugin
     from server.games.base import AdaptContext
@@ -258,10 +257,11 @@ async def test_lady_audio_extends_dwell(settings):
 
     lady_event = next(e for e in conftest.EVENTS if e["type"] == "lady")
     tts = {lady_event["announce_call_id"]: {"file": "lady.opus", "duration_ms": 20000}}
-    directive = AvalonPlugin().adapt(lady_event, AdaptContext(replay_id="game1", tts=tts, names={}, host_name="司仪"))
+    directives = AvalonPlugin().adapt(lady_event, AdaptContext(replay_id="game1", tts=tts, names={}, host_name="司仪"))
     engine, _ = make_engine(settings)
     engine._durations = replay.audio_durations("game1", tts)
-    assert engine._stage_beats([directive])[0].duration == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
+    assert [d.kind for d in directives] == ["lady_check", "speech"]
+    assert engine._stage_beats(directives)[1].duration == 20.5  # 20s 音频 + 0.5 余量，而非文字估算的 0
 
 
 async def test_host_speech_collapses_into_adjacent_stage_beat(settings):

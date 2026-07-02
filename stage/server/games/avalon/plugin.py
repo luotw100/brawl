@@ -19,7 +19,7 @@ from server.games.avalon.protocol import (
     Deal,
     GameOpen,
     GameOver,
-    LadyReveal,
+    LadyCheck,
     ProposalLog,
     QuestCard,
     QuestLog,
@@ -39,7 +39,7 @@ from server.protocol import (
     Intermission,
 )
 
-_PHASE = {"propose": "提案", "discuss": "讨论", "lady": "验人", "banter": "闲聊"}
+_PHASE = {"propose": "提案", "discuss": "讨论", "lady": "仙女发言", "banter": "闲聊"}
 
 
 class AvalonPlugin:
@@ -52,8 +52,8 @@ class AvalonPlugin:
     def new_scene(self) -> AvalonScene:
         return AvalonScene()
 
-    def adapt(self, event: dict[str, Any], ctx: AdaptContext) -> Directive | None:
-        """一条 replay 事件 → 一条舞台指令。未知事件类型直接抛——契约变了要立刻暴露，不静默吞。"""
+    def adapt(self, event: dict[str, Any], ctx: AdaptContext) -> Directive | list[Directive] | None:
+        """一条 replay 事件 → 一条或多条舞台指令。未知事件类型直接抛——契约变了要立刻暴露，不静默吞。"""
         t = event["type"]
         if t == "host":
             if event["beat"] == "reveal":
@@ -98,11 +98,16 @@ class AvalonPlugin:
                 fails=event["fails"], fails_required=event["fails_required"], result=event["result"],
             )
         if t == "lady":
-            return LadyReveal(
-                holder_no=event["holder_no"], target_no=event["target_no"], truth=event["truth"],
-                text=event["speech"], monologue=event["monologue"], choose_monologue=event.get("choose_monologue", ""),
-                audio_url=replay.audio_url(ctx.replay_id, event.get("announce_call_id"), ctx.tts),
-            )
+            return [
+                LadyCheck(
+                    holder_no=event["holder_no"], target_no=event["target_no"], truth=event["truth"],
+                    choose_monologue=event.get("choose_monologue", ""),
+                ),
+                Speech(
+                    phase="lady", seat_no=event["holder_no"], text=event["speech"], monologue=event["monologue"],
+                    audio_url=replay.audio_url(ctx.replay_id, event.get("announce_call_id"), ctx.tts),
+                ),
+            ]
         if t == "assassination":
             return Assassination(
                 assassin_no=event["assassin_no"], target_no=event["target_no"], hit=event["hit"],
@@ -164,7 +169,7 @@ class AvalonPlugin:
                     scene.leader_no = directive.seat_no
                 if directive.lady_target is not None:
                     scene.lady_holder = directive.lady_target  # 令牌传给被查者
-            case LadyReveal():
+            case LadyCheck():
                 scene.speaking = directive.holder_no
                 scene.lady_holder = directive.target_no  # 本拍内由前端按 directive 演令牌交接
             case VoteReveal():
@@ -218,7 +223,7 @@ class AvalonPlugin:
                 return "主持", "yellow", f"{directive.name}：{_snip(directive.text)}"
             case Speech():
                 return _PHASE.get(directive.phase, directive.phase), "green", f"{_seat_name(seats, directive.seat_no)}：{_snip(directive.text)}"
-            case LadyReveal():
+            case LadyCheck():
                 return "验人", "green", f"{_seat_name(seats, directive.holder_no)} 查 {_seat_name(seats, directive.target_no)}"
             case VoteReveal():
                 return "表决", "magenta", f"{'通过' if directive.approved else '否决'} · 第 {directive.quest}.{directive.attempt} 队"

@@ -28,15 +28,12 @@ export interface Speech {
   lady_truth: string | null;
   audio_url: string | null;
 }
-export interface LadyReveal {
-  kind: "lady_reveal";
+export interface LadyCheck {
+  kind: "lady_check";
   holder_no: number;
   target_no: number;
   truth: "good" | "evil";
-  text: string;
-  monologue: string;
   choose_monologue: string;
-  audio_url: string | null;
 }
 export interface SeatVote { seat_no: number; approve: boolean; monologue: string }
 export interface VoteReveal {
@@ -76,7 +73,7 @@ export interface Intermission {
 }
 
 export type AvalonDirective =
-  | GameOpen | Deal | Speech | LadyReveal | VoteReveal | QuestReveal | Assassination | GameOver | HostSpeech | Intermission;
+  | GameOpen | Deal | Speech | LadyCheck | VoteReveal | QuestReveal | Assassination | GameOver | HostSpeech | Intermission;
 
 export interface WerewolfSeatInfo {
   no: number;

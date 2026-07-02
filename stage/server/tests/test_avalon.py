@@ -30,7 +30,16 @@ def _ctx(replay_dir, replay_id="game1"):
 def _adapt_all(replay_root):
     d = replay_root / "game1"
     ctx = _ctx(d)
-    return [PLUGIN.adapt(e, ctx) for e in EVENTS]
+    directives = []
+    for event in EVENTS:
+        adapted = PLUGIN.adapt(event, ctx)
+        if adapted is None:
+            continue
+        if isinstance(adapted, list):
+            directives.extend(adapted)
+            continue
+        directives.append(adapted)
+    return directives
 
 
 def _fold_one(scene: AvalonScene, directive, seq: int = 1) -> None:
@@ -50,10 +59,10 @@ def _fold(directives) -> AvalonScene:
 
 def test_adapt_covers_every_event_type(replay_root):
     directives = _adapt_all(replay_root)
-    assert len(directives) == len(EVENTS)
+    assert len(directives) == len(EVENTS) + 1
     kinds = [d.kind for d in directives]
     assert kinds == ["game_open", "host", "deal", "speech", "speech", "vote_reveal",
-                     "quest_reveal", "lady_reveal", "assassination", "game_over", "speech"]
+                     "quest_reveal", "lady_check", "speech", "assassination", "game_over", "speech"]
     assert directives[1].name == "司仪"  # meta.setup.host_name（生成时快照，不读 cast.yaml）
 
 

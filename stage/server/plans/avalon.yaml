@@ -38,10 +38,11 @@ directives:
           truthy: monologue
         at: 0.0
 
-  lady_reveal:
+  lady_check:
     content:
-      chars: [text, monologue, choose_monologue]
-    post_narration_after_main: true
+      fixed: 4.0
+      chars: [choose_monologue]
+    reveal_paced_by_narration: true
     cues:
       - name: open
         at: 0.0

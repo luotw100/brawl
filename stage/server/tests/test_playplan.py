@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from server.engine import Engine
-from server.games.avalon.protocol import LadyReveal, Speech
+from server.games.avalon.protocol import LadyCheck, Speech
 from server.playplan import compile_stage_beats, load_plan, plan_path
 from server.protocol import HostSpeech
 from server.record import Beat, audio_segments
@@ -27,62 +27,70 @@ def test_host_reveal_is_skipped_by_dsl():
     assert beats == []
 
 
-def test_lady_host_lead_in_delays_main_track():
+def test_lady_host_and_player_speech_are_separate_beats():
     plan = load_plan(plan_path("avalon"))
     host = HostSpeech(name="司仪", beat="lady", text="仙女环节", audio_url="/host")
-    speech = LadyReveal(
+    check = LadyCheck(
         holder_no=5,
         target_no=8,
         truth="good",
-        text="我查验八号，是蓝方。",
-        monologue="",
         choose_monologue="",
-        audio_url="/main",
     )
+    speech = Speech(phase="lady", seat_no=5, text="我查验八号，是蓝方。", monologue="", audio_url="/main")
 
-    beat = compile_stage_beats(
-        [host, speech],
+    beats = compile_stage_beats(
+        [host, check, speech],
         plan,
         {"/host": 4.0, "/main": 11.0},
         speed=1.0,
-    )[0]
+    )
 
-    assert beat.content_at == 4.2
-    assert [(t.kind, t.audio_url, t.start) for t in beat.tracks if t.kind != "sfx"] == [
+    assert [b.directive.kind for b in beats] == ["lady_check", "speech"]
+    assert beats[0].content_at == 4.2
+    assert [(t.kind, t.audio_url, t.start) for t in beats[0].tracks if t.kind != "sfx"] == [
         ("narration", "/host", 0.0),
-        ("main", "/main", 4.2),
     ]
-    assert beat.duration == 4.2 + 11.5
+    assert [(t.kind, t.audio_url, t.start) for t in beats[1].tracks if t.kind != "sfx"] == [
+        ("main", "/main", 0.0),
+    ]
+    assert beats[0].duration == 4.2
+    assert beats[1].duration == 11.5
 
 
 def test_record_audio_segments_use_compiled_tracks_without_reinterpretation():
     plan = load_plan(plan_path("avalon"))
     host = HostSpeech(name="司仪", beat="lady", text="仙女环节", audio_url="/replays/g/tts/host.opus")
-    speech = LadyReveal(
+    check = LadyCheck(
         holder_no=5,
         target_no=8,
         truth="good",
-        text="我查验八号，是蓝方。",
-        monologue="",
         choose_monologue="",
+    )
+    speech = Speech(
+        phase="lady", seat_no=5, text="我查验八号，是蓝方。", monologue="",
         audio_url="/replays/g/tts/main.opus",
     )
-    stage_beat = compile_stage_beats(
-        [host, speech],
+    stage_beats = compile_stage_beats(
+        [host, check, speech],
         plan,
         {"/replays/g/tts/host.opus": 4.0, "/replays/g/tts/main.opus": 11.0},
         speed=1.0,
-    )[0]
+    )
+    host_beat, speech_beat = stage_beats
 
     segs = audio_segments(
-        [Beat(seq=1, started_at=100.0, tracks=stage_beat.tracks)],
+        [
+            Beat(seq=1, started_at=100.0, tracks=host_beat.tracks),
+            Beat(seq=2, started_at=100.0 + host_beat.duration, tracks=speech_beat.tracks),
+        ],
         replay_root=Path("/root"),
         sfx_dir=Path("/sfx"),
         shift=0.0,
         origin=99.0,
     )
 
-    assert segs[:2] == [
+    voices = [(path, round(start, 1), volume) for path, start, volume in segs if str(path).startswith("/root/")]
+    assert voices == [
         (Path("/root/g/tts/host.opus"), 1.0, 1.0),
         (Path("/root/g/tts/main.opus"), 5.2, 1.0),
     ]

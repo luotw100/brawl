@@ -28,6 +28,7 @@ from server.games.base import AdaptContext, GamePlugin
 from server.playplan import StageBeat, StagePlanSpec, compile_stage_beats, load_plan, plan_path
 from server.protocol import (
     BaseScene,
+    Directive,
     FeedItem,
     GameResult,
     Intermission,
@@ -199,9 +200,8 @@ class Engine:
             model_labels=replay.load_model_labels(replay_dir),
         )
         # 先把整局摊平：前瞻要看后面的拍，懒迭代给不了"下一拍是谁"。一局事件量很小，全量无妨。
-        # adapt 返回 None 表示"这条事件不演"（如主持人复述身份的 reveal 拍），过滤掉不进时间线。
-        directives = [d for event in replay.load_events(replay_dir)
-                      if (d := self._plugin.adapt(event, ctx)) is not None]
+        # adapt 返回 None 表示"这条事件不演"；返回 list 表示一条 replay 事件拆成多拍。
+        directives = self._adapt_directives(replay.load_events(replay_dir), ctx)
         beats = self._stage_beats(directives)
         last: GameResult | None = None
         for i, beat in enumerate(beats):
@@ -276,6 +276,18 @@ class Engine:
         return False
 
     # ---------------------------------------------------------------- 节奏
+
+    def _adapt_directives(self, events: list[dict], ctx: AdaptContext) -> list[Directive]:
+        directives: list[Directive] = []
+        for event in events:
+            adapted = self._plugin.adapt(event, ctx)
+            if adapted is None:
+                continue
+            if isinstance(adapted, list):
+                directives.extend(adapted)
+                continue
+            directives.append(adapted)
+        return directives
 
     def _stage_beats(self, directives) -> list[StageBeat]:
         """Compile replay directives into the single play plan consumed by live and record."""

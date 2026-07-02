@@ -42,8 +42,8 @@ class GamePlugin(Protocol):
         """造一张该玩法的空白 Scene（每局开播、以及待机底图都用它）。"""
         ...
 
-    def adapt(self, event: dict[str, Any], ctx: AdaptContext) -> Directive | None:
-        """一条 replay 事件 → 一条舞台指令；返回 None 表示这条不演（如上帝视角下复述身份的拍）。
+    def adapt(self, event: dict[str, Any], ctx: AdaptContext) -> Directive | list[Directive] | None:
+        """一条 replay 事件 → 一条或多条舞台指令；返回 None 表示这条不演（如上帝视角下复述身份的拍）。
         未知事件类型应直接抛——契约漂移要立刻暴露，不静默吞。"""
         ...
 

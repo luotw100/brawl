@@ -281,11 +281,11 @@ function Seat({ s, scene, current, vote, card, dealing }: {
 }) {
   // 未发牌：身份面朝下（不染阵营色、不亮角色）。deal 那拍 dealt=true，角色牌逐张翻面（dealing 触发动画）。
   const dealt = scene.dealt;
-  const ladyFocus = current?.kind === "lady_reveal"
+  const ladyFocus = current?.kind === "lady_check"
     ? current.holder_no === s.no ? "lady-source" : current.target_no === s.no ? "lady-target" : ""
     : "";
-  const showLadyBadge = scene.lady_holder === s.no || (current?.kind === "lady_reveal" && current.holder_no === s.no);
-  const ladyBadge = current?.kind === "lady_reveal"
+  const showLadyBadge = scene.lady_holder === s.no || (current?.kind === "lady_check" && current.holder_no === s.no);
+  const ladyBadge = current?.kind === "lady_check"
     ? current.holder_no === s.no ? " leaving" : current.target_no === s.no ? " receiving" : ""
     : "";
   const cls = [
@@ -372,8 +372,8 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: AvalonScene; la
           ladyNo={d.lady_target} ladyEvil={d.lady_truth === "evil"} />
       );
     }
-    case "lady_reveal":
-      return <LadyView ch={ch} scene={scene} item={last} d={d} />;
+    case "lady_check":
+      return <LadyCheckView ch={ch} scene={scene} item={last} d={d} />;
     case "vote_reveal":
       return <VoteView ch={ch} scene={scene} item={last} d={d} />;
     case "quest_reveal":
@@ -417,20 +417,9 @@ function revealAt(item: FeedItem, fraction: number): number {
   return item.content_at + mainTextWindow(item) * fraction;
 }
 
-function activeNarration(ch: Channel, item: FeedItem, now: number) {
-  const elapsed = elapsedOf(ch, item.started_at, now);
-  return item.narrations.find((n) => elapsed >= n.at && elapsed <= n.at + n.duration);
-}
-
-function NarrationLine({ ch, item, now }: { ch: Channel; item: FeedItem; now: number }) {
-  const cue = activeNarration(ch, item, now);
-  if (!cue) return null;
-  return <div className="narration-line">{cue.name}：{cue.text}</div>;
-}
-
-function LadyView({ ch, scene, item, d }: {
+function LadyCheckView({ ch, scene, item, d }: {
   ch: Channel; scene: AvalonScene; item: FeedItem;
-  d: Extract<FeedItem["directive"], { kind: "lady_reveal" }>;
+  d: Extract<FeedItem["directive"], { kind: "lady_check" }>;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -438,12 +427,11 @@ function LadyView({ ch, scene, item, d }: {
     return () => window.clearInterval(t);
   }, [item.seq]);
   const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
-  const revealed = elapsedOf(ch, item.started_at, now) >= revealAt(item, 0.54);
+  const revealed = elapsedOf(ch, item.started_at, now) >= item.duration * 0.54;
   const evil = d.truth === "evil";
   const truth = sideLabel(d.truth);
   return (
     <div className={`reveal-view lady-view ${revealed ? (evil ? "bad" : "ok") : ""}`}>
-      <NarrationLine ch={ch} item={item} now={now} />
       <div className="vote-title">湖中仙女</div>
       <div className="lady-flow">
         <RevealAvatar seat={seatOf(d.holder_no)} no={d.holder_no} mark="yes" label="持有者" idx={0} />
@@ -455,20 +443,11 @@ function LadyView({ ch, scene, item, d }: {
       {d.choose_monologue && (
         <div className="lady-secret"><span className="think-mark">💭</span><span className="think-text">{d.choose_monologue}</span></div>
       )}
-      <div className="lady-layers">
-        <div className="lady-layer public">
-          <span className="layer-tag">现场公开</span>
-          <div className="lady-speech">「<LiveText ch={ch} item={item} text={d.text} />」</div>
-        </div>
-        <div className={`lady-layer god ${revealed ? (evil ? "bad" : "ok") : ""}`}>
-          <span className="layer-tag god">观众视角</span>
-          <div className="lady-result">{revealed ? `真实阵营：${truth}` : "查验中"}</div>
-          <div className="lady-token-line">令牌传给 {circ(d.target_no)}号</div>
-        </div>
+      <div className={`lady-check-copy ${revealed ? (evil ? "bad" : "ok") : ""}`}>
+        <span className="layer-tag god">观众视角</span>
+        <div className="lady-result">{revealed ? `真实阵营：${truth}` : "查验中"}</div>
+        <div className="lady-token-line">令牌传给 {circ(d.target_no)}号</div>
       </div>
-      {d.monologue && (
-        <div className="lady-think"><span className="think-mark">💭</span><span className="think-text">{d.monologue}</span></div>
-      )}
     </div>
   );
 }
@@ -492,7 +471,6 @@ function QuestView({ ch, scene, item, d }: {
   const failText = settled ? d.fails : shownFails;
   return (
     <div className={`reveal-view quest-view ${settled ? (d.result === "success" ? "ok" : "bad") : ""}`}>
-      <NarrationLine ch={ch} item={item} now={now} />
       <div className="quest-kicker">第 {d.quest} 任务 · 队伍 {seatList(d.team)}</div>
       <div className="vote-title">{settled ? (d.result === "success" ? "任务成功" : "任务失败") : "任务开牌"}</div>
       <div className="quest-board">
@@ -548,7 +526,6 @@ function AssassinView({ ch, scene, item, d }: {
   const revealed = elapsedOf(ch, item.started_at, now) >= revealAt(item, TEXT_REVEAL_FRACTION);
   return (
     <div className={`reveal-view assassin-view ${revealed ? (d.hit ? "hit" : "miss") : ""}`}>
-      <NarrationLine ch={ch} item={item} now={now} />
       {revealed && <div key={item.seq} className="flash flash-assassination local" />}
       <div className="vote-title">刺杀</div>
       <div className="vs-row">

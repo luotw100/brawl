@@ -68,7 +68,7 @@ class GameResult(BaseModel):
 
 
 class NarrationCue(BaseModel):
-    """挂在一拍视觉之下的主持旁白。at 是拍内偏移秒；duration 是旁白字幕/音频预算。"""
+    """挂在一拍视觉之下的主持旁白。at 是拍内偏移秒；duration 是旁白音频预算。"""
 
     name: str
     beat: str
