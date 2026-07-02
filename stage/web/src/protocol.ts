@@ -163,6 +163,7 @@ export interface FeedItem {
   directive: Directive;
   started_at: number;
   duration: number;
+  clock_running: boolean;
   speed: number;
   content_at: number;
   narrations: NarrationCue[];

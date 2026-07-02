@@ -159,6 +159,7 @@
 
 /* 发牌：身份牌在「飞牌抵达手中」那一刻翻面亮出——延时 = 该座位起飞错峰 + 单张飞行时长。 */
 .seat.dealing .seat-role { transform-origin: top center; animation: flipReveal .55s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--di) * var(--deal-stagger, 0.12s) + var(--deal-fly, 0s)); }
+.seat.dealing.clock-paused .seat-role { animation-play-state: paused; }
 @keyframes flipReveal { from { opacity: 0; transform: rotateX(90deg) translateY(-6px); } 55% { opacity: 1; } to { opacity: 1; transform: none; } }
 @keyframes stamp { from { opacity: 0; transform: scale(2.6) rotate(-22deg); } 70% { opacity: 1; transform: scale(.86) rotate(5deg); } to { opacity: 1; transform: scale(1); } }
 @keyframes ladyLeave { 50% { opacity: .46; transform: scale(.86); } }

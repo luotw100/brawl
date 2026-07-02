@@ -255,6 +255,7 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: AvalonScene; last: Fee
   const cards = d?.kind === "quest_reveal"
     ? Object.fromEntries(d.cards.map((c) => [c.seat_no, c.success])) : {};
   const dealing = d?.kind === "deal";
+  const clockRunning = last?.clock_running ?? true;
   const vars: CSSProperties = {};
   if (dealing && n) {
     // 身份牌的翻面落在「该座位的飞牌抵达手中」那一刻：起飞错峰 + 飞行时长。
@@ -264,7 +265,8 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: AvalonScene; last: Fee
   if (d?.kind === "vote_reveal" && d.votes.length)
     (vars as Record<string, string>)["--vote-stagger"] = `${(dur * 0.62) / d.votes.length}s`;
   const seat = (s: AvalonSeatInfo) => (
-    <Seat key={s.no} s={s} scene={scene} current={d} dealing={dealing} vote={votes[s.no]} card={cards[s.no]} />
+    <Seat key={s.no} s={s} scene={scene} current={d} dealing={dealing} clockRunning={clockRunning}
+      vote={votes[s.no]} card={cards[s.no]} />
   );
   return (
     <div className="arena" style={vars}>
@@ -276,8 +278,8 @@ function Arena({ ch, scene, last }: { ch: Channel; scene: AvalonScene; last: Fee
   );
 }
 
-function Seat({ s, scene, current, vote, card, dealing }: {
-  s: AvalonSeatInfo; scene: AvalonScene; current: FeedItem["directive"] | undefined; vote?: boolean; card?: boolean; dealing: boolean;
+function Seat({ s, scene, current, vote, card, dealing, clockRunning }: {
+  s: AvalonSeatInfo; scene: AvalonScene; current: FeedItem["directive"] | undefined; vote?: boolean; card?: boolean; dealing: boolean; clockRunning: boolean;
 }) {
   // 未发牌：身份面朝下（不染阵营色、不亮角色）。deal 那拍 dealt=true，角色牌逐张翻面（dealing 触发动画）。
   const dealt = scene.dealt;
@@ -295,6 +297,7 @@ function Seat({ s, scene, current, vote, card, dealing }: {
     scene.team.includes(s.no) ? "on-team" : "",
     ladyFocus,
     dealing ? "dealing" : "",
+    dealing && !clockRunning ? "clock-paused" : "",
   ].join(" ");
   return (
     <div className={cls} data-di={s.no - 1} style={{ "--di": s.no - 1 } as CSSProperties}>
@@ -459,7 +462,7 @@ function LadyCheckView({ ch, scene, item, d }: {
     return () => window.clearInterval(t);
   }, [item.seq]);
   const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
-  const revealed = elapsedOf(ch, item.started_at, now) >= item.duration * 0.54;
+  const revealed = elapsedOf(ch, item, now) >= item.duration * 0.54;
   const evil = d.truth === "evil";
   const truth = sideLabel(d.truth);
   return (
@@ -492,7 +495,7 @@ function QuestView({ ch, scene, item, d }: {
   const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
   const n = d.cards.length;
   const stagger = (revealWindow(item) * 0.58) / Math.max(n, 1);
-  const elapsed = Math.max(0, elapsedOf(ch, item.started_at, now) - item.content_at);
+  const elapsed = Math.max(0, elapsedOf(ch, item, now) - item.content_at);
   const opened = Math.min(n, Math.max(0, Math.floor(elapsed / Math.max(stagger, 0.001))));
   const shownFails = d.cards.slice(0, opened).filter((c) => !c.success).length;
   const settled = opened >= n;
@@ -549,7 +552,7 @@ function AssassinView({ ch, scene, item, d }: {
     return () => window.clearInterval(t);
   }, [item.seq]);
   const seatOf = (no: number) => scene.seats.find((s) => s.no === no);
-  const revealed = elapsedOf(ch, item.started_at, now) >= revealAt(item, TEXT_REVEAL_FRACTION);
+  const revealed = elapsedOf(ch, item, now) >= revealAt(item, TEXT_REVEAL_FRACTION);
   return (
     <div className={`reveal-view assassin-view ${revealed ? (d.hit ? "hit" : "miss") : ""}`}>
       {revealed && <div key={item.seq} className="flash flash-assassination local" />}
@@ -680,7 +683,7 @@ function VoteView({ ch, scene, item, d }: {
   }, [item.seq]);
   const n = d.votes.length;
   const stagger = (revealWindow(item) * 0.62) / Math.max(n, 1);
-  const elapsed = Math.max(0, elapsedOf(ch, item.started_at, now) - item.content_at);
+  const elapsed = Math.max(0, elapsedOf(ch, item, now) - item.content_at);
   const landed = Math.min(n, Math.max(0, Math.floor(elapsed / Math.max(stagger, 0.001))));
   const shown = d.votes.slice(0, landed);
   const yes = shown.filter((v) => v.approve).length;
@@ -717,7 +720,7 @@ function DealDeck({ ch, item, n }: { ch: Channel; item: FeedItem; n: number }) {
     const t = window.setInterval(() => setNow(Date.now()), 50);
     return () => window.clearInterval(t);
   }, [item.seq]);
-  const remaining = n - dealtCount(elapsedOf(ch, item.started_at, now), item.duration, n);
+  const remaining = n - dealtCount(elapsedOf(ch, item, now), item.duration, n);
   return (
     <Feature cls="feature-deal">
       <div className="deck">
@@ -765,7 +768,7 @@ function DealFlight({ ch, item, scene }: { ch: Channel; item: FeedItem; scene: A
   if (!geo) return null;
   const stagger = (item.duration * 0.8) / Math.max(n, 1);
   const flyDur = Math.max(DEAL_FLY_FRAC * item.duration, 0.0001);
-  const elapsed = elapsedOf(ch, item.started_at, now);
+  const elapsed = elapsedOf(ch, item, now);
   const cards: ReactNode[] = [];
   for (let di = 0; di < n; di++) {
     const tgt = geo.targets.get(di);
@@ -796,7 +799,7 @@ function LiveText({ ch, item, text }: { ch: Channel; item: FeedItem; text: strin
     return () => window.clearInterval(t);
   }, [item.seq]);
   const budget = mainTextWindow(item) * TEXT_REVEAL_FRACTION;
-  const elapsed = elapsedOf(ch, item.started_at, now) - item.content_at;
+  const elapsed = elapsedOf(ch, item, now) - item.content_at;
   const n = Math.min(Math.floor((elapsed / budget) * text.length), text.length);
   // 文字铺满后把最近的滚动容器（.live-scroll：发言区/复盘字幕共用契约）拉到底，最新一行始终可见。
   useEffect(() => {
@@ -821,6 +824,7 @@ function Audio({ ch, item, url, at = item.content_at, volume = 1.0 }: {
   ch: Channel; item: FeedItem; url: string | null | undefined; at?: number; volume?: number;
 }) {
   useEffect(() => {
+    if (!item.clock_running) return;
     if (!url) return;
     let timer = 0;
     let el: HTMLAudioElement | null = null;
@@ -832,7 +836,7 @@ function Audio({ ch, item, url, at = item.content_at, volume = 1.0 }: {
       el.currentTime = Math.max(offset * item.speed, 0);
       el.play().catch(() => {});
     };
-    const elapsed = elapsedOf(ch, item.started_at, Date.now()) - at;
+    const elapsed = elapsedOf(ch, item, Date.now()) - at;
     if (elapsed >= 0) {
       play(elapsed);
     } else {
@@ -842,7 +846,7 @@ function Audio({ ch, item, url, at = item.content_at, volume = 1.0 }: {
       if (timer) window.clearTimeout(timer);
       el?.pause();
     };
-  }, [url, item.seq, item.speed, at, volume]);
+  }, [url, item.seq, item.started_at, item.clock_running, item.speed, at, volume]);
   return null;
 }
 

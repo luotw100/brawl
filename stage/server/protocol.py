@@ -17,9 +17,11 @@ FeedItem、Scene 基类、StateMsg。**具体玩法的指令形状（阿瓦隆�
 隐私边界：公开频道不出现 replay 目录名（排片是导播台的事）与队列；这些只走
 带 token 的 /api/state。
 
-时间对齐：FeedItem 带 `started_at`（服务端 epoch 秒）+ `duration`，StateMsg 带
-服务端当前时刻 `ts`——客户端用 (ts - started_at) 推出"这句话已经演到第几秒"，
-打字机从正确字数续接、音频 `currentTime` 对齐，刷新/中途加入都无感。
+时间对齐：FeedItem 带 `started_at`（服务端 epoch 秒）+ `duration` + `clock_running`，
+StateMsg 带服务端当前时刻 `ts`——客户端在 clock_running 后用 (ts - started_at)
+推出"这句话已经演到第几秒"，打字机从正确字数续接、音频 `currentTime` 对齐，
+刷新/中途加入都无感。录制首帧门可先下发 clock_running=False 的静止首帧，抓屏就绪后
+再启动同一拍的时钟，避免首帧预览把动画提前跑掉。
 """
 
 from __future__ import annotations
@@ -133,6 +135,7 @@ class FeedItem(BaseModel):
     directive: SerializeAsAny[Directive]
     started_at: float  # 服务端 epoch 秒
     duration: float
+    clock_running: bool = True  # False=首帧预览/暂停态；客户端固定 elapsed=0 且不播音频
     speed: float = 1.0  # 时间轴倍速：duration 已按它压缩；播放侧据此把音频 playbackRate 提速贴合
     content_at: float = 0.0  # 主内容拍内偏移：前置主持旁白先说完，玩家发言再开始
     narrations: list[NarrationCue] = Field(default_factory=list)

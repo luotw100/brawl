@@ -1,9 +1,11 @@
 // 频道客户端：连 /ws 收 StateMsg，断线自动重连。客户端零状态——只保存最新一帧。
 // receivedAt 用于把服务端时间轴换算到本地：某拍已演出的秒数 =
-//   (msg.ts - item.started_at) + (Date.now() - receivedAt) / 1000
+//   item.clock_running
+//     ? (msg.ts - item.started_at) + (Date.now() - receivedAt) / 1000
+//     : 0
 
 import { useEffect, useRef, useState } from "react";
-import type { StateMsg } from "./protocol";
+import type { FeedItem, StateMsg } from "./protocol";
 
 export interface Channel {
   connected: boolean;
@@ -11,9 +13,10 @@ export interface Channel {
   receivedAt: number; // 本地 Date.now()（毫秒）
 }
 
-export function elapsedOf(ch: Channel, startedAt: number, now: number): number {
+export function elapsedOf(ch: Channel, item: FeedItem, now: number): number {
   if (!ch.state) return 0;
-  return ch.state.ts - startedAt + (now - ch.receivedAt) / 1000;
+  if (!item.clock_running) return 0;
+  return ch.state.ts - item.started_at + (now - ch.receivedAt) / 1000;
 }
 
 export function useChannel(): Channel {

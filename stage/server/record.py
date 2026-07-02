@@ -336,6 +336,10 @@ class RecordPlaybackGate:
         self._progress_thread: threading.Thread | None = None
         self.origin: float | None = None
 
+    @property
+    def hold_opening_frame(self) -> bool:
+        return True
+
     def mark_first_frame_painted(self, seq: int) -> None:
         if not self._page_painted.done():
             self._page_painted.set_result(None)

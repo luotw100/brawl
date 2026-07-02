@@ -40,11 +40,17 @@ FEED_CAP = 5  # 服务端只留最近几拍（窗口旋钮 1~3 再从中裁剪�
 
 
 class PlaybackGate(Protocol):
+    @property
+    def hold_opening_frame(self) -> bool: ...
     async def first_frame_published(self, seq: int) -> float | None: ...
     async def before_intermission(self) -> None: ...
 
 
 class NullPlaybackGate:
+    @property
+    def hold_opening_frame(self) -> bool:
+        return False
+
     async def first_frame_published(self, seq: int) -> float | None:
         return None
 
@@ -209,11 +215,16 @@ class Engine:
             if (result := self._plugin.result(directive)) is not None:
                 last = result
             self.prefetch = _upcoming_audio(beats, i, self._prefetch_factor)
-            await self._emit(beat)
-            if self._plugin.is_opening_anchor(directive):
+            opening_anchor = self._plugin.is_opening_anchor(directive)
+            hold_clock = opening_anchor and self._playback_gate.hold_opening_frame
+            await self._emit(beat, clock_running=not hold_clock)
+            if opening_anchor:
                 started_at = await self._playback_gate.first_frame_published(self._seq)
                 if started_at is not None:
                     self.scene.feed[-1].started_at = started_at
+                if hold_clock:
+                    self.scene.feed[-1].clock_running = True
+                if started_at is not None or hold_clock:
                     await self._publish()
             if not await self._dwell(beat.duration):
                 break  # 导播台跳局
@@ -232,13 +243,14 @@ class Engine:
         await self._emit(StageBeat(directive, duration=self.intermission_seconds))
         await self._dwell(self.intermission_seconds)
 
-    async def _emit(self, beat: StageBeat) -> None:
+    async def _emit(self, beat: StageBeat, *, clock_running: bool = True) -> None:
         self._seq += 1
         item = FeedItem(
             seq=self._seq,
             directive=beat.directive,
             started_at=time.time(),
             duration=beat.duration,
+            clock_running=clock_running,
             speed=self.speed,
             content_at=beat.content_at,
             narrations=beat.narrations,

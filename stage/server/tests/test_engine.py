@@ -84,6 +84,10 @@ async def test_plays_full_game_then_intermission(settings):
 
 async def test_playback_gate_starts_on_deal_frame(settings):
     class Gate:
+        @property
+        def hold_opening_frame(self) -> bool:
+            return True
+
         async def first_frame_published(self, seq: int) -> float | None:
             assert seq == 2
             return 1234.0
@@ -95,13 +99,19 @@ async def test_playback_gate_starts_on_deal_frame(settings):
     await engine.set_queue(["game1"])
     await _run_until(engine, lambda: len([s for _, s in rec.states if s.feed and s.feed[-1].seq == 2]) >= 2)
     deal_items = [scene.feed[-1] for _, scene in rec.states if scene.feed and scene.feed[-1].seq == 2]
+    assert deal_items[0].clock_running is False
     assert deal_items[-1].started_at == 1234.0
+    assert deal_items[-1].clock_running is True
 
 
 async def test_playback_gate_runs_before_intermission_is_published(settings):
     class Gate:
         def __init__(self) -> None:
             self.stopped = False
+
+        @property
+        def hold_opening_frame(self) -> bool:
+            return False
 
         async def first_frame_published(self, seq: int) -> float | None:
             return None
