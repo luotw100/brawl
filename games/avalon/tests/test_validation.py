@@ -18,6 +18,7 @@ from avalon.registry import Persona, Registry
 from avalon.settings import AvalonSettings, SettingsError
 from avalon.state import Role
 from avalon.validation import resolve_and_validate
+from core import setup as core_setup
 
 
 @pytest.mark.parametrize("players", sorted(rules.TEAM_SIZES))
@@ -65,6 +66,30 @@ def test_seed_makes_setup_deterministic(registry: Registry) -> None:
     a = resolve_and_validate(settings, registry, random.Random(42))
     b = resolve_and_validate(settings, registry, random.Random(42))
     assert (a.cast, a.strategies, a.models, a.roles, a.first_leader) == (b.cast, b.strategies, b.models, b.roles, b.first_leader)
+
+
+def test_default_model_sampling_decays_repeated_pick_weight(registry: Registry) -> None:
+    """缺省模型分配仍有放回；同一模型每被抽中一次,后续权重乘 0.5。"""
+    names = registry.model_names()[:2]
+    tiny = Registry(
+        models={name: registry.models[name] for name in names},
+        personas=registry.personas,
+        hosts=registry.hosts,
+        strategies=registry.strategies,
+        avatars_dir=registry.avatars_dir,
+    )
+
+    class RecordingRng:
+        def __init__(self) -> None:
+            self.weights: list[tuple[float, ...]] = []
+
+        def choices(self, population: list[str], *, weights: list[float], k: int) -> list[str]:
+            self.weights.append(tuple(weights))
+            return [population[0]]
+
+    rng = RecordingRng()
+    assert core_setup.resolve_models(None, players=3, registry=tiny, rng=rng, error=SettingsError) == [names[0]] * 3
+    assert rng.weights == [(1.0, 1.0), (0.5, 1.0), (0.25, 1.0)]
 
 
 def test_explicit_cast_kept_and_validated(registry: Registry) -> None:

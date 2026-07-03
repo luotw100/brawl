@@ -10,6 +10,9 @@ from core.registry import Registry
 
 _SettingsError = type[Exception]
 
+_MODEL_REPEAT_DECAY = 0.5
+
+
 def resolve_unique_personas(raw: list[str] | None, *, players: int, registry: Registry, rng: random.Random, error: _SettingsError) -> list[str]:
     """显式列表逐个校验；缺省从玩家人设池无放回抽样。"""
     if raw is not None:
@@ -47,15 +50,29 @@ def resolve_strategies(raw: list[str] | None, *, players: int, registry: Registr
     return [rng.choice(sids) for _ in range(players)]
 
 
-def resolve_models(raw: list[str] | None, *, players: int, registry: Registry, rng: random.Random, error: _SettingsError) -> list[str]:
-    """显式模型逐个校验；缺省从模型池放回抽样。"""
+def resolve_models(
+    raw: list[str] | None,
+    *,
+    players: int,
+    registry: Registry,
+    rng: random.Random,
+    error: _SettingsError,
+) -> list[str]:
+    """显式模型逐个校验；缺省从模型池有放回降权抽样。"""
     if raw is not None:
         for name in raw:
             if name not in registry.models:
                 raise error(f"未知模型: {name}（可选：{registry.model_names()}）")
         return raw
     names = registry.model_names()
-    return [rng.choice(names) for _ in range(players)]
+    counts = dict.fromkeys(names, 0)
+    picked: list[str] = []
+    for _ in range(players):
+        weights = [_MODEL_REPEAT_DECAY ** counts[name] for name in names]
+        name = rng.choices(names, weights=weights, k=1)[0]
+        picked.append(name)
+        counts[name] += 1
+    return picked
 
 
 def check_extractor(name: str, *, registry: Registry, error: _SettingsError) -> None:
