@@ -36,9 +36,20 @@ def test_system_renders_for_every_role(role: Role) -> None:
     assert "本局角色阵容（公开）" in text
     assert "本局共 10 人，座位号 1~10" in text
     assert "本局任务表：M1 3人/1破坏失败" in text and "M5 5人/1破坏失败" in text
-    assert "游戏基本功" not in text and "派西维尔基本功" not in text
+    assert "游戏基本功" in text and "任务成功不等于车上全蓝" in text
+    assert f"{prompts._ROLE_LABEL[role]}基本功" in text
     assert "你是 1 号" in text
     assert text.startswith("你是一名《阿瓦隆》玩家。")  # 嗓音可缺省，身份句由 system 自带；网名绝不进 prompt
+
+
+def test_system_injects_role_specific_playbook_only() -> None:
+    """角色秘籍贴近身份注入：派西维尔拿反莫甘娜规则，普通忠臣不会拿到这条夜视职责。"""
+    percival = prompts.system_text(_view(Role.PERCIVAL))
+    servant = prompts.system_text(_view(Role.SERVANT))
+    assert "莫甘娜切真梅林" in percival
+    assert "莫甘娜切真梅林" not in servant
+    assert "派西维尔基本功" in percival
+    assert "派西维尔基本功" not in servant
 
 
 def test_night_intel_rendered_as_seats() -> None:
