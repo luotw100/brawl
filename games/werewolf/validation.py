@@ -23,6 +23,8 @@ class GameSetup:
     host_name: str
     voices: list[str]
     host_voice: str
+    self_hosted_voices: list[str]
+    host_self_hosted_voice: str
     voice_designs: list[str]
     host_voice_design: str
     strategies: list[str]
@@ -39,6 +41,8 @@ class GameSetup:
             "host_name": self.host_name,
             "voices": self.voices,
             "host_voice": self.host_voice,
+            "self_hosted_voices": self.self_hosted_voices,
+            "host_self_hosted_voice": self.host_self_hosted_voice,
             "voice_designs": self.voice_designs,
             "host_voice_design": self.host_voice_design,
             "strategies": self.strategies,
@@ -66,6 +70,8 @@ def resolve_and_validate(settings: WerewolfSettings, registry: Registry, rng: ra
         host_name=registry.hosts[host_cast].name,
         voices=[registry.personas[pid].voice_id for pid in cast],
         host_voice=registry.hosts[host_cast].voice_id,
+        self_hosted_voices=[registry.personas[pid].self_hosted_voice_id for pid in cast],
+        host_self_hosted_voice=registry.hosts[host_cast].self_hosted_voice_id,
         voice_designs=[registry.personas[pid].voice_design for pid in cast],
         host_voice_design=registry.hosts[host_cast].voice_design,
         strategies=strategies,

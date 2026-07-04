@@ -154,6 +154,8 @@ async def test_replay_writes_three_files(tmp_path) -> None:
         "host_name",
         "voices",
         "host_voice",
+        "self_hosted_voices",
+        "host_self_hosted_voice",
         "voice_designs",
         "host_voice_design",
         "strategies",
@@ -163,3 +165,4 @@ async def test_replay_writes_three_files(tmp_path) -> None:
         "lady_holder",
     }
     assert meta["setup"]["voice_designs"] and meta["setup"]["host_voice_design"]
+    assert meta["setup"]["self_hosted_voices"] and meta["setup"]["host_self_hosted_voice"] is not None

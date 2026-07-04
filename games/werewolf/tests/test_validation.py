@@ -31,7 +31,7 @@ def test_setup_role_pool_and_snapshots(registry: Registry) -> None:
         }
     )
     assert len(setup.cast) == len(setup.strategies) == len(setup.models) == 12
-    assert len(setup.names) == len(setup.voices) == len(setup.voice_designs) == 12
+    assert len(setup.names) == len(setup.voices) == len(setup.self_hosted_voices) == len(setup.voice_designs) == 12
     assert setup.to_meta()["board"] == "pre-witch-hunter-idiot-12"
 
 

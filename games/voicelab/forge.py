@@ -1,8 +1,9 @@
 """`brawl voice-forge`:音色铸造——把一段嗓音描述(VD prompt)铸成可复用音色句柄。
 
-跨玩法通用,完全不认识 cast.yaml:输入嗓音描述,输出云端 voice_id 和一组试听 wav。
+跨玩法通用,完全不认识 cast.yaml:输入嗓音描述,输出 voice_id 和一组试听 wav。
 
 cloud:阿里云百炼 Qwen3-TTS 声音设计(qwen-voice-design 创建 → qwen3-tts-vd 合成)。
+self-hosted:局域网 Qwen3-TTS API(VoiceDesign 铸音色 → Base prompt → voice_id)。
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import os
 import tempfile
 from pathlib import Path
 from typing import ClassVar, Literal
+from urllib.parse import urljoin
 
 import httpx
 from dotenv import dotenv_values
@@ -58,11 +60,12 @@ class ForgeSettings(BaseSettings):
     _cli_args: ClassVar[list[str] | None] = None
 
     voice_prompt: CliPositionalArg[str]  # 嗓音描述(VD prompt),≤2048 字符
-    backend: Literal["qwen3-tts-cloud"] = "qwen3-tts-cloud"
+    backend: Literal["qwen3-tts-cloud", "qwen3-tts-self-hosted"] = "qwen3-tts-cloud"
     name: str = "voice"  # 一两个单词的短描述,拼上日期做云端 preferred_name(便于辨认/清理)
     preview_text: str = "我跳梅林？哥们，我要是梅林这局早就赢了好吧。"  # 用 cast 将来真会说的话来听
     emotion_samples: bool = True  # 铸完追加合成两个语气样本(急了/阴阳),验收 instructions 响应度
     out_dir: Path | None = None  # 试听产物目录;None = /tmp 下自动建临时目录
+    self_hosted_url: str = "http://127.0.0.1:8010"
 
     @model_validator(mode="after")
     def _check(self) -> ForgeSettings:
@@ -180,8 +183,83 @@ def _forge_cloud(s: ForgeSettings, console: Console) -> None:
     console.print(f'    voice_id: {voice_id}\n    voice_design: "{s.voice_prompt}"')
 
 
+def _create_self_hosted_voice(client: httpx.Client, s: ForgeSettings) -> dict:
+    resp = client.post(
+        f"{s.self_hosted_url.rstrip('/')}/v1/voices",
+        json={
+            "name": s.name,
+            "voice_prompt": s.voice_prompt,
+            "preview_text": s.preview_text,
+            "language": "Chinese",
+            "overwrite": False,
+        },
+    )
+    if resp.status_code != 200:
+        raise SettingsError(f"自托管音色创建失败({resp.status_code}):{_response_text(resp)}")
+    return resp.json()
+
+
+def _self_hosted_synthesize(client: httpx.Client, s: ForgeSettings, voice_id: str, text: str) -> bytes:
+    resp = client.post(
+        f"{s.self_hosted_url.rstrip('/')}/v1/audio/speech",
+        json={"voice": voice_id, "text": text, "language": "Chinese", "format": "wav"},
+    )
+    if resp.status_code != 200:
+        raise SettingsError(f"自托管合成失败({resp.status_code}):{_response_text(resp)}")
+    return resp.content
+
+
+def _forge_self_hosted(s: ForgeSettings, console: Console) -> None:
+    out_dir = s.out_dir or Path(tempfile.mkdtemp(prefix=f"voice-forge-{s.name}-"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with httpx.Client(timeout=300) as client:
+        voice = _create_self_hosted_voice(client, s)
+        voice_id = voice["voice_id"]
+        preview_url = urljoin(s.self_hosted_url.rstrip("/") + "/", voice["preview_audio_url"])
+        preview = client.get(preview_url)
+        if preview.status_code != 200:
+            raise SettingsError(f"自托管预览下载失败({preview.status_code}):{_response_text(preview)}")
+        (out_dir / "preview.wav").write_bytes(preview.content)
+        console.print(f"自托管音色已创建:[bold]{voice_id}[/bold]")
+        console.print(f"预览:{out_dir / 'preview.wav'}")
+
+        if s.emotion_samples:
+            sample = out_dir / "sample.wav"
+            sample.write_bytes(_self_hosted_synthesize(client, s, voice_id, _SAMPLE_TEXT))
+            console.print(f"合成样本:{sample}")
+
+    (out_dir / "forge.json").write_text(
+        json.dumps(
+            {
+                "backend": s.backend,
+                "voice_id": voice_id,
+                "voice_prompt": s.voice_prompt,
+                "preview_text": s.preview_text,
+                "self_hosted_url": s.self_hosted_url,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    console.print("\n听满意后,把下面片段拷进玩法的 cast.yaml 对应 persona:\n")
+    console.print(f'    self_hosted_voice_id: {voice_id}\n    voice_design: "{s.voice_prompt}"')
+
+
+def _response_text(resp: httpx.Response) -> str:
+    try:
+        return str(resp.json())
+    except ValueError:
+        return resp.text[:500]
+
+
 def forge(s: ForgeSettings, console: Console) -> None:
-    _forge_cloud(s, console)
+    if s.backend == "qwen3-tts-cloud":
+        _forge_cloud(s, console)
+    elif s.backend == "qwen3-tts-self-hosted":
+        _forge_self_hosted(s, console)
 
 
 def main(argv: list[str]) -> None:

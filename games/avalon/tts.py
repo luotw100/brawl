@@ -1,9 +1,9 @@
 """`brawl avalon-tts <replay_dir>`：把一局 replay 的公开发言合成成音频。
 
 消费端，像 avalon-replay 一样只读快照、零对局逻辑。cloud 音色从 meta.json 查
-（setup.voices / setup.host_voice）；local 直接用 meta.json 快照的 voice design prompt
-（setup.voice_designs / setup.host_voice_design）——本模块不读 cast.yaml，故 cast.yaml 之后
-再改也不影响老 replay 的配音。
+（setup.voices / setup.host_voice）；self-hosted 音色从
+（setup.self_hosted_voices / setup.host_self_hosted_voice）查。旧 replay 没有 self-hosted
+快照时，用 setup.cast / setup.host_cast 作为自托管服务端 voice name 兼容。
 
 柔性续合：产物写进 <replay_dir>/tts/，manifest.json 以 call_id 为键记录每条已合成发言。
 重复运行只补差集（events 里有、manifest 里没有或音频文件已丢的那些），已合成的跳过。
@@ -60,10 +60,9 @@ class TtsSettings(BaseSettings):
 
     dir: CliPositionalArg[Path]  # replay 目录（含 events.jsonl / meta.json）
     rps: float = 2.8  # DashScope 合成请求发起速率；qwen3-tts-vd 官方限流约 3 RPS，默认留一点余量
-    backend: Literal["qwen3-tts-cloud", "qwen3-tts-local"] = "qwen3-tts-cloud"
-    vd_model: str = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
-    device: Literal["auto", "cpu", "cuda"] = "auto"
-    threads: int = 2
+    backend: Literal["qwen3-tts-cloud", "qwen3-tts-self-hosted"] = "qwen3-tts-cloud"
+    self_hosted_url: str = "http://127.0.0.1:8010"
+    self_hosted_timeout: float = 300.0
 
     @model_validator(mode="after")
     def _check(self) -> TtsSettings:
@@ -74,8 +73,8 @@ class TtsSettings(BaseSettings):
                 raise ValueError(f"{self.dir} 不是 replay 目录（缺 {name}）")
         if self.rps <= 0:
             raise ValueError(f"rps 必须 >0，收到 {self.rps}")
-        if self.threads < 1:
-            raise ValueError(f"threads 必须 ≥1，收到 {self.threads}")
+        if self.self_hosted_timeout <= 0:
+            raise ValueError(f"self_hosted_timeout 必须 >0，收到 {self.self_hosted_timeout}")
         return self
 
     @classmethod
@@ -116,7 +115,7 @@ class Utterance:
     call_id: str
     speaker: str  # 显示用："3号" / "主持人"
     persona: str  # 人设 id（debug/溯源用）
-    voice_id: str  # TTS 后端句柄：cloud 是 voice_id，local 是 voice design prompt
+    voice_id: str  # TTS 后端句柄：cloud/self-hosted 是 voice_id；旧 self-hosted replay 可用 persona id 兼容
     text: str
 
 
@@ -346,7 +345,7 @@ async def _run(settings: TtsSettings, console: Console) -> None:
     todo = [u for u in utterances if not _is_done(u, settings.backend, manifest, tts_dir)]
     done = len(utterances) - len(todo)
     jobs = [TtsJob(i, u) for i, u in enumerate(todo, start=1)]
-    backend_label = "AliCloudQwen3TTS" if settings.backend == "qwen3-tts-cloud" else "LocalQwen3TTS"
+    backend_label = "AliCloudQwen3TTS" if settings.backend == "qwen3-tts-cloud" else "SelfHostedQwen3TTS"
     dashboard = TtsDashboard(settings, len(utterances), done, jobs, tts_dir, console, backend_label)
     if not todo:
         console.print(dashboard.render())
@@ -361,14 +360,13 @@ async def _run(settings: TtsSettings, console: Console) -> None:
                 synthesizer = AliCloudQwen3TTS(client)
                 failed = await _synthesize_all(synthesizer, settings.backend, todo, dashboard, clock, tts_dir, manifest, manifest_path, live)
         else:
-            from avalon.tts_backend import LocalQwen3TTS
+            from avalon.tts_backend import SelfHostedQwen3TTS
 
-            synthesizer = LocalQwen3TTS(
-                vd_model=settings.vd_model,
-                device=settings.device,
-                threads=settings.threads,
-            )
-            failed = await _synthesize_serial(synthesizer, settings.backend, todo, dashboard, tts_dir, manifest, manifest_path, live)
+            timeout = httpx.Timeout(settings.self_hosted_timeout, connect=5)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                synthesizer = SelfHostedQwen3TTS(client, settings.self_hosted_url)
+                await synthesizer.preflight({u.voice_id for u in todo})
+                failed = await _synthesize_serial(synthesizer, settings.backend, todo, dashboard, tts_dir, manifest, manifest_path, live)
 
     if failed is not None:
         raise failed
@@ -380,9 +378,12 @@ def _voices(settings: TtsSettings, meta: dict[str, Any]) -> tuple[list[str], str
     if settings.backend == "qwen3-tts-cloud":
         voices, host_voice = meta.get("voices"), meta.get("host_voice")
         missing_msg = "缺 setup.voices/host_voice"
-    else:
-        voices, host_voice = meta.get("voice_designs"), meta.get("host_voice_design")
-        missing_msg = "缺 setup.voice_designs/host_voice_design；旧 replay 不兼容本地 TTS，请重新生成"
+    elif settings.backend == "qwen3-tts-self-hosted":
+        voices, host_voice = meta.get("self_hosted_voices"), meta.get("host_self_hosted_voice")
+        missing_msg = "缺 setup.self_hosted_voices/host_self_hosted_voice"
+        if voices is None or host_voice is None:
+            voices, host_voice = meta.get("cast"), meta.get("host_cast")
+            missing_msg = "缺 setup.self_hosted_voices/host_self_hosted_voice 且缺 setup.cast/host_cast 兼容字段"
     if voices is None or host_voice is None:
         raise SettingsError(f"{settings.dir}/meta.json 不自包含音色（{missing_msg}）")
     return voices, host_voice

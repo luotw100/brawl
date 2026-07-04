@@ -5,31 +5,11 @@ AI 直播对战的纯游戏逻辑层。`core/` 提供跨玩法运行时，`avalo
 ## 环境初始化
 
 ```bash
-# 默认轻量环境：不安装 Qwen3-TTS / PyTorch。
 uv sync
 ```
 
-如需本地 Qwen3-TTS runtime，每台机器初始化一次即可。CPU 机器：
-
-```bash
-uv sync --extra qwen3-tts-cpu
-```
-
-NVIDIA CUDA 12.8 机器：
-
-```bash
-uv sync --extra qwen3-tts-cu128
-```
-
-初始化完成后，日常仍然直接 `uv run brawl ...`，不需要每次给 `uv run` 追加 `--extra`。
-如果要把当前 checkout 当成一台新机器重新初始化，删除本项目虚拟环境后重新 sync：
-
-```bash
-rm -rf .venv
-uv sync --extra qwen3-tts-cpu     # 或 qwen3-tts-cu128
-```
-
-不要在同一个 `.venv` 里反复切换 CPU/CUDA extra；切换前先删 `.venv`。
+TTS 推理不在本进程加载 Qwen3-TTS / PyTorch；需要自托管配音时，另起局域网 Qwen3-TTS API server，
+再用 `--backend qwen3-tts-self-hosted --self-hosted-url http://<host>:<port>` 调用。
 
 ## 跑一局
 
@@ -37,6 +17,8 @@ uv sync --extra qwen3-tts-cpu     # 或 qwen3-tts-cu128
 # 阿瓦隆：生成 replay 后，可继续在同一目录内生成发布素材
 uv run brawl avalon --player random --players 10 --percival --morgana --mordred --oberon --lady --replay /tmp/avalon1
 uv run brawl avalon-tts /tmp/avalon1
+# 或走自托管 Qwen3-TTS
+uv run brawl avalon-tts /tmp/avalon1 --backend qwen3-tts-self-hosted --self-hosted-url http://192.168.232.31:7860
 ```
 
 ## 测试

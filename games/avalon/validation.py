@@ -44,7 +44,9 @@ class GameSetup:
     host_name: str  # 主持人显示名（同上快照）
     voices: list[str]  # 座位 → TTS 音色 id（生成时从 cast.yaml 快照进来，空串=该人设未铸音色）
     host_voice: str  # 主持人 TTS 音色 id（同上快照，空串=未铸）
-    voice_designs: list[str]  # 座位 → voice design prompt（本地 VoiceDesign TTS 直接使用）
+    self_hosted_voices: list[str]  # 座位 → 自托管 Qwen3-TTS voice_id
+    host_self_hosted_voice: str  # 主持人自托管 Qwen3-TTS voice_id
+    voice_designs: list[str]  # 座位 → voice design prompt（音色描述快照，供后续铸造/溯源）
     host_voice_design: str  # 主持人 voice design prompt
     strategies: list[str]  # 座位 → 流派 id
     models: list[str]  # 座位 → 逻辑模型名
@@ -62,6 +64,8 @@ class GameSetup:
             "host_name": self.host_name,
             "voices": self.voices,
             "host_voice": self.host_voice,
+            "self_hosted_voices": self.self_hosted_voices,
+            "host_self_hosted_voice": self.host_self_hosted_voice,
             "voice_designs": self.voice_designs,
             "host_voice_design": self.host_voice_design,
             "strategies": self.strategies,
@@ -92,6 +96,8 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
         host_name=registry.hosts[host_cast].name,
         voices=[registry.personas[pid].voice_id for pid in cast],
         host_voice=registry.hosts[host_cast].voice_id,
+        self_hosted_voices=[registry.personas[pid].self_hosted_voice_id for pid in cast],
+        host_self_hosted_voice=registry.hosts[host_cast].self_hosted_voice_id,
         voice_designs=[registry.personas[pid].voice_design for pid in cast],
         host_voice_design=registry.hosts[host_cast].voice_design,
         strategies=strategies,

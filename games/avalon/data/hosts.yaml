@@ -4,5 +4,6 @@
 hosts:
   - id: herald
     voice_id: qwen-tts-vd-herald_20260613-voice-20260613205526461-688a
+    self_hosted_voice_id: local-vd-herald-20260705-0842ed
     voice_design: 三十五岁左右的男声，字正腔圆的标准播音腔，音色端正饱满、共鸣靠后，吐字一字一顿、铿锵有力，语调庄重克制、几乎不带个人情绪，报幕时如颁奖典礼、宣布结果时悬念拉满，权威与仪式感十足，热场也沉稳不浮夸。
     name: 司仪
