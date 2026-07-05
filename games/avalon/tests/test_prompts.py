@@ -39,6 +39,7 @@ def test_system_renders_for_every_role(role: Role) -> None:
     assert "游戏基本功" in text and "任务成功不等于车上全蓝" in text
     assert f"{prompts._ROLE_LABEL[role]}基本功" in text
     assert "你是 1 号" in text
+    assert "简短干练" in text and "口语化的 2~3 句" in text
     assert text.startswith("你是一名《阿瓦隆》玩家。")  # 嗓音可缺省，身份句由 system 自带；网名绝不进 prompt
 
 
@@ -125,8 +126,11 @@ def test_human_message_composition() -> None:
     full = prompts.human_message(["甲", "乙"], "局面", "提问", "你说话阴阳怪气。")
     assert full.index("甲") < full.index("乙") < full.index("局面") < full.index("风格提醒") < full.index("提问")
     assert "你说话阴阳怪气。" in full
+    assert "说话简短干练，只打 1~2 个重点" in full
+    assert "别写长段总结，别复述全桌" in full
     bare = prompts.human_message([], "", "提问")
     assert bare.endswith("提问") and "风格提醒" in bare
+    assert "说话简短干练" in bare
 
 
 def test_event_lines_render_public_facts_only() -> None:
