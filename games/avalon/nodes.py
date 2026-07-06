@@ -41,7 +41,10 @@ def _deps(config: RunnableConfig) -> Deps:
 def _model_spec(deps: Deps, seat: Seat) -> ModelSpec | None:
     if seat.model is None:
         return None
-    return deps.registry.models.get(seat.model)
+    spec = deps.registry.models.get(seat.model)
+    if spec is None:
+        raise ValueError(f"座位 {seat.no} 的模型 {seat.model!r} 未在 registry 中注册")
+    return spec
 
 
 def _threads_copy(state: GameState) -> dict[int, SeatThread]:
@@ -49,14 +52,14 @@ def _threads_copy(state: GameState) -> dict[int, SeatThread]:
 
 
 def _ask_view(
-    deps: Deps, state: GameState, seat: Seat, threads: dict[int, SeatThread], ask: str,
+    deps: Deps, state: GameState, seat: Seat, threads: dict[int, SeatThread], phase: str,
     team: list[int] | None = None,
     with_situation: bool = True,
     lady_target: int | None = None,
     lady_seen: str | None = None,
     mimicry_guard: bool = True,
 ) -> PlayerView:
-    """拼一个"带本轮提问"的视图：human 消息 = 该席位 inbox + 当前局面 + 提问。"""
+    """拼一个"带本轮提问"的视图：human 消息 = 该席位 inbox + 当前局面 + 该阶段 JSON 提问。"""
     players = len(state.seats)
     # 刺杀阶段任务轨已收官，quest_no 可能越过第 5 任务；队伍人数取末任务值仅为占位
     q = min(state.quest_no, rules.QUESTS)
@@ -84,6 +87,7 @@ def _ask_view(
         history=list(state.history),
         messages=list(threads[seat.no].messages),
     )
+    ask = prompts.opencode_ask(phase, view)
     context = prompts.situation(view) if with_situation else ""
     view.prompt = prompts.human_message(list(threads[seat.no].inbox), context, ask, view.tone, mimicry_guard=mimicry_guard)
     return view
@@ -127,7 +131,7 @@ async def propose_node(state: GameState, config: RunnableConfig) -> dict[str, An
     leader = next(s for s in state.seats if s.no == state.leader)
     size = rules.team_size(len(state.seats), state.quest_no)
 
-    view = _ask_view(deps, state, leader, threads, prompts.ask_propose(size))
+    view = _ask_view(deps, state, leader, threads, "propose")
     result, raw = await deps.player.propose(view)
     nos = {s.no for s in state.seats}
     if len(result.team) != size or len(set(result.team)) != size or not set(result.team) <= nos:
@@ -158,7 +162,7 @@ async def discuss_node(state: GameState, config: RunnableConfig) -> dict[str, An
     n = len(state.seats)
     for i in range(n - 1):  # 除队长外全员（队长的话已在组队宣言里）
         seat = state.seats[(state.leader + i) % n]
-        view = _ask_view(deps, state, seat, threads, prompts.ask_discuss(state.team), team=state.team)
+        view = _ask_view(deps, state, seat, threads, "discuss", team=state.team)
         result, raw = await deps.player.discuss(view)
         _commit(threads, seat.no, view.prompt, raw)
         _broadcast(threads, prompts.line_player(seat.no, result.speech))
@@ -182,7 +186,7 @@ async def team_vote_node(state: GameState, config: RunnableConfig) -> dict[str, 
     sem = asyncio.Semaphore(deps.settings.concurrency)
 
     async def one(seat: Seat):
-        view = _ask_view(deps, state, seat, threads, prompts.ask_vote(state.team), team=state.team)
+        view = _ask_view(deps, state, seat, threads, "team_vote", team=state.team)
         async with sem:
             result, raw = await deps.player.vote_team(view)
         return seat.no, view.prompt, result, raw
@@ -257,7 +261,7 @@ async def quest_node(state: GameState, config: RunnableConfig) -> dict[str, Any]
     sem = asyncio.Semaphore(deps.settings.concurrency)
 
     async def one(seat: Seat):
-        view = _ask_view(deps, state, seat, threads, prompts.ask_quest(seat.role.side is Side.GOOD, need), team=state.team)
+        view = _ask_view(deps, state, seat, threads, "quest", team=state.team)
         async with sem:
             card, raw = await deps.player.play_quest(view)
         return seat, view.prompt, card, raw
@@ -332,7 +336,7 @@ async def lady_node(state: GameState, config: RunnableConfig) -> dict[str, Any]:
     holder = next(s for s in state.seats if s.no == state.lady_holder)
     candidates = {s.no for s in state.seats} - set(state.lady_used)
 
-    view = _ask_view(deps, state, holder, threads, prompts.ask_lady_choose(sorted(candidates)))
+    view = _ask_view(deps, state, holder, threads, "lady_choose")
     choice, raw = await deps.player.lady_choose(view)
     if choice.target_no not in candidates:
         raise ValueError(f"{holder.no}号 查验了非法对象 {choice.target_no}（只能查从未持有过令牌的人：{sorted(candidates)}）")
@@ -346,8 +350,7 @@ async def lady_node(state: GameState, config: RunnableConfig) -> dict[str, Any]:
         threads, "lady", prompts.line_host_lady(holder.no, target.no),
         quest=state.quest_no, attempt=state.attempt,
     )
-    ask = prompts.ask_lady_announce(target.no, truth)
-    view2 = _ask_view(deps, state, holder, threads, ask, with_situation=False, lady_target=target.no, lady_seen=truth)
+    view2 = _ask_view(deps, state, holder, threads, "lady_announce", with_situation=False, lady_target=target.no, lady_seen=truth)
     announce, raw2 = await deps.player.lady_announce(view2)
     _commit(threads, holder.no, view2.prompt, raw2)
     _broadcast(threads, prompts.line_player(holder.no, announce.speech))
@@ -376,7 +379,7 @@ async def assassinate_node(state: GameState, config: RunnableConfig) -> dict[str
     good_nos = [s.no for s in state.seats if s.role.side is Side.GOOD]
     shooter = assassin.model_copy(update={"intel": evil_nos})
 
-    view = _ask_view(deps, state, shooter, threads, prompts.ask_assassinate(evil_nos, good_nos), with_situation=False)
+    view = _ask_view(deps, state, shooter, threads, "assassinate", with_situation=False)
     result, raw = await deps.player.assassinate(view)
     if result.target_no not in set(good_nos):
         raise ValueError(f"刺客 {assassin.no}号 刺向非法目标 {result.target_no}（只能指认蓝方：{good_nos}）")
@@ -427,7 +430,7 @@ async def postgame_node(state: GameState, config: RunnableConfig) -> dict[str, A
     speakers = sorted(state.seats, key=lambda s: (s.role.side.value == state.winner, s.no))
     said: list[tuple[int, str]] = []  # 已复盘者的 (座位号, 发言)，按序喂给后说者接话
     for seat in speakers:
-        view = _ask_view(deps, state, seat, threads, prompts.ask_banter(said), with_situation=False, mimicry_guard=False)
+        view = _ask_view(deps, state, seat, threads, "banter", with_situation=False, mimicry_guard=False)
         result, raw = await deps.player.banter(view)
         _commit(threads, seat.no, view.prompt, raw)
         said.append((seat.no, result.speech))

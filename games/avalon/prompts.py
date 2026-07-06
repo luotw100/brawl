@@ -5,9 +5,9 @@
 
 消息结构：system 装"发牌时刻就固定的全部"（规则、阵容、人数座次、自己座号、角色+夜晚
 情报），整局不变以吃 prompt 缓存；此后每次行动是一条 human（自上次行动以来的公开事件 +
-当前局面 + 提问），模型自由文本作答（不写 JSON），最后用标签行收尾（「发言：」「投票：」等）。
-公开/私密边界靠标签行：「发言：」的内容会一字不差公布上桌，标签外的自由发挥与「内心戏：」
-只在自己线程与观众侧，绝不上桌。结构化解析交给固定轻量模型 extractor（见文件末尾）。
+当前局面 + 提问），模型按阶段输出 JSON（参见下方 opencode_ask），自由思考可写在 JSON 外但不会被解析。
+公开/私密边界靠 JSON 键：speech 键的内容会一字不差公布上桌；monologue 键与 JSON 外的自由发挥
+只在自己线程与观众侧，绝不上桌。结构化解析由 player.AgentPlayer 直接对 JSON 完成。
 
 人设(persona)与流派(strategy)都已接线，分管两件事：
 - 腔调 tone（cast.yaml 的 tone，玩家各写各的，当前全员同一句中性）：只管"怎么说话"，作为
@@ -45,17 +45,17 @@ RULES = """\
 
 对局方式：
 - 接下来我会持续把桌面上公开发生的事播报给你，并在轮到你行动时向你提问。
-- 作答时你可以先自由思考、随便写，但回复的最后必须按提问要求给出标签行（如「发言：」「投票：」），每个标签独占一行。
-- 「发言：」行的内容会被一字不差地公布上桌，全场可见，所以身份、夜晚情报和真实计划只有在你明确判断收益大于风险时才公开；不想暴露时，用公开证据包装你的判断。
-- 「内心戏：」行是说给观众听的一句短话，场上玩家看不到；标签行之外的自由发挥同样不会上桌，只有你自己下次行动时还能看到。
+- 作答时你可以先自由思考、随便写，但回复的最后必须按提问要求输出一个 JSON 对象，不要写 markdown 代码块、不要加任何解释。
+- JSON 里的 `speech` 字段内容会被一字不差地公布上桌，全场可见，所以身份、夜晚情报和真实计划只有在你明确判断收益大于风险时才公开；不想暴露时，用公开证据包装你的判断。
+- JSON 里的 `monologue` 字段是说给观众听的一句短话，场上玩家看不到；JSON 外的自由发挥同样不会上桌，只有你自己下次行动时还能看到。
 
 发言要求（观众在看，桌上交锋是节目的全部看点）：
-- 「发言：」要简短干练、言之有物：口语化的 2~3 句，摆出具体论据——点名座位号、引用票型、任务结果或某人说过的话，别只丢一句「赞成」「反对」。
+- JSON 里的 `speech` 字段要简短干练、言之有物：口语化的 2~3 句，摆出具体论据——点名座位号、引用票型、任务结果或某人说过的话，别只丢一句「赞成」「反对」。
 - 「风险太大」「缺乏信任依据」这类不点名、不给事实的万金油等于没说；前面有人说过的论点别原样复读，要么补新论据，要么正面反驳他。
 - 别人的发言行为本身就是证据：谁急着踩、谁拼命护、谁话锋突变，都值得当众点出来解读；桌游黑话（上车/发车/票型/前置位/划水……）可以自然使用。
 - 不必面面俱到：顺着当前争议挑一两个你最想说的点打深，别把全场论点重新总结一遍；全场都说过的点你再说一遍只会被当成划水。
 - 你的表态为你自己的判断负责，不是为了合群：前面反对的人多不构成你也反对的理由，敢于唱反调、点名对线的发言才有看头。
-- 「内心戏：」是给观众的吐槽：一句话，要有情绪、可以毒舌、可以自嘲，别干巴巴复述计划。"""
+- JSON 里的 `monologue` 字段是给观众的吐槽：一句话，要有情绪、可以毒舌、可以自嘲，别干巴巴复述计划。"""
 
 _ROLE_LABEL = {
     Role.MERLIN: "梅林", Role.PERCIVAL: "派西维尔", Role.SERVANT: "忠臣",
@@ -371,167 +371,77 @@ def human_message(events: list[str], context: str, ask: str, tone: str = "", mim
     return "\n\n".join(parts)
 
 
-# ---------------------------------------------------------------- 各决策提问
+# ---------------------------------------------------------------- OpenCode agent 专用提问
+#
+# OpenCode agent 直接返回 JSON，不走 extractor 的标签行。每个阶段给出对应的 JSON schema。
 
-def ask_propose(team_size: int) -> str:
-    return (
-        f"你是本次队长，提一支 {team_size} 人的队伍（座位号互不相同，可包含你自己）并发表组队宣言。\n"
-        f"回复最后必须是这三行：\n"
-        f"内心戏：<说给观众的一句短话>\n"
-        f"发言：<你的组队宣言，会一字不差公布上桌>\n"
-        f"队伍：<{team_size} 个座位号，如 1、3、5>"
-    )
+_OPENCODE_JSON_DISCIPLINE = "只输出一个 JSON 对象，不要输出任何其他文字（不要 markdown 代码块、不要解释）。"
 
 
-def ask_discuss(team: list[int]) -> str:
-    nos = "、".join(f"{no}号" for no in team)
-    return (
-        f"现在轮到你对队伍 [{nos}] 公开表态，亮明你的立场并说出理由。\n"
-        f"回复最后必须是这两行：\n"
-        f"内心戏：<说给观众的一句短话>\n"
-        f"发言：<你的桌面表态，会一字不差公布上桌>"
-    )
-
-
-def ask_vote(team: list[int]) -> str:
-    nos = "、".join(f"{no}号" for no in team)
-    return (
-        f"对队伍 [{nos}] 全员同时亮票表决，你看不到别人这一轮投什么，但开票后所有人的票都会公开。\n"
-        f"回复最后必须是这两行：\n"
-        f"内心戏：<说给观众的一句短话>\n"
-        f"投票：<赞成 或 否决>"
-    )
-
-
-def ask_quest(side_good: bool, fails_required: int) -> str:
-    if side_good:
-        action = "你是蓝方，规则规定你只能出成功。"
-    else:
-        action = f"你是红方，可出成功或破坏，本任务破坏票满 {fails_required} 张才失败。"
-    return (
-        f"你在出发的队伍里，现在暗出任务牌（没人知道这张牌是谁出的，只公开破坏总张数）。{action}\n"
-        f"回复最后必须是这两行：\n"
-        f"内心戏：<说给观众的一句短话>\n"
-        f"出牌：<成功 或 破坏>"
-    )
-
-
-def ask_assassinate(comrades: list[int], targets: list[int]) -> str:
-    evil = "、".join(f"{no}号" for no in comrades)
-    cands = "、".join(f"{no}号" for no in targets)
-    return (
-        f"蓝方已拿满 3 个任务，红方终局公开互认：你的全部同伙是 {evil}。现在由你出刀：指认谁是梅林，点中红方翻盘获胜，点错蓝方赢。\n"
-        f"你只能指认以下蓝方之一：{cands}。\n"
-        f"回复最后必须是这三行：\n"
-        f"内心戏：<说给观众的一句短话>\n"
-        f"发言：<你的指认宣言，会一字不差公布上桌>\n"
-        f"刺杀：<一个座位号>"
-    )
-
-
-def ask_banter(prior: list[tuple[int, str]]) -> str:
-    """赛后复盘提问。prior = 本环节已发言者的 (座位号, 发言)，按发言序；空 = 你是第一个复盘的。
-    把前面人的复盘单拎成一块紧贴提问、并明确邀请接话——否则模型只会对着比赛各说各的。"""
-    roundtable = ""
-    if prior:
-        recap = "\n".join(line_player(no, speech) for no, speech in prior)
-        roundtable = (
-            "本环节前面几位已经这样复盘了：\n" + recap + "\n"
-            "你可以顺着接、当面回怼、把锅甩回去、或者帮腔——先回应你想接的那句，再补自己的，别只顾自说自话。\n"
+def opencode_ask(phase: str, view: PlayerView) -> str:
+    """为 OpenCode agent 生成当前阶段的 JSON 输出要求。"""
+    if phase == "propose":
+        return (
+            f"当前阶段：组队（propose）。你是队长，请提一支 {view.team_size} 人的队伍。"
+            f"队伍成员必须互不相同，可以包含你自己，也可以不包含你自己。\n"
+            f"输出 JSON：\n"
+            f'{{"phase": "propose", "monologue": "说给观众的一句短话", "speech": "你的组队宣言", "team": [座位号列表]}}\n'
+            f"{_OPENCODE_JSON_DISCIPLINE}"
         )
-    return (
-        "游戏已经结束，底牌全部翻开，现在是赛后复盘环节，输赢已定，畅所欲言。\n"
-        + roundtable +
-        "结合你这局的角色和真实经历聊聊：哪步打对了、哪步打瞎了、最想吐槽谁、谁的操作骗到了你；可以甩锅、不甘、自夸、英雄惜英雄，2~4 句，照着你自己的性子说。\n"
-        "回复最后必须是这两行：\n"
-        "内心戏：<说给观众的一句短话>\n"
-        "发言：<你的复盘发言，会一字不差公布上桌>"
-    )
-
-
-def ask_lady_choose(candidates: list[int]) -> str:
-    cands = "、".join(f"{no}号" for no in candidates)
-    return (
-        f"你持有湖中仙女令牌。现在从未持有过令牌的玩家里选一人，查验其真实阵营（结果只有你看到，随后你要当众宣布、可如实可撒谎，令牌传给被查者）。\n"
-        f"可查验对象：{cands}。\n"
-        f"回复最后必须是这两行：\n"
-        f"内心戏：<说给观众的一句短话>\n"
-        f"查验：<一个座位号>"
-    )
-
-
-def ask_lady_announce(target_no: int, seen: str) -> str:
-    side = "蓝方（亚瑟的忠臣）" if seen == "good" else "红方（莫德雷德的爪牙）"
-    return (
-        f"你刚用湖中仙女查验了 {target_no}号，其真实阵营是：{side}——这只有你知道。\n"
-        f"现在当众宣布查验结果，可如实也可撒谎；全桌都知道你有撒谎的权利。\n"
-        f"回复最后必须是这两行：\n"
-        f"内心戏：<说给观众的一句短话>\n"
-        f"发言：<你的当众宣布，会一字不差公布上桌>"
-    )
-
-
-# ---------------------------------------------------------------- extractor（固定轻量模型的解析提示）
-
-EXTRACT_SYSTEM = """\
-你是桌游《阿瓦隆》直播的记录员。给你一名玩家本回合的回复原文，从中抽取结构化结果。
-玩家被要求在回复末尾用标签行收尾（「内心戏：」「发言：」「投票：」「队伍：」「出牌：」「刺杀：」「查验：」）。
-抽取规则：
-- speech 字段必须取「发言：」行冒号之后的内容，一字不改，但绝不要把「发言：」标签本身带进去；monologue 同理取「内心戏：」冒号之后的内容。
-- 决策字段（投票/队伍/出牌/刺杀/查验）以对应标签行为准；若标签缺失或混乱，依据原文末尾的最终结论推断玩家的决定。
-- 只输出一个 JSON 对象本身，JSON 之前之后不要写任何文字；键名必须与要求的示例逐字符一致（纯 ASCII 字母，绝不夹带中文引号或其他符号）。
-- JSON 字符串内部绝对不要出现英文双引号 "（要引用就用中文「」），否则会破坏 JSON。"""
-
-
-def _wrap_raw(raw: str) -> str:
-    return f"玩家回复原文如下（<<<>>> 之间）：\n<<<\n{raw}\n>>>"
-
-
-def extract_propose(raw: str, team_size: int, players: int) -> str:
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是组队回合，抽取队伍、宣言与内心戏。team 必须是 {team_size} 个互不相同的整数座位号（1~{players}）。\n"
-        f'输出：{{"team": [座位号], "speech": "发言行原文", "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_statement(raw: str) -> str:
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是发言回合，抽取发言与内心戏。\n"
-        f'输出：{{"speech": "发言行原文", "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_vote(raw: str) -> str:
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是表决回合，抽取投票与内心戏。赞成 → approve 为 true，否决 → false。\n"
-        f'输出：{{"approve": true 或 false, "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_quest(raw: str) -> str:
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是任务出牌回合，抽取出牌与内心戏。成功 → success 为 true，破坏 → false。\n"
-        f'输出：{{"success": true 或 false, "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_assassinate(raw: str, targets: list[int]) -> str:
-    cands = "、".join(str(no) for no in targets)
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是刺杀回合，抽取刺杀目标、宣言与内心戏。target_no 必须是 {cands} 之一。\n"
-        f'输出：{{"target_no": 座位号, "speech": "发言行原文", "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_lady_choice(raw: str, candidates: list[int]) -> str:
-    cands = "、".join(str(no) for no in candidates)
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是湖中仙女查验回合，抽取查验目标与内心戏。target_no 必须是 {cands} 之一。\n"
-        f'输出：{{"target_no": 座位号, "monologue": "内心戏行原文"}}'
-    )
+    if phase == "discuss":
+        team = "、".join(f"{no}号" for no in view.team)
+        return (
+            f"当前阶段：讨论（discuss）。请对队伍 [{team}] 公开表态。\n"
+            f"输出 JSON：\n"
+            f'{{"phase": "discuss", "monologue": "说给观众的一句短话", "speech": "你的桌面表态"}}\n'
+            f"{_OPENCODE_JSON_DISCIPLINE}"
+        )
+    if phase == "team_vote":
+        team = "、".join(f"{no}号" for no in view.team)
+        return (
+            f"当前阶段：组队表决（team_vote）。对队伍 [{team}] 投票。\n"
+            f"输出 JSON：\n"
+            f'{{"phase": "team_vote", "monologue": "说给观众的一句短话", "approve": true}}\n'
+            f"approve 为 true 表示赞成，false 表示否决。{_OPENCODE_JSON_DISCIPLINE}"
+        )
+    if phase == "quest":
+        side = "蓝方" if view.role.side is Side.GOOD else "红方"
+        action = "你只能出成功" if view.role.side is Side.GOOD else f"可出成功或破坏，破坏票满 {view.fails_required} 张任务失败"
+        return (
+            f"当前阶段：任务出牌（quest）。你是{side}，{action}。\n"
+            f"输出 JSON：\n"
+            f'{{"phase": "quest", "monologue": "说给观众的一句短话", "success": true}}\n'
+            f"success 为 true 表示成功，false 表示破坏。{_OPENCODE_JSON_DISCIPLINE}"
+        )
+    if phase == "assassinate":
+        targets = "、".join(f"{no}号" for no in view.good_suspects())
+        return (
+            f"当前阶段：刺杀（assassinate）。请从以下蓝方中指认梅林：{targets}。\n"
+            f"输出 JSON：\n"
+            f'{{"phase": "assassinate", "monologue": "说给观众的一句短话", "speech": "你的指认宣言", "target_no": 座位号}}\n'
+            f"{_OPENCODE_JSON_DISCIPLINE}"
+        )
+    if phase == "lady_choose":
+        cands = "、".join(f"{no}号" for no in view.lady_candidates())
+        return (
+            f"当前阶段：湖中仙女选择（lady_choose）。请从未持有过令牌的玩家中选一人查验：{cands}。\n"
+            f"输出 JSON：\n"
+            f'{{"phase": "lady_choose", "monologue": "说给观众的一句短话", "target_no": 座位号}}\n'
+            f"{_OPENCODE_JSON_DISCIPLINE}"
+        )
+    if phase == "lady_announce":
+        side = "蓝方（亚瑟的忠臣）" if view.lady_seen == "good" else "红方（莫德雷德的爪牙）"
+        return (
+            f"当前阶段：湖中仙女宣布（lady_announce）。你查验了 {view.lady_target}号，真实阵营是 {side}。请当众宣布（可如实可撒谎）。\n"
+            f"输出 JSON：\n"
+            f'{{"phase": "lady_announce", "monologue": "说给观众的一句短话", "speech": "你的当众宣布"}}\n'
+            f"{_OPENCODE_JSON_DISCIPLINE}"
+        )
+    if phase == "banter":
+        return (
+            f"当前阶段：赛后复盘（banter）。游戏已结束，底牌已翻开，请畅所欲言。\n"
+            f"输出 JSON：\n"
+            f'{{"phase": "banter", "monologue": "说给观众的一句短话", "speech": "你的复盘发言"}}\n'
+            f"{_OPENCODE_JSON_DISCIPLINE}"
+        )
+    raise ValueError(f"未知的 OpenCode 决策阶段：{phase}")

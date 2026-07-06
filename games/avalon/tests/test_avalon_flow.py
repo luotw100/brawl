@@ -136,14 +136,14 @@ async def test_replay_writes_three_files(tmp_path) -> None:
     types = {json.loads(line)["type"] for line in events}
     assert {"game_start", "deal", "propose", "vote_result", "game_end"} <= types
 
-    # 离线后端也走完整 LLMPlayer 链路，故每次决策的 converse 与 extract 两次调用都落盘
+    # 离线后端也走完整 AgentPlayer 链路，每次决策的一条 agent call 都落盘
     # （这正是把假后端下沉到模型调用层、让调试路径贴近生产的收益）。
     calls = (run_dir / "llm_calls.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert calls, "llm_calls.jsonl 应逐条记录每次模型调用（含离线后端）"
+    assert calls, "llm_calls.jsonl 应逐条记录每次 agent 调用（含离线后端）"
     records = [json.loads(line) for line in calls]
     assert all(r.keys() >= {"phase", "seat_no", "messages", "output", "ok"} for r in records)
     phases = {r["phase"] for r in records}
-    assert "propose" in phases and "propose.extract" in phases  # 自由文本 + 抽取两层都被走到
+    assert "propose" in phases  # 决策阶段被走到
     assert all(r["ok"] for r in records)  # 假后端产出永远合法、解析不该失败
 
     meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))

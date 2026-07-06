@@ -77,7 +77,7 @@ async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Re
             if m and m in registry.models and registry.models[m].display
         },
     })
-    deps = _make_deps(settings, registry, recorder, rng)
+    deps = _make_deps(settings, registry, recorder, rng, setup.models)
     initial = GameState(
         seats=_build_seats(registry, setup),
         leader=setup.first_leader,
@@ -98,30 +98,42 @@ async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Re
 async def _resume_game(settings: AvalonSettings, registry: Registry, renderer: Renderer) -> GameState:
     """从断点续跑：开局方案与对局状态都从 meta/checkpoint 恢复（不重摇），先把产物砍回
     最后一个完整 super-step 的水位（丢掉断点节点写了一半的脏行），再让图从该 checkpoint 续跑。"""
-    validate_resume(settings, registry)  # 边界：目录在、有 checkpoint 与可续水位、模型 key 都齐
+    meta = validate_resume(settings, registry)  # 边界：目录在、有 checkpoint 与可续水位、模型 key 都齐
     run_dir = settings.replay
     assert run_dir is not None  # settings._check 已保证 --resume 必带 --replay
     wm = resume_mod.last_watermark(run_dir)
     assert wm is not None  # validate_resume 已保证有可续水位
     recorder = open_recorder(run_dir, resume=True)
     recorder.truncate(wm.events_n, wm.llm_n)  # 砍掉断点节点重写的脏行，水位归到 checkpoint 那一刻
-    deps = _make_deps(settings, registry, recorder, random.Random(settings.seed))
+    deps = _make_deps(settings, registry, recorder, random.Random(settings.seed), meta["setup"]["models"])
     async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(run_dir)) as saver:
         graph = build_graph(checkpointer=saver)
         config = graph_config(deps, thread_id=_THREAD_ID, checkpoint_id=wm.checkpoint_id)
-        return await drive_graph(graph, None, config, recorder, renderer, run_dir, GameState)
+        try:
+            return await drive_graph(graph, None, config, recorder, renderer, run_dir, GameState)
+        finally:
+            await deps.player.close()
 
 
 async def _drive_avalon(graph, stream_input, deps: Deps, recorder: Recorder, renderer: Renderer, run_dir: Path | None) -> GameState:
     config = graph_config(deps, thread_id=_THREAD_ID)
-    return await drive_graph(graph, stream_input, config, recorder, renderer, run_dir, GameState)
+    try:
+        return await drive_graph(graph, stream_input, config, recorder, renderer, run_dir, GameState)
+    finally:
+        await deps.player.close()
 
 
-def _make_deps(settings: AvalonSettings, registry: Registry, recorder: Recorder, rng: random.Random) -> Deps:
+def _make_deps(settings: AvalonSettings, registry: Registry, recorder: Recorder, rng: random.Random, models: list[str] | None = None) -> Deps:
     return Deps(
         settings=settings,
         registry=registry,
-        player=build_player(settings.player, rng, recorder=recorder, extractor=registry.models[settings.extractor]),
+        player=build_player(
+            settings,
+            rng,
+            recorder=recorder,
+            registry=registry,
+            models=models,
+        ),
     )
 
 

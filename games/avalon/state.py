@@ -21,8 +21,8 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 from core.threads import SeatThread
 
 # 公开发言与内心戏的字段类型：去掉首尾空白后必须非空。这是"字段内在/形状校验"——声明式收在
-# 模型里随抽取一起完成，故 extractor 抽出"该有发言却空了 / 该有内心戏却空了"会直接 parse 失败
-# （抛 JsonParseError），由 LLMPlayer 的退避重试兜住，绝不让空发言静默上桌。
+# 模型里，AgentPlayer 解析 JSON 时直接完成；该有发言却空了 / 该有内心戏却空了会直接 parse 失败
+# （抛 JsonParseError），由 AgentPlayer._act 的退避重试兜住，绝不让空发言静默上桌。
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
@@ -74,7 +74,7 @@ class ProposalRecord(BaseModel):
 
 
 class Proposal(BaseModel):
-    """组队阶段队长的结构化产出（extractor 从自由文本里抽取）。"""
+    """组队阶段队长的结构化产出（AgentPlayer 直接解析后端返回的 JSON）。"""
 
     team: list[int]  # 公开：带谁上任务（座位号，人数须等于本任务队伍人数）
     speech: NonEmptyStr  # 公开：组队宣言

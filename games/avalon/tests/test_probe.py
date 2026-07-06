@@ -3,7 +3,7 @@
 schema 测试（test_avalon_flow）保证公开通道**装不下**秘密字段；本文件反过来保证
 喂给玩家的视图**恰好正确**——既不多（同时行动不泄漏、夜晚情报不越权、私密查验结果
 只给持有者）也不少（提问/线程就位）。做法：用一个包装离线后端（--player random，即注入
-FakeBackend 的 LLMPlayer）的探针记录每一次 PlayerView，赛后逐条对照"应得信息"的独立预言
+RandomAgent 的 AgentPlayer）的探针记录每一次 PlayerView，赛后逐条对照"应得信息"的独立预言
 （rules.night_intel + 线程纪律）。
 
 整局流程的状态空间组合爆炸、无法穷举，这是对"实际发生的每一步"的 100% 检查：
@@ -28,7 +28,7 @@ from core.recorder import open_recorder
 
 
 class ProbePlayer:
-    """记录每一次喂进来的 (阶段, 视图)，决策本身委托给内层离线 Player（FakeBackend）。"""
+    """记录每一次喂进来的 (阶段, 视图)，决策本身委托给内层离线 Player（RandomAgent）。"""
 
     def __init__(self, inner: Player) -> None:
         self._inner = inner
@@ -72,7 +72,13 @@ async def _run_probed(settings: AvalonSettings) -> tuple[GameSetup, ProbePlayer,
     registry = load_registry()
     rng = random.Random(settings.seed)
     setup = resolve_and_validate(settings, registry, rng)
-    inner = build_player(settings.player, rng, recorder=open_recorder(None), extractor=registry.models[settings.extractor])
+    inner = build_player(
+        settings,
+        rng,
+        recorder=open_recorder(None),
+        registry=registry,
+        models=setup.models,
+    )
     probe = ProbePlayer(inner)
     deps = Deps(settings=settings, registry=registry, player=probe)
     config = {"configurable": {"deps": deps}, "recursion_limit": 200}

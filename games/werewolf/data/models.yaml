@@ -1,179 +1,75 @@
-# LLM Provider 池：逻辑模型名 → OpenAI 兼容端点。与人设解耦——
+# Agent 模型池：逻辑模型名 → OpenCode 模型引用 + 展示信息。
 # 哪个座位用哪个模型由运行时 settings.models 决定（见 settings.py / --models）。
-# 换厂商/换参数只改这里。api_key_env 指向真实环境变量名（放 .env）。
+# 换模型只改这里。
 #
-# 池里只放实测能调通、且有 key 的模型——缺 key / 端点不通现在会直接报错（不再静默兜底）。
-# DeepSeek 两款是混合思考模型，社交推理博弈适合开启 thinking（历史实测
-# 显著提升玩得好不好）：真推理走隐藏的 reasoning 通道，resp.content 只剩干净 JSON，prompt
-# 要求公开输出（含 monologue）简短——monologue 是给观众看的内心戏、不是模型的草稿纸。开思考
-# 后单次更慢，故 timeout 默认拨到 180s（见 registry.ModelSpec，这里不再逐条覆盖）；不设
-# max_tokens（=None，由 timeout 兜底）以免推理长被截断。模型偶发不守格式/空字段由 player 层
-# 退避重试兜住（见 LLMPlayer），不靠调参消除。
-#
-# avatar 指向厂商 logo（data/avatars/<avatar>.png）：录制时按座位把对应 logo 烧进 replay，
-# 直播渲染层据此显真实厂商头像；缺省=不带头像，渲染层回退 hash 色块。同厂商多款共用一张。
-# display 是对外展示的模型名（不带厂商名——头像已表明厂商）：录制时把"逻辑名→display"映射
-# 烧进 meta.model_labels，直播在座位头像下显这行小字。
-#
-# opencode go（https://opencode.ai/zen/go/v1）是聚合端点，单把 OPENCODE_API_KEY。
-# 2026-06-24 实测 /models 共 20 款：qwen3.7-max 复测仍报 "not supported for format
-# oa-compat"（只对接 anthropic 通道、不走 OpenAI 兼容格式），不收录；mimo-v2-pro /
-# mimo-v2-omni 为新增，小米已不维护 mimo-v2 系列、迟早下架，不收录（未实测连通性）。
-# 其余 17 款入池。名字统一加 oc- 前缀以区分直连 DeepSeek；聚合端透传 extra_body 行为
-# 未验证，先不开 thinking。kimi-k2.7-code 是思考模型（自带 reasoning_content）且 provider
-# 强制 temperature=1，故单独设 1.0，其余 oc- 款沿用 0.7。
+# opencode_model 格式：providerID/modelID，例如 opencode-go/deepseek-v4-pro。
+# avatar 指向厂商 logo（data/avatars/<avatar>.png），直播渲染用；display 是头像下小字。
 models:
-  # - name: deepseek-v4-flash
-  #   base_url: https://api.deepseek.com
-  #   model_id: deepseek-v4-flash
-  #   api_key_env: DEEPSEEK_API_KEY
-  #   temperature: 0.7
-  #   extra_body:
-  #     thinking:
-  #       type: enabled
-
-  # - name: deepseek-v4-pro
-  #   base_url: https://api.deepseek.com
-  #   model_id: deepseek-v4-pro
-  #   api_key_env: DEEPSEEK_API_KEY
-  #   temperature: 0.7
-  #   extra_body:
-  #     thinking:
-  #       type: enabled
-
-  # opencode go 聚合端点（OPENCODE_API_KEY）
-  - name: oc-minimax-m3
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: minimax-m3
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: minimax
-    display: MiniMax M3
-
-  - name: oc-minimax-m2.7
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: minimax-m2.7
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: minimax
-    display: MiniMax M2.7
-
-  - name: oc-minimax-m2.5
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: minimax-m2.5
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: minimax
-    display: MiniMax M2.5
-
-  - name: oc-kimi-k2.7-code
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: kimi-k2.7-code
-    api_key_env: OPENCODE_API_KEY
-    temperature: 1.0
-    avatar: kimi
-    display: Kimi K2.7 Code
-
-  - name: oc-kimi-k2.6
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: kimi-k2.6
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: kimi
-    display: Kimi K2.6
-
-  - name: oc-kimi-k2.5
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: kimi-k2.5
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: kimi
-    display: Kimi K2.5
-
-  - name: oc-glm-5.2
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: glm-5.2
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: zhipu
-    display: GLM-5.2
-
-  - name: oc-glm-5.1
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: glm-5.1
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: zhipu
-    display: GLM-5.1
-
-  - name: oc-glm-5
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: glm-5
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: zhipu
-    display: GLM-5
-
-  - name: oc-deepseek-v4-pro
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: deepseek-v4-pro
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: deepseek
-    display: DeepSeek v4 Pro
-
-  - name: oc-deepseek-v4-flash
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: deepseek-v4-flash
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: deepseek
-    display: DeepSeek v4 Flash
-
-  - name: oc-qwen3.7-plus
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: qwen3.7-plus
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: qwen
-    display: Qwen3.7 Plus
-
-  - name: oc-qwen3.6-plus
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: qwen3.6-plus
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: qwen
-    display: Qwen3.6 Plus
-
-  - name: oc-qwen3.5-plus
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: qwen3.5-plus
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: qwen
-    display: Qwen3.5 Plus
-
-  - name: oc-mimo-v2.5-pro
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: mimo-v2.5-pro
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: mimo
-    display: MiMo v2.5 Pro
-
-  - name: oc-mimo-v2.5
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: mimo-v2.5
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: mimo
-    display: MiMo v2.5
-
-  - name: oc-hy3-preview
-    base_url: https://opencode.ai/zen/go/v1
-    model_id: hy3-preview
-    api_key_env: OPENCODE_API_KEY
-    temperature: 0.7
-    avatar: hunyuan
-    display: Hunyuan 3 Preview
+- name: oc-minimax-m3
+  display: MiniMax M3
+  avatar: minimax
+  opencode_model: opencode-go/minimax-m3
+- name: oc-minimax-m2.7
+  display: MiniMax M2.7
+  avatar: minimax
+  opencode_model: opencode-go/minimax-m2.7
+- name: oc-minimax-m2.5
+  display: MiniMax M2.5
+  avatar: minimax
+  opencode_model: opencode-go/minimax-m2.5
+- name: oc-kimi-k2.7-code
+  display: Kimi K2.7 Code
+  avatar: kimi
+  opencode_model: opencode-go/kimi-k2.7-code
+- name: oc-kimi-k2.6
+  display: Kimi K2.6
+  avatar: kimi
+  opencode_model: opencode-go/kimi-k2.6
+- name: oc-kimi-k2.5
+  display: Kimi K2.5
+  avatar: kimi
+  opencode_model: opencode-go/kimi-k2.5
+- name: oc-glm-5.2
+  display: GLM-5.2
+  avatar: zhipu
+  opencode_model: opencode-go/glm-5.2
+- name: oc-glm-5.1
+  display: GLM-5.1
+  avatar: zhipu
+  opencode_model: opencode-go/glm-5.1
+- name: oc-glm-5
+  display: GLM-5
+  avatar: zhipu
+  opencode_model: opencode-go/glm-5
+- name: oc-deepseek-v4-pro
+  display: DeepSeek v4 Pro
+  avatar: deepseek
+  opencode_model: opencode-go/deepseek-v4-pro
+- name: oc-deepseek-v4-flash
+  display: DeepSeek v4 Flash
+  avatar: deepseek
+  opencode_model: opencode-go/deepseek-v4-flash
+- name: oc-qwen3.7-plus
+  display: Qwen3.7 Plus
+  avatar: qwen
+  opencode_model: opencode-go/qwen3.7-plus
+- name: oc-qwen3.6-plus
+  display: Qwen3.6 Plus
+  avatar: qwen
+  opencode_model: opencode-go/qwen3.6-plus
+- name: oc-qwen3.5-plus
+  display: Qwen3.5 Plus
+  avatar: qwen
+  opencode_model: opencode-go/qwen3.5-plus
+- name: oc-mimo-v2.5-pro
+  display: MiMo v2.5 Pro
+  avatar: mimo
+  opencode_model: opencode-go/mimo-v2.5-pro
+- name: oc-mimo-v2.5
+  display: MiMo v2.5
+  avatar: mimo
+  opencode_model: opencode-go/mimo-v2.5
+- name: oc-hy3-preview
+  display: Hunyuan 3 Preview
+  avatar: hunyuan
+  opencode_model: opencode-go/hy3-preview

@@ -1,13 +1,15 @@
-"""prompts：渲染冒烟与文案纪律——LLM 后端没有离线整局测试，
+"""prompts：渲染冒烟与文案纪律——agent 后端没有离线整局测试，
 prompt 构造是它在零 key 测试下唯一可验证的纯函数路径，这里保证：
 
 - 任意角色的 system 都能渲染不炸，且只出现自己的身份、夜晚情报渲染成座位号；
-- 各决策提问的标签行（内心戏/发言/投票/队伍/出牌/刺杀/查验）齐全；
+- 各决策阶段的 OpenCode JSON 提问包含必要字段与 schema 说明；
 - 第 5 次组队的"再否决红方直接获胜"警告按条件出现；
-- 公开事件行只携带公开信息；extractor 提示包住原文并给出 JSON 形状。
+- 公开事件行只携带公开信息。
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import pytest
 
@@ -95,34 +97,52 @@ def test_situation_carries_public_vote_ledger() -> None:
     assert "结果：通过，任务失败，破坏票 1 张" in text
 
 
-def test_asks_carry_label_lines() -> None:
-    """各决策提问的标签行齐全——标签行是公开/私密边界，也是 extractor 的锚点。"""
-    propose = prompts.ask_propose(3)
-    assert "内心戏：" in propose and "发言：" in propose and "队伍：" in propose
-    assert "投票：" in prompts.ask_vote([1, 2, 3]) and "内心戏：" in prompts.ask_vote([1, 2, 3])
-    assert "出牌：" in prompts.ask_quest(True, 1)
-    assert "刺杀：" in prompts.ask_assassinate([9, 10], [1, 2, 3])
-    assert "查验：" in prompts.ask_lady_choose([2, 3])
-    assert "发言：" in prompts.ask_discuss([1, 2, 3])
-    assert "发言：" in prompts.ask_lady_announce(3, "evil")
+def test_opencode_asks_carry_required_keys() -> None:
+    """各决策阶段 JSON 提问包含必要字段说明。"""
+    view = _view(Role.SERVANT)
+    propose = prompts.opencode_ask("propose", view)
+    assert '"phase": "propose"' in propose and '"team"' in propose and '"speech"' in propose and '"monologue"' in propose
+
+    discuss = prompts.opencode_ask("discuss", view)
+    assert '"phase": "discuss"' in discuss and '"speech"' in discuss
+
+    vote = prompts.opencode_ask("team_vote", view)
+    assert '"phase": "team_vote"' in vote and '"approve"' in vote
+
+    quest = prompts.opencode_ask("quest", view)
+    assert '"phase": "quest"' in quest and '"success"' in quest
+
+    assassinate = prompts.opencode_ask("assassinate", view)
+    assert '"phase": "assassinate"' in assassinate and '"target_no"' in assassinate
+
+    lady_choose = prompts.opencode_ask("lady_choose", view)
+    assert '"phase": "lady_choose"' in lady_choose and '"target_no"' in lady_choose
+
+    lady_announce = prompts.opencode_ask("lady_announce", replace(_view(Role.MERLIN, attempt=2), lady_target=3, lady_seen="evil"))
+    assert '"phase": "lady_announce"' in lady_announce and '"speech"' in lady_announce
+
+    banter = prompts.opencode_ask("banter", view)
+    assert '"phase": "banter"' in banter and '"speech"' in banter
 
 
-def test_quest_ask_constrains_good_and_frees_evil() -> None:
+def test_opencode_ask_constrains_good_and_frees_evil() -> None:
     """蓝方出牌提问写死只能成功；红方给出可破坏的事实与门槛。"""
-    assert "只能出成功" in prompts.ask_quest(True, 1)
-    evil = prompts.ask_quest(False, 2)
-    assert "可出成功或破坏" in evil and "2 张" in evil
+    good = prompts.opencode_ask("quest", _view(Role.SERVANT))
+    assert "你只能出成功" in good
+    evil = prompts.opencode_ask("quest", _view(Role.ASSASSIN))
+    assert "可出成功或破坏" in evil and "1 张" in evil
 
 
 def test_lady_announce_ask_carries_secret_and_lying_right() -> None:
     """宣布提问含真实阵营与"可撒谎"的规则说明。"""
-    text = prompts.ask_lady_announce(3, "evil")
-    assert "红方" in text and "可如实也可撒谎" in text
+    view = replace(_view(Role.MERLIN), lady_target=3, lady_seen="evil")
+    text = prompts.opencode_ask("lady_announce", view)
+    assert "红方" in text and "真实阵营" in text
 
 
 def test_human_message_composition() -> None:
     """human 消息 = 事件块（可空）+ 局面（可空）+ 风格提醒（嗓音逐轮重申）+ 压轴的提问
-    （标签行格式要求必须是最末位的锚，否则模型照提醒的体例回话、不出标签行）。"""
+    （JSON 格式要求必须是最末位的锚，否则模型照提醒的体例回话、不出 JSON）。"""
     full = prompts.human_message(["甲", "乙"], "局面", "提问", "你说话阴阳怪气。")
     assert full.index("甲") < full.index("乙") < full.index("局面") < full.index("风格提醒") < full.index("提问")
     assert "你说话阴阳怪气。" in full
@@ -179,14 +199,3 @@ def test_rules_contain_no_coaching() -> None:
     """中性化纪律：公共 RULES 只有规则与对局方式，不含打法心法/秘籍。"""
     for banned in ("心法", "纪律", "打法", "苟", "布饵"):
         assert banned not in prompts.RULES
-
-
-def test_extract_prompts_wrap_raw_and_spec_json() -> None:
-    """extractor 提示：原文包在 <<<>>> 里，给出字段形状与候选约束。"""
-    raw = "随便想想\n内心戏：哈\n发言：上车\n队伍：1、3、5"
-    p = prompts.extract_propose(raw, 3, 10)
-    assert "<<<" in p and raw in p and '"team"' in p and "3 个互不相同" in p
-    v = prompts.extract_vote("投票：赞成")
-    assert '"approve"' in v
-    a = prompts.extract_assassinate("刺杀：4", [1, 4, 6])
-    assert '"target_no"' in a and "1、4、6" in a

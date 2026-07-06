@@ -149,11 +149,6 @@ def test_lady_holder_is_first_leaders_upstream_seat(registry: Registry) -> None:
         assert setup.lady_holder == expected
 
 
-def test_unknown_extractor_raises(registry: Registry) -> None:
-    """extractor 引用的逻辑模型必须在册（与后端无关的配置静态约束）。"""
-    with pytest.raises(SettingsError):
-        resolve_and_validate(AvalonSettings(player="random", players=5, extractor="没这个模型"), registry, random.Random(0))
-
 
 def test_not_enough_personas_raises(registry: Registry) -> None:
     """人设库坐不满又没显式 --cast → 开打前就炸。"""
@@ -175,18 +170,9 @@ def test_replay_dir_already_exists_raises(registry: Registry, tmp_path) -> None:
         resolve_and_validate(settings, registry, random.Random(0))
 
 
-def test_llm_backend_missing_api_key_raises(registry: Registry, monkeypatch: pytest.MonkeyPatch) -> None:
-    """llm 后端下，用到的模型缺 api_key 必须在边界就炸，而非跑到一半首次调用才炸。"""
-    model_name = registry.model_names()[0]
-    monkeypatch.delenv(registry.models[model_name].api_key_env, raising=False)
-    settings = AvalonSettings(player="llm", players=5, models=[model_name] * 5, extractor=model_name)
-    with pytest.raises(SettingsError):
-        resolve_and_validate(settings, registry, random.Random(0))
 
-
-def test_random_backend_skips_api_key_check(registry: Registry, monkeypatch: pytest.MonkeyPatch) -> None:
-    """random 后端不调模型，即便没 key 也能解析通过（离线 mock 可跑通/测试）。"""
+def test_random_backend_no_key_needed(registry: Registry) -> None:
+    """random 后端不连模型，无需任何 key 即可解析通过。"""
     model_name = registry.model_names()[0]
-    monkeypatch.delenv(registry.models[model_name].api_key_env, raising=False)
     setup = resolve_and_validate(AvalonSettings(player="random", players=5, models=[model_name] * 5), registry, random.Random(0))
     assert len(setup.cast) == 5

@@ -85,12 +85,17 @@ class AvalonSettings(BaseSettings):
     # 开局摇牌(角色分配/首任队长)的随机种子;None = 每局不可复现。固定它即可复盘同一开局。
     seed: int | None = None
 
-    # 决策后端:llm = 真模型在玩;random = 随机/可 mock(零 key 跑通全流程)
-    player: Literal["llm", "random"] = "llm"
+    # 决策后端:random = 本地随机 agent(零 key 跑通全流程);opencode = 走 OpenCode headless server
+    player: Literal["random", "opencode"] = "random"
 
-    # extractor:固定的轻量模型(registry 里的逻辑模型名),把玩家自由文本解析成结构化
-    # 结果(发言/投票/队伍号)。玩家模型自由发挥不写 JSON;JSON 是 extractor 的本职。
-    extractor: str = "oc-deepseek-v4-flash"
+    # OpenCode headless server 连接参数。仅 player=opencode 时生效。
+    # 用户需自行启动 `opencode serve`,然后在 CLI 传入 --opencode-url 等参数。
+    opencode_url: str = "http://127.0.0.1:4096"
+    opencode_username: str = "opencode"
+    opencode_password_env: str = "OPENCODE_SERVER_PASSWORD"
+    # OpenCode 会话使用的模型,格式为 providerID/modelID,例如 opencode-go/deepseek-v4-pro。
+    # 空字符串表示让 OpenCode server 使用其默认模型。
+    opencode_model: str = ""
 
     # 同时行动阶段(组队表决/任务出牌)的并发上限:全员 asyncio.gather 并行调模型,
     # 用信号量限流。默认 10 = 最大桌全并发;撞限流时调小,不用改代码。

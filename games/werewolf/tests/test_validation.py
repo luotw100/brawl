@@ -50,8 +50,7 @@ def test_explicit_lists_validated(registry: Registry) -> None:
         resolve_and_validate(WerewolfSettings(player="random", models=["missing"] * 12), registry, random.Random(0))
 
 
-def test_random_backend_skips_api_key_check(registry: Registry, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_random_backend_skips_api_key_check(registry: Registry) -> None:
     model_name = registry.model_names()[0]
-    monkeypatch.delenv(registry.models[model_name].api_key_env, raising=False)
     setup = resolve_and_validate(WerewolfSettings(player="random", models=[model_name] * 12), registry, random.Random(0))
     assert setup.models == [model_name] * 12

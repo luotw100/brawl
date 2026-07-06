@@ -8,7 +8,6 @@
 
 同时把所有"跨引用 / 世界一致性"约束查清：
     - cast / strategy / model 名是否在 registry、人设库是否够坐满
-    - llm 后端下，用到的每个模型其 api_key_env 是否已配
     - --replay 目录是否已存在
 
 通过之后，下游（_build_seats、pregame_node、open_recorder）默认拿到的就是干净正确、
@@ -84,8 +83,6 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
     host_cast = core_setup.resolve_host(settings.host_cast, registry=registry, default="herald", error=SettingsError)
     strategies = core_setup.resolve_strategies(settings.strategies, players=settings.players, registry=registry, rng=rng, error=SettingsError)
     models = core_setup.resolve_models(settings.models, players=settings.players, registry=registry, rng=rng, error=SettingsError)
-    core_setup.check_extractor(settings.extractor, registry=registry, error=SettingsError)
-    _check_env(settings, models, registry)
     core_setup.check_new_replay(settings.replay, error=SettingsError)
     first_leader = rng.randint(1, settings.players)
     return GameSetup(
@@ -121,18 +118,13 @@ def _resolve_roles(settings: AvalonSettings, rng: random.Random) -> list[Role]:
     return pool
 
 
-def _check_env(settings: AvalonSettings, models: list[str], registry: Registry) -> None:
-    """llm 后端下，用到的每个模型（含 extractor）其 api_key_env 必须已配。"""
-    if settings.player != "llm":
-        return
-    core_setup.check_model_env([*models, settings.extractor], registry=registry, error=SettingsError)
 
 
 
 def validate_resume(settings: AvalonSettings, registry: Registry) -> dict:
     """续跑的边界校验（与 resolve_and_validate 对称，但不重摇开局——开局方案与对局状态都
     从 checkpoint/meta 恢复，绝不再掷骰子）。查清：目录在、有 checkpoint 与可续跑水位、
-    meta 可读、用到的模型 key 都已配。返回解析好的 meta（含开局方案，供编排层取用）。
+    meta 可读。返回解析好的 meta（含开局方案，供编排层取用）。
 
     replay 已存在由 settings 形状校验保证（--resume 必带 --replay）；这里查"世界一致性"。"""
     run_dir = settings.replay
@@ -148,5 +140,4 @@ def validate_resume(settings: AvalonSettings, registry: Registry) -> dict:
         raise SettingsError(f"{run_dir} 缺 meta.json，无法续跑")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     # 开局已定，模型清单从 meta 取（不是从当前 settings——续跑要忠于原局）；只查它们的 key 在不在。
-    _check_env(settings, meta["setup"]["models"], registry)
     return meta
