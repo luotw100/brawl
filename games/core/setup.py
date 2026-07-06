@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import random
 from pathlib import Path
 
@@ -73,19 +72,6 @@ def resolve_models(
         picked.append(name)
         counts[name] += 1
     return picked
-
-
-def check_extractor(name: str, *, registry: Registry, error: _SettingsError) -> None:
-    if name not in registry.models:
-        raise error(f"未知 extractor 模型: {name}（可选：{registry.model_names()}）")
-
-
-def check_model_env(names: list[str], *, registry: Registry, error: _SettingsError) -> None:
-    """用到的每个模型 api_key_env 必须在开工前就绪。"""
-    for name in dict.fromkeys(names):
-        spec = registry.models[name]
-        if not os.getenv(spec.api_key_env):
-            raise error(f"环境变量 {spec.api_key_env} 未设置（模型 {spec.model_id} 需要它）；请在 .env 配置")
 
 
 def check_new_replay(path: Path | None, *, error: _SettingsError) -> None:

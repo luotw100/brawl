@@ -23,10 +23,10 @@ def test_renderer_defaults_to_instant_typist() -> None:
     assert isinstance(Renderer().typist, InstantTypist)
 
 
-async def test_every_event_call_id_resolves_to_both_calls(tmp_path) -> None:
-    """一局落盘后，每个事件的每个 call_id 都在 llm_calls 里命中主调用 + extract 两格。
+async def test_every_event_call_id_resolves_to_main_call(tmp_path) -> None:
+    """一局落盘后，每个事件的每个 call_id 都在 llm_calls 里命中主调用。
 
-    random 后端走完整 LLMPlayer 链路、每次决策必有主+抽取两条记录且 ok，故对齐是 1↔(主,抽取)。"""
+    random 后端走完整 AgentPlayer 链路、每次决策必有一条记录且 ok，故对齐是 1↔1。"""
     run_dir = tmp_path / "g"
     await run_game(AvalonSettings(player="random", players=10, percival=True, morgana=True, mordred=True, oberon=True, lady=True, seed=7, replay=run_dir))
 
@@ -39,7 +39,7 @@ async def test_every_event_call_id_resolves_to_both_calls(tmp_path) -> None:
         for label, cid in _event_calls(ev):
             assert cid is not None, f"{ev['type']} 的 {label} 缺 call_id"
             assert cid in idx, f"{cid} 未在 llm_calls 命中"
-            assert "main" in idx[cid] and "extract" in idx[cid], f"{cid} 主/抽取不齐：{idx[cid].keys()}"
+            assert "main" in idx[cid], f"{cid} 无主调用：{idx[cid].keys()}"
             seen += 1
     assert seen > 0
     # 反向：每条主调用也都被某事件认领（无孤儿）——回放成本旁注无遗漏。

@@ -57,8 +57,6 @@ def resolve_and_validate(settings: WerewolfSettings, registry: Registry, rng: ra
     host_cast = core_setup.resolve_host(settings.host_cast, registry=registry, default="herald", error=SettingsError)
     strategies = core_setup.resolve_strategies(settings.strategies, players=board.players, registry=registry, rng=rng, error=SettingsError)
     models = core_setup.resolve_models(settings.models, players=board.players, registry=registry, rng=rng, error=SettingsError)
-    core_setup.check_extractor(settings.extractor, registry=registry, error=SettingsError)
-    _check_env(settings, models, registry)
     core_setup.check_new_replay(settings.replay, error=SettingsError)
     roles = list(board.roles)
     rng.shuffle(roles)
@@ -79,11 +77,6 @@ def resolve_and_validate(settings: WerewolfSettings, registry: Registry, rng: ra
         roles=roles,
     )
 
-
-def _check_env(settings: WerewolfSettings, models: list[str], registry: Registry) -> None:
-    if settings.player != "llm":
-        return
-    core_setup.check_model_env([*models, settings.extractor], registry=registry, error=SettingsError)
 
 
 def _resolve_personas(raw: list[str] | None, *, players: int, registry: Registry, rng: random.Random) -> list[str]:
@@ -120,5 +113,4 @@ def validate_resume(settings: WerewolfSettings, registry: Registry) -> dict:
     if not meta_path.exists():
         raise SettingsError(f"{run_dir} 缺 meta.json，无法续跑")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    _check_env(settings, meta["setup"]["models"], registry)
     return meta

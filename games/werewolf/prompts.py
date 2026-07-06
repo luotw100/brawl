@@ -12,7 +12,7 @@
 
 模型自由文本作答（不写 JSON），最后用标签行收尾（「发言：」「刀人：」「投票：」……）。
 公开/私密边界靠标签行：「发言：」内容一字不差上桌，标签外的自由发挥与「内心戏：」只在自己
-线程与观众侧，绝不上桌。结构化解析交给固定轻量模型 extractor（见文件末尾）。
+线程与观众侧，绝不上桌。结构化解析由 player.AgentPlayer 直接按标签行完成。
 
 发给模型的文本一律一句一行写满、句中绝不折行——源码里为行宽手动折行的换行会原样进入 API
 消息、把句子从中间撕开。段落间的空行（\\n\\n）是刻意分隔，保留。
@@ -300,75 +300,3 @@ def line_host_reveal(winner: str, win_reason: str, roles: dict[int, Role]) -> st
 
 def line_host_closing() -> str:
     return "本局结束，下一局见。"
-
-
-# ---------------------------------------------------------------- extractor（固定轻量模型的解析提示）
-
-EXTRACT_SYSTEM = """\
-你是桌游《狼人杀》直播的记录员。给你一名玩家本回合的回复原文，从中抽取结构化结果。
-玩家被要求在回复末尾用标签行收尾（「内心戏：」「发言：」「刀人：」「查验：」「救人：」「用毒：」「投票：」「开枪：」）。
-抽取规则：
-- speech 取「发言：」行冒号之后的内容，一字不改，绝不要把标签本身带进去；monologue 同理取「内心戏：」之后的内容。
-- 决策字段（刀人/查验/投票=座位号；救人=是/否→布尔；用毒/开枪=座位号或"不用"/"不开枪"→null）以对应标签行为准；标签缺失或混乱时，依据原文末尾的最终结论推断。
-- 只输出一个 JSON 对象本身，前后不要写任何文字；键名必须与要求逐字符一致（纯 ASCII，绝不夹带中文引号）。
-- JSON 字符串内部绝对不要出现英文双引号 "（要引用就用中文「」），否则会破坏 JSON。"""
-
-
-def _wrap_raw(raw: str) -> str:
-    return f"玩家回复原文如下（<<<>>> 之间）：\n<<<\n{raw}\n>>>"
-
-
-def extract_wolf_kill(raw: str, candidates: list[int]) -> str:
-    cands = "、".join(str(no) for no in candidates)
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是狼人提刀回合，抽取刀口、狼队夜聊与内心戏。target_no 必须是 {cands} 之一。\n"
-        f'输出：{{"target_no": 座位号, "speech": "发言行原文", "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_seer(raw: str, candidates: list[int]) -> str:
-    cands = "、".join(str(no) for no in candidates)
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是预言家查验回合，抽取查验目标与内心戏。target_no 必须是 {cands} 之一。\n"
-        f'输出：{{"target_no": 座位号, "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_witch(raw: str, candidates: list[int], can_save: bool, can_poison: bool) -> str:
-    cands = "、".join(str(no) for no in candidates)
-    save_rule = "true 或 false" if can_save else "必须为 false（本回合不能用解药）"
-    poison_rule = f"座位号（{cands} 之一）或 null（不用毒）" if can_poison else "必须为 null（毒药已用完）"
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是女巫用药回合，抽取是否救人、毒药目标与内心戏。「救人：是」→ save 为 true，「救人：否」→ false。「用毒：不用」→ poison_target_no 为 null。\n"
-        f"save：{save_rule}。poison_target_no：{poison_rule}。\n"
-        f'输出：{{"save": true 或 false, "poison_target_no": 座位号 或 null, "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_statement(raw: str) -> str:
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是发言回合，抽取发言与内心戏。\n"
-        f'输出：{{"speech": "发言行原文", "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_vote(raw: str, candidates: list[int]) -> str:
-    cands = "、".join(str(no) for no in candidates)
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是放逐投票回合，抽取投票目标与内心戏。target_no 必须是 {cands} 之一。\n"
-        f'输出：{{"target_no": 座位号, "monologue": "内心戏行原文"}}'
-    )
-
-
-def extract_hunter(raw: str, candidates: list[int]) -> str:
-    cands = "、".join(str(no) for no in candidates)
-    return (
-        f"{_wrap_raw(raw)}\n\n"
-        f"这是猎人开枪回合，抽取开枪目标、发言与内心戏。「开枪：不开枪」→ target_no 为 null，否则 target_no 必须是 {cands} 之一。\n"
-        f'输出：{{"target_no": 座位号 或 null, "speech": "发言行原文", "monologue": "内心戏行原文"}}'
-    )

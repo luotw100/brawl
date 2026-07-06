@@ -4,7 +4,7 @@ games 是"对局快照生成器"：跑一遍把一局冻成 replay，直播时�
 一个目录 = 一局的完整产物（replay），平铺三份文件（各玩法统一契约）：
 
     events.jsonl     god-view 事件时间线，驱动回放/画面（与 console.Renderer 同源）
-    llm_calls.jsonl  每次模型调用一行（含离线 FakeBackend：它也走完整 LLMPlayer 链路，照常落盘）
+    llm_calls.jsonl  每次 agent 调用一行（含离线 RandomAgent：它也走完整 AgentPlayer 链路，照常落盘）
     meta.json        本局配置快照 + 起始时间
     avatars/<座位号>.png  各座位厂商 logo（开局一次性烧入，缺省=该座位无头像，渲染回退 hash 色）
 

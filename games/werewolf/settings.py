@@ -42,8 +42,14 @@ class WerewolfSettings(BaseSettings):
     models: list[str] | None = None
     host_cast: str | None = None
     seed: int | None = None
-    player: Literal["llm", "random"] = "llm"
-    extractor: str = "oc-deepseek-v4-flash"
+    player: Literal["random", "opencode"] = "random"
+
+    # OpenCode headless server 连接参数。仅 player=opencode 时生效。
+    opencode_url: str = "http://127.0.0.1:4096"
+    opencode_username: str = "opencode"
+    opencode_password_env: str = "OPENCODE_SERVER_PASSWORD"
+    opencode_model: str = ""
+
     concurrency: int = 10
     replay: Path | None = None
     resume: bool = False
