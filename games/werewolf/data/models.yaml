@@ -13,10 +13,6 @@ models:
   display: MiniMax M2.7
   avatar: minimax
   opencode_model: opencode-go/minimax-m2.7
-- name: oc-minimax-m2.5
-  display: MiniMax M2.5
-  avatar: minimax
-  opencode_model: opencode-go/minimax-m2.5
 - name: oc-kimi-k2.7-code
   display: Kimi K2.7 Code
   avatar: kimi
@@ -25,10 +21,6 @@ models:
   display: Kimi K2.6
   avatar: kimi
   opencode_model: opencode-go/kimi-k2.6
-- name: oc-kimi-k2.5
-  display: Kimi K2.5
-  avatar: kimi
-  opencode_model: opencode-go/kimi-k2.5
 - name: oc-glm-5.2
   display: GLM-5.2
   avatar: zhipu
@@ -37,10 +29,6 @@ models:
   display: GLM-5.1
   avatar: zhipu
   opencode_model: opencode-go/glm-5.1
-- name: oc-glm-5
-  display: GLM-5
-  avatar: zhipu
-  opencode_model: opencode-go/glm-5
 - name: oc-deepseek-v4-pro
   display: DeepSeek v4 Pro
   avatar: deepseek
@@ -53,14 +41,14 @@ models:
   display: Qwen3.7 Plus
   avatar: qwen
   opencode_model: opencode-go/qwen3.7-plus
+- name: oc-qwen3.7-max
+  display: Qwen3.7 Max
+  avatar: qwen
+  opencode_model: opencode-go/qwen3.7-max
 - name: oc-qwen3.6-plus
   display: Qwen3.6 Plus
   avatar: qwen
   opencode_model: opencode-go/qwen3.6-plus
-- name: oc-qwen3.5-plus
-  display: Qwen3.5 Plus
-  avatar: qwen
-  opencode_model: opencode-go/qwen3.5-plus
 - name: oc-mimo-v2.5-pro
   display: MiMo v2.5 Pro
   avatar: mimo
@@ -69,7 +57,3 @@ models:
   display: MiMo v2.5
   avatar: mimo
   opencode_model: opencode-go/mimo-v2.5
-- name: oc-hy3-preview
-  display: Hunyuan 3 Preview
-  avatar: hunyuan
-  opencode_model: opencode-go/hy3-preview

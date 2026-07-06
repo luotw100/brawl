@@ -49,7 +49,7 @@ uv run brawl avalon --player opencode --opencode-url http://127.0.0.1:4096 --rep
 
 因此 `--player opencode --models oc-deepseek-v4-pro,oc-qwen3.7-plus,...` 可以给不同座位分配不同 OpenCode 模型；不配 `--models` 时随机摇到的 `oc-*` 模型也会自动映射到对应 OpenCode provider/model。
 
-OpenCode server 的可用模型可通过其 `/api/model` 查询，当前 session 模型可通过 `POST /api/session/{id}/model` 切换（实现已封装进 `OpenCodeBackend`）。
+OpenCode server 的可用模型可通过 `opencode models` 或 `/config/providers` 查询；`OpenCodeBackend` 会在每次 `POST /session/{id}/prompt_async` 时把该座位模型随 prompt 一起传给 server。
 
 连接参数见 `avalon/settings.py` / `werewolf/settings.py`：`opencode_url`、`opencode_username`、`opencode_password_env`、`opencode_model`。不需要 `.opencode.json`、不需要自定义 agent、不需要 `games/scripts/`。
 

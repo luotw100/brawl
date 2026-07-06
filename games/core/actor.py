@@ -46,7 +46,7 @@ class OpenCodeBackend:
     通过 HTTP API 与 `opencode serve` 通信：
     - 每个座位一个 session，保留该座位记忆
     - 每次决策把当前局面（system + history + prompt）发过去
-    - 轮询 /api/session/{id}/message 直到拿到完整 assistant 回复
+    - 轮询 /session/{id}/message 直到拿到完整 assistant 回复
 
     这里不依赖任何自定义 agent 配置：把 OpenCode 当作普通 agent 接口用，
     每回合通过 system + history + prompt 喂入当前局面。
@@ -104,7 +104,7 @@ class OpenCodeBackend:
             raise ValueError(
                 f"OpenCode model 必须是 providerID/modelID 格式,例如 opencode-go/deepseek-v4-pro,收到: {ref!r}"
             )
-        return {"providerID": provider_id, "id": model_id}
+        return {"providerID": provider_id, "modelID": model_id}
 
     def _model_for_seat(self, seat_no: int) -> str:
         """返回指定座位应使用的模型引用（providerID/modelID），可能为空。"""
@@ -118,22 +118,20 @@ class OpenCodeBackend:
         return resp.json()
 
     async def list_models(self) -> list[dict[str, Any]]:
-        """查询 OpenCode server 当前可用的模型列表（data 数组）。"""
-        data = await self._request("GET", "/api/model")
-        return data.get("data", [])
+        """查询 OpenCode server 当前可用的模型列表。"""
+        data = await self._request("GET", "/config/providers")
+        providers = data.get("providers", []) if isinstance(data, dict) else []
+        models: list[dict[str, Any]] = []
+        for provider in providers:
+            raw = provider.get("models", {}) if isinstance(provider, dict) else {}
+            if isinstance(raw, dict):
+                models.extend(m for m in raw.values() if isinstance(m, dict))
+        return models
 
     async def _create_session(self, seat_no: int) -> str:
         payload: dict[str, Any] = {"title": f"game-seat-{seat_no}"}
-        ref = self._model_for_seat(seat_no)
-        if ref:
-            payload["model"] = self._parse_ref(ref)
-        data = await self._request("POST", "/api/session", json=payload)
+        data = await self._request("POST", "/session", json=payload)
         return data["id"]
-
-    async def _switch_model(self, session_id: str, ref: str) -> None:
-        """在已创建的 session 上切换后续使用的模型。"""
-        payload = {"model": self._parse_ref(ref)}
-        await self._request("POST", f"/api/session/{session_id}/model", json=payload)
 
     def _lock_for_seat(self, seat_no: int) -> asyncio.Lock:
         if seat_no not in self._session_locks:
@@ -146,12 +144,20 @@ class OpenCodeBackend:
                 self._sessions[seat_no] = await self._create_session(seat_no)
             return self._sessions[seat_no]
 
-    async def _send_prompt(self, session_id: str, text: str) -> None:
-        payload = {"prompt": {"text": text}}
-        await self._request("POST", f"/api/session/{session_id}/prompt", json=payload)
+    async def _send_prompt(self, session_id: str, text: str, model_ref: str) -> None:
+        payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
+        if model_ref:
+            payload["model"] = self._parse_ref(model_ref)
+        await self._request("POST", f"/session/{session_id}/prompt_async", json=payload)
 
     def _extract_text(self, msg: dict[str, Any]) -> str:
         """从 assistant message 中抽取文本内容。"""
+        parts = msg.get("parts", [])
+        if isinstance(parts, list):
+            texts = [part.get("text", "") for part in parts if part.get("type") == "text"]
+            text = "\n".join(texts).strip()
+            if text:
+                return text
         content = msg.get("content", [])
         if isinstance(content, list):
             texts = [part.get("text", "") for part in content if part.get("type") == "text"]
@@ -161,12 +167,35 @@ class OpenCodeBackend:
         return ""
 
     @staticmethod
+    def _message_items(data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, list):
+            return [msg for msg in data if isinstance(msg, dict)]
+        if not isinstance(data, dict):
+            return []
+        wrapped = data.get("data")
+        if isinstance(wrapped, list):
+            return [msg for msg in wrapped if isinstance(msg, dict)]
+        if "info" in data or "role" in data or "type" in data:
+            return [data]
+        return []
+
+    @staticmethod
+    def _message_info(msg: dict[str, Any]) -> dict[str, Any]:
+        info = msg.get("info")
+        return info if isinstance(info, dict) else msg
+
+    @staticmethod
     def _assistant_ids(data: Any) -> set[str]:
         """取当前消息列表中已完成 assistant 消息的 id 集合（id 为 0 或空字符串也保留）。"""
         ids: set[str] = set()
-        for msg in data.get("data", []) if isinstance(data, dict) else []:
-            if msg.get("type") == "assistant" and msg.get("finish") and "id" in msg:
-                ids.add(str(msg["id"]))
+        for msg in OpenCodeBackend._message_items(data):
+            info = OpenCodeBackend._message_info(msg)
+            role = info.get("role", msg.get("type"))
+            finish = info.get("finish", msg.get("finish"))
+            completed = info.get("time", {}).get("completed")
+            msg_id = info.get("id", msg.get("id"))
+            if role == "assistant" and (finish or completed) and msg_id is not None:
+                ids.add(str(msg_id))
         return ids
 
     @staticmethod
@@ -177,7 +206,8 @@ class OpenCodeBackend:
         - > 1e11 视为毫秒（约 1973 年之后）
         - 否则视为秒，乘以 1000
         """
-        created = msg.get("time", {}).get("created")
+        info = OpenCodeBackend._message_info(msg)
+        created = info.get("time", {}).get("created")
         if not isinstance(created, (int, float)):
             return None
         if created > 1e11:
@@ -199,16 +229,21 @@ class OpenCodeBackend:
         exclude_ids = exclude_ids or set()
 
         while time.monotonic() < deadline:
-            data = await self._request("GET", f"/api/session/{session_id}/message")
-            messages = data.get("data", []) if isinstance(data, dict) else []
+            data = await self._request("GET", f"/session/{session_id}/message")
+            messages = self._message_items(data)
             for msg in messages:
-                if msg.get("type") != "assistant":
+                info = self._message_info(msg)
+                role = info.get("role", msg.get("type"))
+                if role != "assistant":
                     continue
-                if msg.get("error"):
-                    raise RuntimeError(f"OpenCode agent error: {msg['error']}")
-                if not msg.get("finish"):
+                error = info.get("error") or msg.get("error")
+                if error:
+                    raise RuntimeError(f"OpenCode agent error: {error}")
+                finish = info.get("finish", msg.get("finish"))
+                completed = info.get("time", {}).get("completed")
+                if not (finish or completed):
                     continue
-                msg_id = msg.get("id")
+                msg_id = info.get("id", msg.get("id"))
                 if msg_id is not None:
                     if str(msg_id) in exclude_ids:
                         continue
@@ -227,11 +262,12 @@ class OpenCodeBackend:
         seat_no = getattr(view, "seat_no", 0)
         session_id = await self._ensure_session(seat_no)
         text = self._messages_to_text(messages)
+        model_ref = self._model_for_seat(seat_no)
         # 发 prompt 前快照已有 assistant 消息 id，避免把历史消息当成本轮回复
-        existing_data = await self._request("GET", f"/api/session/{session_id}/message")
+        existing_data = await self._request("GET", f"/session/{session_id}/message")
         existing = self._assistant_ids(existing_data)
         sent_at_ms = int(time.time() * 1000)
-        await self._send_prompt(session_id, text)
+        await self._send_prompt(session_id, text, model_ref)
         response_text = await self._wait_for_response(session_id, exclude_ids=existing, after_ms=sent_at_ms)
         return AIMessage(content=response_text)
 
