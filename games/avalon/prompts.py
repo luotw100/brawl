@@ -3,9 +3,10 @@
 铁律：只告诉 AI 它自己的角色与夜晚情报，别人的角色、谁出了破坏票一律不给——
 让它从票型、队伍、任务结果这些明牌里自己推。
 
-消息结构：system 装"发牌时刻就固定的全部"（规则、阵容、人数座次、自己座号、角色+夜晚
-情报），整局不变以吃 prompt 缓存；此后每次行动是一条 human（自上次行动以来的公开事件 +
-当前局面 + 提问），模型按阶段输出 JSON（参见下方 opencode_ask），自由思考可写在 JSON 外但不会被解析。
+消息结构：普通后端用 system 装"发牌时刻就固定的全部"（规则、阵容、人数座次、自己座号、角色+夜晚
+情报），此后每次行动是一条 human（自上次行动以来的公开事件 + 当前局面 + 提问）；OpenCode 后端每座位
+session 首次用自然主持人私信 seed 全量上下文，后续只发当前增量。
+模型按阶段输出 JSON（参见下方 opencode_ask），自由思考可写在 JSON 外但不会被解析。
 公开/私密边界靠 JSON 键：speech 键的内容会一字不差公布上桌；monologue 键与 JSON 外的自由发挥
 只在自己线程与观众侧，绝不上桌。结构化解析由 player.AgentPlayer 直接对 JSON 完成。
 
@@ -138,17 +139,68 @@ _PLAYBOOK_BASELINE = """\
 - 湖中仙女公布结果只是玩家声明；判断它时先问：这个结果保护了谁、打击了谁、谁因此能上车。
 - 每次组队或投票前，先想一个红方利用当前共识获利的反例，再决定是否仍然相信它。"""
 
+_ROLE_HARD_RULES: dict[Role, str] = {
+    Role.SERVANT: """\
+忠臣硬约束：
+- 不能逼别人报身份、索要夜晚信息，尤其蓝方接近三成功时不要替刺客缩圈。
+- 不能把某个“看起来很懂”的玩家当事实来源；只用公开账本做判断。
+- 发言必须推进队伍、票型或嫌疑排序，不能只说相信/不相信。""",
+    Role.ASSASSIN: """\
+刺客硬约束：
+- 公开 speech 不要暴露你在找梅林，不要把真正的梅林嫌疑说死。
+- 刺杀阶段只能在提示给出的蓝方候选中选目标，不能刺红方同伙。
+- 终局前必须回看全局轨迹：谁过早排对红坑、谁一直避开脏队、谁在关键票前带方向。""",
+    Role.MORGANA: """\
+莫甘娜硬约束：
+- 公开 speech 不能承认自己在骗派西维尔，也不要精准公开点破真梅林。
+- 要像梅林一样给方向，但每条判断都必须能被公开证据包装。
+- 不能为了装好人牺牲红方任务线；关键轮要把伪装换成上车权或误导票型。""",
+    Role.MORDRED: """\
+莫德雷德硬约束：
+- 公开 speech 不能提“梅林看不到我”这类角色优势。
+- 不要替所有红方辩护；你要保持干净，而不是冲锋。
+- 如果有人用过强确定感打你，记录为刺杀线索，但公开回应仍要用账本理由。""",
+    Role.OBERON: """\
+奥伯伦硬约束：
+- 不能假装认识同伙，也不能公开声称自己掌握红方名单。
+- 不确定车上是否还有红时，任务出牌要谨慎，避免单独暴露或误伤红方节奏。
+- 公开 speech 多打行为矛盾，少打身份确定结论。""",
+    Role.MINION: """\
+爪牙硬约束：
+- 公开 speech 不能暴露红方名单、刺客身份或红方真实计划。
+- 不能和其他红方全程机械互保，也不能只赞成有红队伍、只反对无红队伍。
+- 刺杀前可以帮刺客整理梅林线索，但不要把真正答案公开喊死。""",
+}
+
+
+def _role_hard_rules(view: PlayerView) -> str:
+    if view.role is Role.MERLIN:
+        mordred = (
+            "- 不能公开排出完整红坑，也不能把“不在你夜视红名单里”的人说成铁蓝；莫德雷德你看不到。"
+            if Role.MORDRED in view.lineup
+            else "- 即使你夜里看到了红方名单，公开 speech 也不能把夜视当信息源；踩红、保蓝都要用公开证据包装。"
+        )
+        return (
+            "梅林硬约束：\n"
+            "- 公开 speech 不能说“我知道谁红/谁蓝”“听我的就赢”，也不能暗示自己有夜视答案。\n"
+            "- 公开 speech 里踩红、保蓝都必须包装成票型、队伍、任务结果、发言变化等公开理由。\n"
+            f"{mordred}"
+        )
+    if view.role is Role.PERCIVAL:
+        sight = (
+            "- 公开 speech 不能说出你夜里看到的两个候选，也不能点名“谁是梅林、谁是莫甘娜”。"
+            if Role.MORGANA in view.lineup
+            else "- 公开 speech 不能点出你夜里看到的人就是梅林；保护他也必须包装成公开证据。"
+        )
+        return (
+            "派西维尔硬约束：\n"
+            f"{sight}\n"
+            "- 不能无脑单保夜视对象；所有保护或质疑都必须落到公开账本。\n"
+            "- 你的发言要帮真梅林挡刀，而不是替刺客缩小梅林范围。"
+        )
+    return _ROLE_HARD_RULES[view.role]
+
 _ROLE_PLAYBOOK: dict[Role, str] = {
-    Role.MERLIN: """\
-梅林基本功：
-- 把夜晚信息翻译成公开理由：票型、队伍、任务结果、发言矛盾；不要说“我知道”或“听我的就赢”。
-- 逐步推红，保留合理不确定性；如果自己全程只踩红、只保蓝，要降调，把部分判断交给别人说。
-- 你看不到莫德雷德，所以不能把“不在红名单里”的人当铁蓝。""",
-    Role.PERCIVAL: """\
-派西维尔基本功：
-- 你夜里看到的候选必须持续比较，不能先信一个再替他找理由；莫甘娜就是来骗你的。
-- 如果其中一人用仙女、强逻辑或公开发言把另一个打成红方，先把它视为“莫甘娜切真梅林”的高收益动作来反推。
-- 帮真梅林把理由补成公开证据，同时让刺客觉得你也可能是梅林；不要公开喊出两个夜视对象。""",
     Role.SERVANT: """\
 忠臣基本功：
 - 只用公开账本做判断：队伍、票型、任务结果、发言变化；不要把判断交给“看起来很懂的人”。
@@ -182,8 +234,38 @@ _ROLE_PLAYBOOK: dict[Role, str] = {
 }
 
 
-def _playbook(role: Role) -> str:
-    return f"{_PLAYBOOK_BASELINE}\n\n{_ROLE_PLAYBOOK[role]}"
+def _role_playbook(view: PlayerView) -> str:
+    if view.role is Role.MERLIN:
+        mordred = (
+            "- 本局有莫德雷德时，你看不到他；所以不能把“不在红名单里”的人当铁蓝。"
+            if Role.MORDRED in view.lineup
+            else "- 本局没有莫德雷德时，你的夜视更完整，但公开发言仍要装成账本推理，不能像开天眼。"
+        )
+        return (
+            "梅林基本功：\n"
+            "- 把夜晚信息翻译成公开理由：票型、队伍、任务结果、发言矛盾；不要说“我知道”或“听我的就赢”。\n"
+            "- 逐步推红，保留合理不确定性；如果自己全程只踩红、只保蓝，要降调，把部分判断交给别人说。\n"
+            f"{mordred}"
+        )
+    if view.role is Role.PERCIVAL:
+        if Role.MORGANA in view.lineup:
+            return (
+                "派西维尔基本功：\n"
+                "- 你夜里看到的候选必须持续比较，不能先信一个再替他找理由；莫甘娜就是来骗你的。\n"
+                "- 如果其中一人用仙女、强逻辑或公开发言把另一个打成红方，先把它视为“莫甘娜切真梅林”的高收益动作来反推。\n"
+                "- 帮真梅林把理由补成公开证据，同时让刺客觉得你也可能是梅林；不要公开喊出两个夜视对象。"
+            )
+        return (
+            "派西维尔基本功：\n"
+            "- 你夜里看到的是梅林本人；要保护他，但公开上只能用票型、队伍、任务结果替他补理由。\n"
+            "- 不要把自己打成透明好人，也不要把梅林推到台前；必要时替他分担刺客注意力。\n"
+            "- 继续像普通蓝方一样参与推理，不能只围着夜视对象发言。"
+        )
+    return _ROLE_PLAYBOOK[view.role]
+
+
+def _playbook(view: PlayerView) -> str:
+    return f"{_PLAYBOOK_BASELINE}\n\n{_role_hard_rules(view)}\n\n{_role_playbook(view)}"
 
 
 def system_text(view: PlayerView) -> str:
@@ -193,7 +275,7 @@ def system_text(view: PlayerView) -> str:
         f"{RULES}\n\n"
         f"本局共 {view.players} 人，座位号 1~{view.players}。{_lineup_block(view)}。本局任务表：{_mission_table(view.players)}。\n\n"
         f"你是 {view.seat_no} 号。{_role_brief(view)}\n\n"
-        f"{_playbook(view.role)}\n\n"
+        f"{_playbook(view)}\n\n"
         f"你的打法取向：{view.strategy}"
     )
 
@@ -375,7 +457,78 @@ def human_message(events: list[str], context: str, ask: str, tone: str = "", mim
 #
 # OpenCode agent 直接返回 JSON，不走 extractor 的标签行。每个阶段给出对应的 JSON schema。
 
-_OPENCODE_JSON_DISCIPLINE = "只输出一个 JSON 对象，不要输出任何其他文字（不要 markdown 代码块、不要解释）。"
+_OPENCODE_JSON_DISCIPLINE = "最终只输出一个 JSON 对象，不要输出任何其他文字（不要 markdown 代码块、不要解释，不要写出自检过程）。"
+
+
+def _private_transcript(view: PlayerView) -> str:
+    """把该席位自己的历史线程渲染成自然转述，不暴露 LangChain role 标签。"""
+    if not view.messages:
+        return "你此前还没有私人行动记录。"
+    rows = []
+    for msg in view.messages:
+        prefix = "主持人此前对你说" if msg.role == "human" else "你此前回复"
+        rows.append(f"{prefix}：\n{msg.content}")
+    return "你的私人行动记录：\n" + "\n\n".join(rows)
+
+
+def opencode_prompt(view: PlayerView, *, include_context: bool = True) -> str:
+    """OpenCode 会话里发送的自然传话文本。
+
+    这只是发送层渲染，不写回 SeatThread；线程仍保存短的 `view.prompt`，避免历史膨胀。
+    """
+    if not include_context:
+        return (
+            f"主持人继续通过你的私人频道给你传话。沿用本 session 开局时给你的身份、夜晚情报、角色硬约束、"
+            f"打法取向和私人历史；现在只处理下面的新公开事件和当前行动，不要重述旧信息。\n\n"
+            f"【现在轮到你】\n{view.prompt}"
+        )
+    return (
+        f"我是这局《阿瓦隆》的主持人，现在通过你的私人频道给你传话。你只代表自己这个座位行动，"
+        f"其他玩家看不到这条私信，也看不到你的 monologue。\n\n"
+        f"【你的固定设定】\n{system_text(view)}\n\n"
+        f"【你的私人历史】\n{_private_transcript(view)}\n\n"
+        f"【现在轮到你】\n{view.prompt}"
+    )
+
+
+def _opencode_self_check(phase: str, view: PlayerView) -> str:
+    common = [
+        "先检查公开 speech 有没有泄露你的身份、夜晚情报或真实计划；monologue 可以更真实，但也要简短。",
+        "如果当前 OpenCode 环境能调用子 agent，可以先让它只检查合法性、泄密风险和 JSON 格式；不能调用时，你自己完成同样检查。",
+        "检查通过后只给最终 JSON，不要写出思考、自检或子 agent 过程。",
+    ]
+    checks = {
+        "propose": [
+            f"team 必须正好 {view.team_size} 人，座位号互不重复，且都在 1~{view.players}。",
+            "speech 要解释这队验证什么或为什么这些人上车，不能只说随便试试。",
+        ],
+        "discuss": [
+            "speech 要对当前队伍给出赞成/反对倾向或明确条件，并点出至少一个公开证据。",
+        ],
+        "team_vote": [
+            "approve 必须是 JSON boolean true/false，不要写成字符串。",
+            "投票要服务你的阵营目标，并能被公开理由解释。",
+        ],
+        "quest": [
+            "success 必须是 JSON boolean true/false，不要写成字符串。",
+            "蓝方必须出成功；红方再权衡是否破坏、养身份或避免多红暴露。",
+        ],
+        "assassinate": [
+            f"target_no 必须从候选蓝方 {view.good_suspects()} 中选一个。",
+            "刺杀前回看长程轨迹，不要只看最后一轮谁跳得最明显。",
+        ],
+        "lady_choose": [
+            f"target_no 必须从可查验对象 {view.lady_candidates()} 中选一个。",
+        ],
+        "lady_announce": [
+            "speech 可以真报或假报，但必须考虑这句话保护了谁、打击了谁、是否暴露你的信息源。",
+        ],
+        "banter": [
+            "复盘可以接梗、回怼、甩锅，但仍保持 2~3 句，不要长篇总结。",
+        ],
+    }[phase]
+    lines = "\n".join(f"- {line}" for line in [*common, *checks])
+    return f"输出前自检（只在心里做）：\n{lines}\n{_OPENCODE_JSON_DISCIPLINE}"
 
 
 def opencode_ask(phase: str, view: PlayerView) -> str:
@@ -386,7 +539,7 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"队伍成员必须互不相同，可以包含你自己，也可以不包含你自己。\n"
             f"输出 JSON：\n"
             f'{{"phase": "propose", "monologue": "说给观众的一句短话", "speech": "你的组队宣言", "team": [座位号列表]}}\n'
-            f"{_OPENCODE_JSON_DISCIPLINE}"
+            f"{_opencode_self_check(phase, view)}"
         )
     if phase == "discuss":
         team = "、".join(f"{no}号" for no in view.team)
@@ -394,7 +547,7 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"当前阶段：讨论（discuss）。请对队伍 [{team}] 公开表态。\n"
             f"输出 JSON：\n"
             f'{{"phase": "discuss", "monologue": "说给观众的一句短话", "speech": "你的桌面表态"}}\n'
-            f"{_OPENCODE_JSON_DISCIPLINE}"
+            f"{_opencode_self_check(phase, view)}"
         )
     if phase == "team_vote":
         team = "、".join(f"{no}号" for no in view.team)
@@ -402,7 +555,7 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"当前阶段：组队表决（team_vote）。对队伍 [{team}] 投票。\n"
             f"输出 JSON：\n"
             f'{{"phase": "team_vote", "monologue": "说给观众的一句短话", "approve": true}}\n'
-            f"approve 为 true 表示赞成，false 表示否决。{_OPENCODE_JSON_DISCIPLINE}"
+            f"approve 为 true 表示赞成，false 表示否决。{_opencode_self_check(phase, view)}"
         )
     if phase == "quest":
         side = "蓝方" if view.role.side is Side.GOOD else "红方"
@@ -411,7 +564,7 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"当前阶段：任务出牌（quest）。你是{side}，{action}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "quest", "monologue": "说给观众的一句短话", "success": true}}\n'
-            f"success 为 true 表示成功，false 表示破坏。{_OPENCODE_JSON_DISCIPLINE}"
+            f"success 为 true 表示成功，false 表示破坏。{_opencode_self_check(phase, view)}"
         )
     if phase == "assassinate":
         targets = "、".join(f"{no}号" for no in view.good_suspects())
@@ -419,7 +572,7 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"当前阶段：刺杀（assassinate）。请从以下蓝方中指认梅林：{targets}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "assassinate", "monologue": "说给观众的一句短话", "speech": "你的指认宣言", "target_no": 座位号}}\n'
-            f"{_OPENCODE_JSON_DISCIPLINE}"
+            f"{_opencode_self_check(phase, view)}"
         )
     if phase == "lady_choose":
         cands = "、".join(f"{no}号" for no in view.lady_candidates())
@@ -427,7 +580,7 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"当前阶段：湖中仙女选择（lady_choose）。请从未持有过令牌的玩家中选一人查验：{cands}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "lady_choose", "monologue": "说给观众的一句短话", "target_no": 座位号}}\n'
-            f"{_OPENCODE_JSON_DISCIPLINE}"
+            f"{_opencode_self_check(phase, view)}"
         )
     if phase == "lady_announce":
         side = "蓝方（亚瑟的忠臣）" if view.lady_seen == "good" else "红方（莫德雷德的爪牙）"
@@ -435,13 +588,13 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"当前阶段：湖中仙女宣布（lady_announce）。你查验了 {view.lady_target}号，真实阵营是 {side}。请当众宣布（可如实可撒谎）。\n"
             f"输出 JSON：\n"
             f'{{"phase": "lady_announce", "monologue": "说给观众的一句短话", "speech": "你的当众宣布"}}\n'
-            f"{_OPENCODE_JSON_DISCIPLINE}"
+            f"{_opencode_self_check(phase, view)}"
         )
     if phase == "banter":
         return (
             f"当前阶段：赛后复盘（banter）。游戏已结束，底牌已翻开，请畅所欲言。\n"
             f"输出 JSON：\n"
             f'{{"phase": "banter", "monologue": "说给观众的一句短话", "speech": "你的复盘发言"}}\n'
-            f"{_OPENCODE_JSON_DISCIPLINE}"
+            f"{_opencode_self_check(phase, view)}"
         )
     raise ValueError(f"未知的 OpenCode 决策阶段：{phase}")

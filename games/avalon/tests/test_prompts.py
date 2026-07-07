@@ -16,6 +16,7 @@ import pytest
 from avalon import prompts
 from avalon.player import PlayerView
 from avalon.state import ProposalRecord, Role
+from core.threads import ThreadMessage
 
 _LINEUP = [Role.MERLIN, Role.PERCIVAL, Role.SERVANT, Role.SERVANT, Role.SERVANT, Role.SERVANT,
            Role.ASSASSIN, Role.MORGANA, Role.MORDRED, Role.OBERON]
@@ -39,6 +40,7 @@ def test_system_renders_for_every_role(role: Role) -> None:
     assert "本局共 10 人，座位号 1~10" in text
     assert "本局任务表：M1 3人/1破坏失败" in text and "M5 5人/1破坏失败" in text
     assert "游戏基本功" in text and "任务成功不等于车上全蓝" in text
+    assert f"{prompts._ROLE_LABEL[role]}硬约束" in text
     assert f"{prompts._ROLE_LABEL[role]}基本功" in text
     assert "你是 1 号" in text
     assert "简短干练" in text and "口语化的 2~3 句" in text
@@ -53,6 +55,41 @@ def test_system_injects_role_specific_playbook_only() -> None:
     assert "莫甘娜切真梅林" not in servant
     assert "派西维尔基本功" in percival
     assert "派西维尔基本功" not in servant
+
+
+def test_role_hard_rules_cover_identity_leak_red_lines() -> None:
+    """角色硬约束单独存在：保护梅林、派西维尔和刺客底线，不只靠打法建议。"""
+    merlin = prompts.system_text(_view(Role.MERLIN))
+    assert "梅林硬约束" in merlin
+    assert "公开 speech 不能说“我知道谁红/谁蓝”" in merlin
+    assert "不能公开排出完整红坑" in merlin
+
+    percival = prompts.system_text(_view(Role.PERCIVAL))
+    assert "派西维尔硬约束" in percival
+    assert "不能说出你夜里看到的两个候选" in percival
+    assert "不能点名“谁是梅林、谁是莫甘娜”" in percival
+
+    assassin = prompts.system_text(_view(Role.ASSASSIN))
+    assert "刺客硬约束" in assassin
+    assert "公开 speech 不要暴露你在找梅林" in assassin
+
+
+def test_role_hard_rules_follow_lineup_variants() -> None:
+    """梅林/派西维尔红线按本局阵容写，不把不存在的特殊角色塞进提示。"""
+    simple = [Role.MERLIN, Role.PERCIVAL, Role.SERVANT, Role.ASSASSIN, Role.MINION]
+
+    merlin = prompts.system_text(replace(_view(Role.MERLIN), lineup=simple))
+    assert "莫德雷德你看不到" not in merlin
+    assert "你看不到莫德雷德" not in merlin
+    assert "夜里看到了红方名单" in merlin
+    assert "本局没有莫德雷德" in merlin
+
+    percival = prompts.system_text(replace(_view(Role.PERCIVAL), lineup=simple))
+    assert "两个候选" not in percival
+    assert "谁是梅林、谁是莫甘娜" not in percival
+    assert "莫甘娜切真梅林" not in percival
+    assert "不能点出你夜里看到的人就是梅林" in percival
+    assert "你夜里看到的是梅林本人" in percival
 
 
 def test_night_intel_rendered_as_seats() -> None:
@@ -123,6 +160,48 @@ def test_opencode_asks_carry_required_keys() -> None:
 
     banter = prompts.opencode_ask("banter", view)
     assert '"phase": "banter"' in banter and '"speech"' in banter
+
+
+def test_opencode_asks_include_private_self_check() -> None:
+    """每阶段都要求输出前自检，并允许 OpenCode 子 agent 可用时做合法性/泄密审稿。"""
+    text = prompts.opencode_ask("propose", _view(Role.MERLIN))
+    assert "输出前自检（只在心里做）" in text
+    assert "子 agent" in text
+    assert "检查合法性、泄密风险和 JSON 格式" in text
+    assert "最终只输出一个 JSON 对象" in text
+    assert "不要写出自检过程" in text
+
+
+def test_opencode_prompt_is_natural_host_handoff() -> None:
+    """发给 OpenCode 的整包文本像主持人私聊转述，不暴露 LangChain role 标签。"""
+    view = _view(Role.MERLIN)
+    view.prompt = prompts.human_message(["主持人宣布开局。"], "局面", prompts.opencode_ask("discuss", view))
+    text = prompts.opencode_prompt(view)
+    assert "我是这局《阿瓦隆》的主持人，现在通过你的私人频道给你传话" in text
+    assert "【你的固定设定】" in text and "【现在轮到你】" in text
+    assert "你此前还没有私人行动记录" in text
+    assert "[system]" not in text and "[user]" not in text and "[assistant]" not in text
+
+    view.messages = [
+        ThreadMessage(role="human", content="上一轮问题"),
+        ThreadMessage(role="assistant", content='{"speech":"上一轮发言","monologue":"上一轮内心"}'),
+    ]
+    text = prompts.opencode_prompt(view)
+    assert "主持人此前对你说" in text
+    assert "你此前回复" in text
+    assert "上一轮发言" in text
+
+
+def test_opencode_prompt_incremental_after_session_seed() -> None:
+    """OpenCode session 已经种过上下文后，后续只发本轮增量，不再整包重喂固定设定和历史。"""
+    view = _view(Role.MERLIN)
+    view.prompt = prompts.human_message(["新事件"], "新局面", prompts.opencode_ask("discuss", view))
+    text = prompts.opencode_prompt(view, include_context=False)
+    assert "沿用本 session 开局时给你的身份" in text
+    assert "【现在轮到你】" in text and "新事件" in text
+    assert "【你的固定设定】" not in text
+    assert "【你的私人历史】" not in text
+    assert "你的角色：梅林" not in text
 
 
 def test_opencode_ask_constrains_good_and_frees_evil() -> None:

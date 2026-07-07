@@ -116,8 +116,12 @@ class AgentPlayer(AgentActor):
     """Avalon agent 玩家：通过 agent 后端获取 JSON 决策并解析。"""
 
     async def _say(self, phase: str, view: PlayerView) -> str:
-        history = [HumanMessage(m.content) if m.role == "human" else AIMessage(m.content) for m in view.messages]
-        messages: list[BaseMessage] = [SystemMessage(prompts.system_text(view)), *history, HumanMessage(view.prompt)]
+        if isinstance(self._backend, OpenCodeBackend):
+            include_context = not self._backend.has_session(view.seat_no) or not view.messages
+            messages: list[BaseMessage] = [HumanMessage(prompts.opencode_prompt(view, include_context=include_context))]
+        else:
+            history = [HumanMessage(m.content) if m.role == "human" else AIMessage(m.content) for m in view.messages]
+            messages = [SystemMessage(prompts.system_text(view)), *history, HumanMessage(view.prompt)]
         return await self._invoke(phase, view, view.model, messages)
 
     async def _parse[T: BaseModel](self, raw: str, model_cls: type[T]) -> T:

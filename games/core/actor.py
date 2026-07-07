@@ -45,11 +45,10 @@ class OpenCodeBackend:
 
     通过 HTTP API 与 `opencode serve` 通信：
     - 每个座位一个 session，保留该座位记忆
-    - 每次决策把当前局面（system + history + prompt）发过去
+    - 每次决策发送调用方渲染好的一段文本；是否全量 seed 或只发增量由玩法层决定
     - 轮询 /session/{id}/message 直到拿到完整 assistant 回复
 
-    这里不依赖任何自定义 agent 配置：把 OpenCode 当作普通 agent 接口用，
-    每回合通过 system + history + prompt 喂入当前局面。
+    这里不依赖任何自定义 agent 配置：把 OpenCode 当作普通 agent 接口用。
 
     模型选择优先级（单座位）：
         1. 该座位在 `seat_models` 中指定的 providerID/modelID
@@ -84,6 +83,8 @@ class OpenCodeBackend:
     @staticmethod
     def _messages_to_text(messages: list[BaseMessage]) -> str:
         """把 LangChain 消息序列化成一段带角色标记的文本。"""
+        if len(messages) == 1 and isinstance(messages[0], HumanMessage):
+            return str(messages[0].content)
         parts: list[str] = []
         for m in messages:
             if isinstance(m, SystemMessage):
@@ -109,6 +110,10 @@ class OpenCodeBackend:
     def _model_for_seat(self, seat_no: int) -> str:
         """返回指定座位应使用的模型引用（providerID/modelID），可能为空。"""
         return self._seat_models.get(seat_no, self._default_model)
+
+    def has_session(self, seat_no: int) -> bool:
+        """这个后端实例里是否已经为该座位创建过 OpenCode session。"""
+        return seat_no in self._sessions
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         resp = await self._client.request(method, path, **kwargs)
