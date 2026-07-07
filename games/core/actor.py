@@ -191,15 +191,16 @@ class OpenCodeBackend:
 
     @staticmethod
     def _assistant_ids(data: Any) -> set[str]:
-        """取当前消息列表中已完成 assistant 消息的 id 集合（id 为 0 或空字符串也保留）。"""
+        """取当前消息列表中已结束 assistant 消息的 id 集合（id 为 0 或空字符串也保留）。"""
         ids: set[str] = set()
         for msg in OpenCodeBackend._message_items(data):
             info = OpenCodeBackend._message_info(msg)
             role = info.get("role", msg.get("type"))
             finish = info.get("finish", msg.get("finish"))
             completed = info.get("time", {}).get("completed")
+            error = info.get("error") or msg.get("error")
             msg_id = info.get("id", msg.get("id"))
-            if role == "assistant" and (finish or completed) and msg_id is not None:
+            if role == "assistant" and (finish or completed or error) and msg_id is not None:
                 ids.add(str(msg_id))
         return ids
 
@@ -241,13 +242,6 @@ class OpenCodeBackend:
                 role = info.get("role", msg.get("type"))
                 if role != "assistant":
                     continue
-                error = info.get("error") or msg.get("error")
-                if error:
-                    raise RuntimeError(f"OpenCode agent error: {error}")
-                finish = info.get("finish", msg.get("finish"))
-                completed = info.get("time", {}).get("completed")
-                if not (finish or completed):
-                    continue
                 msg_id = info.get("id", msg.get("id"))
                 if msg_id is not None:
                     if str(msg_id) in exclude_ids:
@@ -256,6 +250,13 @@ class OpenCodeBackend:
                     created_ms = self._created_ms(msg)
                     if created_ms is not None and created_ms < after_ms:
                         continue
+                error = info.get("error") or msg.get("error")
+                if error:
+                    raise RuntimeError(f"OpenCode agent error: {error}")
+                finish = info.get("finish", msg.get("finish"))
+                completed = info.get("time", {}).get("completed")
+                if not (finish or completed):
+                    continue
                 text = self._extract_text(msg)
                 if text:
                     return text

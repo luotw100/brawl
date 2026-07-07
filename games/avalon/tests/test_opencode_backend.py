@@ -103,6 +103,48 @@ async def test_opencode_backend_sends_prompt_async_with_current_model_shape(monk
     await backend.close()
 
 
+async def test_opencode_backend_ignores_stale_session_error_on_retry(monkeypatch) -> None:
+    backend = OpenCodeBackend(default_model="opencode-go/mimo-v2.5")
+    backend._sessions[2] = "ses_test"
+    prompt_sent = False
+
+    old_error = {
+        "info": {
+            "id": "msg_old_error",
+            "role": "assistant",
+            "time": {"created": 1783350000000},
+            "error": {"name": "UnknownError", "data": {"message": "unknown certificate verification error"}},
+        }
+    }
+    new_reply = {
+        "info": {
+            "id": "msg_new_reply",
+            "role": "assistant",
+            "finish": "stop",
+            "time": {"created": 1783350002000, "completed": 1783350003000},
+        },
+        "parts": [{"type": "text", "text": '{"ok": true}'}],
+    }
+
+    async def fake_request(method: str, path: str, **kwargs: Any) -> Any:
+        nonlocal prompt_sent
+        if method == "GET" and path == "/session/ses_test/message":
+            return [old_error, new_reply] if prompt_sent else [old_error]
+        if method == "POST" and path == "/session/ses_test/prompt_async":
+            prompt_sent = True
+            return None
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+
+    response = await backend.call("probe", _View(), None, [HumanMessage(content="hello")])  # type: ignore[arg-type]
+
+    assert response.content == '{"ok": true}'
+    assert prompt_sent is True
+
+    await backend.close()
+
+
 async def test_agent_player_sends_opencode_context_once_then_incremental() -> None:
     backend = _CapturingOpenCodeBackend()
     player = AgentPlayer(recorder=NullRecorder(), backend=backend)
