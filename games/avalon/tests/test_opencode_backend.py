@@ -73,13 +73,22 @@ async def test_opencode_backend_sends_prompt_async_with_current_model_shape(monk
             return [
                 {
                     "info": {
+                        "id": "msg_user",
+                        "role": "user",
+                        "time": {"created": 1783350000000},
+                    },
+                    "parts": [{"type": "text", "text": "hello"}],
+                },
+                {
+                    "info": {
                         "id": "msg_assistant",
                         "role": "assistant",
+                        "parentID": "msg_user",
                         "finish": "stop",
                         "time": {"created": 1783350000000, "completed": 1783350001000},
                     },
                     "parts": [{"type": "text", "text": '{"ok": true}'}],
-                }
+                },
             ]
         raise AssertionError(f"unexpected request: {method} {path}")
 
@@ -103,6 +112,75 @@ async def test_opencode_backend_sends_prompt_async_with_current_model_shape(monk
     await backend.close()
 
 
+async def test_opencode_backend_cleans_up_failed_turn_on_retry(monkeypatch) -> None:
+    backend = OpenCodeBackend(default_model="opencode-go/mimo-v2.5")
+    backend._sessions[2] = "ses_test"
+    backend._last_user[2] = "msg_old_user"
+    prompt_sent = False
+
+    messages: list[dict[str, Any]] = [
+        {
+            "info": {"id": "msg_old_user", "role": "user", "time": {"created": 1783350000000}},
+            "parts": [{"type": "text", "text": "old prompt"}],
+        },
+        {
+            "info": {
+                "id": "msg_old_error",
+                "role": "assistant",
+                "parentID": "msg_old_user",
+                "time": {"created": 1783350000000},
+                "error": {"name": "UnknownError", "data": {"message": "stale"}},
+            },
+            "parts": [],
+        },
+    ]
+
+    async def fake_request(method: str, path: str, **kwargs: Any) -> Any:
+        nonlocal prompt_sent
+        if method == "GET" and path == "/session/ses_test/message":
+            return list(messages)
+        if method == "POST" and path == "/session/ses_test/abort":
+            return True
+        if method == "DELETE" and path.startswith("/session/ses_test/message/"):
+            msg_id = path.split("/")[-1]
+            messages[:] = [m for m in messages if m["info"]["id"] != msg_id]
+            return True
+        if method == "POST" and path == "/session/ses_test/prompt_async":
+            prompt_sent = True
+            messages.append(
+                {
+                    "info": {"id": "msg_user", "role": "user", "time": {"created": 1783350001000}},
+                    "parts": [{"type": "text", "text": "hello"}],
+                }
+            )
+            messages.append(
+                {
+                    "info": {
+                        "id": "msg_new_reply",
+                        "role": "assistant",
+                        "parentID": "msg_user",
+                        "finish": "stop",
+                        "time": {"created": 1783350001000, "completed": 1783350002000},
+                    },
+                    "parts": [{"type": "text", "text": '{"ok": true}'}],
+                }
+            )
+            return None
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+
+    response = await backend.call("probe", _View(), None, [HumanMessage(content="hello")])  # type: ignore[arg-type]
+
+    assert response.content == '{"ok": true}'
+    assert prompt_sent is True
+    assert backend._last_user.get(2) is None
+    # 旧失败消息已被清理，只剩新的 user + assistant
+    assert [m["info"]["id"] for m in messages] == ["msg_user", "msg_new_reply"]
+
+    await backend.close()
+
+
 async def test_opencode_backend_ignores_stale_session_error_on_retry(monkeypatch) -> None:
     backend = OpenCodeBackend(default_model="opencode-go/mimo-v2.5")
     backend._sessions[2] = "ses_test"
@@ -116,10 +194,19 @@ async def test_opencode_backend_ignores_stale_session_error_on_retry(monkeypatch
             "error": {"name": "UnknownError", "data": {"message": "unknown certificate verification error"}},
         }
     }
+    new_user = {
+        "info": {
+            "id": "msg_user",
+            "role": "user",
+            "time": {"created": 1783350002000},
+        },
+        "parts": [{"type": "text", "text": "hello"}],
+    }
     new_reply = {
         "info": {
             "id": "msg_new_reply",
             "role": "assistant",
+            "parentID": "msg_user",
             "finish": "stop",
             "time": {"created": 1783350002000, "completed": 1783350003000},
         },
@@ -129,7 +216,7 @@ async def test_opencode_backend_ignores_stale_session_error_on_retry(monkeypatch
     async def fake_request(method: str, path: str, **kwargs: Any) -> Any:
         nonlocal prompt_sent
         if method == "GET" and path == "/session/ses_test/message":
-            return [old_error, new_reply] if prompt_sent else [old_error]
+            return [old_error, new_user, new_reply] if prompt_sent else [old_error]
         if method == "POST" and path == "/session/ses_test/prompt_async":
             prompt_sent = True
             return None

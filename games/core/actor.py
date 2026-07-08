@@ -79,6 +79,7 @@ class OpenCodeBackend:
         self._max_poll_time = max_poll_time
         self._sessions: dict[int, str] = {}
         self._session_locks: dict[int, asyncio.Lock] = {}
+        self._last_user: dict[int, str | None] = {}
 
     @staticmethod
     def _messages_to_text(messages: list[BaseMessage]) -> str:
@@ -149,11 +150,72 @@ class OpenCodeBackend:
                 self._sessions[seat_no] = await self._create_session(seat_no)
             return self._sessions[seat_no]
 
-    async def _send_prompt(self, session_id: str, text: str, model_ref: str) -> None:
+    async def _send_prompt(self, session_id: str, text: str, model_ref: str) -> str:
+        """发送 prompt，返回新建 user message 的 id。"""
+        existing_users = self._user_ids(
+            await self._request("GET", f"/session/{session_id}/message")
+        )
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if model_ref:
             payload["model"] = self._parse_ref(model_ref)
         await self._request("POST", f"/session/{session_id}/prompt_async", json=payload)
+
+        # prompt_async 只返回 204，需要轮询找到新建的 user message
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            data = await self._request("GET", f"/session/{session_id}/message")
+            for msg in self._message_items(data):
+                info = self._message_info(msg)
+                if info.get("role") == "user":
+                    msg_id = info.get("id")
+                    if msg_id is not None and str(msg_id) not in existing_users:
+                        # 确认文本匹配，避免拿到别人并发的消息
+                        parts = msg.get("parts", [])
+                        msg_text = " ".join(
+                            p.get("text", "") for p in parts if p.get("type") == "text"
+                        )
+                        if msg_text.strip() == text.strip():
+                            return str(msg_id)
+            await asyncio.sleep(0.05)
+
+        raise RuntimeError(f"在 OpenCode session {session_id} 中未找到新建的 user message")
+
+    async def _cleanup_failed_turn(self, session_id: str, seat_no: int) -> None:
+        """清理上一轮失败的 user + assistant 消息，避免失败上下文累积。"""
+        user_id = self._last_user.get(seat_no)
+        if not user_id:
+            return
+
+        try:
+            # 先终止可能还在跑的老请求
+            await self._request("POST", f"/session/{session_id}/abort")
+            data = await self._request("GET", f"/session/{session_id}/message")
+            for msg in self._message_items(data):
+                info = self._message_info(msg)
+                if info.get("role") == "assistant" and info.get("parentID") == user_id:
+                    try:
+                        await self._request(
+                            "DELETE", f"/session/{session_id}/message/{info['id']}"
+                        )
+                    except Exception as e:
+                        print(
+                            f"[warn] 删除 OpenCode assistant message {info['id']} 失败（忽略）：{e}",
+                            file=sys.stderr,
+                        )
+            try:
+                await self._request("DELETE", f"/session/{session_id}/message/{user_id}")
+            except Exception as e:
+                print(
+                    f"[warn] 删除 OpenCode user message {user_id} 失败（忽略）：{e}",
+                    file=sys.stderr,
+                )
+        except Exception as e:
+            print(
+                f"[warn] 清理 OpenCode session {session_id} 失败轮失败（忽略）：{e}",
+                file=sys.stderr,
+            )
+        finally:
+            self._last_user[seat_no] = None
 
     def _extract_text(self, msg: dict[str, Any]) -> str:
         """从 assistant message 中抽取文本内容。"""
@@ -190,49 +252,20 @@ class OpenCodeBackend:
         return info if isinstance(info, dict) else msg
 
     @staticmethod
-    def _assistant_ids(data: Any) -> set[str]:
-        """取当前消息列表中已结束 assistant 消息的 id 集合（id 为 0 或空字符串也保留）。"""
+    def _user_ids(data: Any) -> set[str]:
+        """取当前消息列表中所有 user 消息的 id 集合。"""
         ids: set[str] = set()
         for msg in OpenCodeBackend._message_items(data):
             info = OpenCodeBackend._message_info(msg)
-            role = info.get("role", msg.get("type"))
-            finish = info.get("finish", msg.get("finish"))
-            completed = info.get("time", {}).get("completed")
-            error = info.get("error") or msg.get("error")
-            msg_id = info.get("id", msg.get("id"))
-            if role == "assistant" and (finish or completed or error) and msg_id is not None:
-                ids.add(str(msg_id))
+            if info.get("role") == "user":
+                msg_id = info.get("id")
+                if msg_id is not None:
+                    ids.add(str(msg_id))
         return ids
 
-    @staticmethod
-    def _created_ms(msg: dict[str, Any]) -> int | None:
-        """从 msg.time.created 推断毫秒时间戳。
-
-        OpenCode 不同版本可能返回秒或毫秒；这里按数量级启发式转换：
-        - > 1e11 视为毫秒（约 1973 年之后）
-        - 否则视为秒，乘以 1000
-        """
-        info = OpenCodeBackend._message_info(msg)
-        created = info.get("time", {}).get("created")
-        if not isinstance(created, (int, float)):
-            return None
-        if created > 1e11:
-            return int(created)
-        return int(created * 1000)
-
-    async def _wait_for_response(
-        self,
-        session_id: str,
-        exclude_ids: set[str] | None = None,
-        after_ms: int | None = None,
-    ) -> str:
-        """轮询直到拿到一条**发送后新出现**且已完成的 assistant message。
-
-        主要用消息 id 快照过滤；若消息没有 id，则退化为时间戳过滤，并通过 `_created_ms`
-        的启发式单位转换避免秒/毫秒混用导致合法响应被漏掉。
-        """
+    async def _wait_for_response(self, session_id: str, user_id: str) -> tuple[str, str]:
+        """等待 user_id 对应的 assistant 回复，返回 (assistant_id, text)。"""
         deadline = time.monotonic() + self._max_poll_time
-        exclude_ids = exclude_ids or set()
 
         while time.monotonic() < deadline:
             data = await self._request("GET", f"/session/{session_id}/message")
@@ -242,14 +275,8 @@ class OpenCodeBackend:
                 role = info.get("role", msg.get("type"))
                 if role != "assistant":
                     continue
-                msg_id = info.get("id", msg.get("id"))
-                if msg_id is not None:
-                    if str(msg_id) in exclude_ids:
-                        continue
-                elif after_ms is not None:
-                    created_ms = self._created_ms(msg)
-                    if created_ms is not None and created_ms < after_ms:
-                        continue
+                if info.get("parentID") != user_id:
+                    continue
                 error = info.get("error") or msg.get("error")
                 if error:
                     raise RuntimeError(f"OpenCode agent error: {error}")
@@ -259,7 +286,7 @@ class OpenCodeBackend:
                     continue
                 text = self._extract_text(msg)
                 if text:
-                    return text
+                    return str(info.get("id")), text
             await asyncio.sleep(self._poll_interval)
 
         raise TimeoutError(f"等待 OpenCode session {session_id} 响应超时")
@@ -269,13 +296,17 @@ class OpenCodeBackend:
         session_id = await self._ensure_session(seat_no)
         text = self._messages_to_text(messages)
         model_ref = self._model_for_seat(seat_no)
-        # 发 prompt 前快照已有 assistant 消息 id，避免把历史消息当成本轮回复
-        existing_data = await self._request("GET", f"/session/{session_id}/message")
-        existing = self._assistant_ids(existing_data)
-        sent_at_ms = int(time.time() * 1000)
-        await self._send_prompt(session_id, text, model_ref)
-        response_text = await self._wait_for_response(session_id, exclude_ids=existing, after_ms=sent_at_ms)
-        return AIMessage(content=response_text)
+        # 清理上一轮失败的残留消息，避免失败上下文累积
+        await self._cleanup_failed_turn(session_id, seat_no)
+        user_id = await self._send_prompt(session_id, text, model_ref)
+        self._last_user[seat_no] = user_id
+        try:
+            assistant_id, response_text = await self._wait_for_response(session_id, user_id)
+            self._last_user[seat_no] = None
+            return AIMessage(content=response_text)
+        except Exception:
+            # 保留 _last_user，下次 call 会清理失败轮
+            raise
 
     async def close(self) -> None:
         await self._client.aclose()
