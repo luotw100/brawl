@@ -494,8 +494,8 @@ def opencode_prompt(view: PlayerView, *, include_context: bool = True) -> str:
 def _opencode_self_check(phase: str, view: PlayerView) -> str:
     common = [
         "先检查公开 speech 有没有泄露你的身份、夜晚情报或真实计划；monologue 可以更真实，但也要简短。",
-        "如果当前 OpenCode 环境能调用子 agent，可以先让它只检查合法性、泄密风险和 JSON 格式；不能调用时，你自己完成同样检查。",
-        "检查通过后只给最终 JSON，不要写出思考、自检或子 agent 过程。",
+        "自己检查行动合法性、泄密风险和 JSON 格式。",
+        "检查通过后只给最终 JSON，不要写出思考或自检过程。",
     ]
     checks = {
         "propose": [

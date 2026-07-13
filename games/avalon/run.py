@@ -13,8 +13,9 @@ super-step 后持久化整份 GameState，并在 `values` 边界把 (checkpoint_
 from __future__ import annotations
 
 import argparse
-import asyncio
 import random
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -24,14 +25,19 @@ from avalon import rules
 from avalon.console import Renderer
 from avalon.deps import Deps
 from avalon.graph import build_graph
-from avalon.player import build_player
+from avalon.player import Player, build_player
 from avalon.registry import Registry, load_registry
 from avalon.settings import AvalonSettings
 from avalon.state import GameState, Seat
 from avalon.validation import GameSetup, resolve_and_validate, validate_resume
 from core import resume as resume_mod
+from core.opencode_runtime import (
+    OpenCodeInstallation,
+    open_opencode_runtime,
+    prepare_opencode_installation,
+)
 from core.recorder import Recorder, open_recorder
-from core.runner import drive_graph, graph_config
+from core.runner import drive_graph, graph_config, run_async_main
 
 _THREAD_ID = "avalon"
 
@@ -64,6 +70,7 @@ async def run_game(settings: AvalonSettings) -> GameState:
 async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Renderer) -> GameState:
     rng = random.Random(settings.seed)
     setup = resolve_and_validate(settings, registry, rng)  # 边界：解析+摇定整局方案 + 查清所有跨引用约束
+    installation = _prepare_runtime(settings)
     recorder = open_recorder(settings.replay)
     recorder.write_meta({
         "started_at": datetime.now().isoformat(timespec="seconds"),
@@ -77,7 +84,6 @@ async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Re
             if m and m in registry.models and registry.models[m].display
         },
     })
-    deps = _make_deps(settings, registry, recorder, rng, setup.models)
     initial = GameState(
         seats=_build_seats(registry, setup),
         leader=setup.first_leader,
@@ -88,53 +94,85 @@ async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Re
         src = registry.avatar_path(seat.model)
         if src is not None:  # 该模型没配 avatar / 源文件缺失 → 不烧入，回放渲染走 hash 色回退
             recorder.write_avatar(seat.no, src)
-    if settings.replay is None:  # 无产物目录=不可续：纯内存跑，不挂 checkpointer/sidecar
-        return await _drive_avalon(build_graph(), initial, deps, recorder, renderer, run_dir=None)
-    async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(settings.replay)) as saver:
-        graph = build_graph(checkpointer=saver)
-        return await _drive_avalon(graph, initial, deps, recorder, renderer, run_dir=settings.replay)
+    async with _open_player(
+        settings, registry, recorder, rng, setup.models, installation, settings.replay
+    ) as player:
+        deps = _make_deps(settings, registry, player)
+        if settings.replay is None:  # 无产物目录=不可续：纯内存跑，不挂 checkpointer/sidecar
+            return await _drive_avalon(build_graph(), initial, deps, recorder, renderer, run_dir=None)
+        async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(settings.replay)) as saver:
+            graph = build_graph(checkpointer=saver)
+            return await _drive_avalon(graph, initial, deps, recorder, renderer, run_dir=settings.replay)
 
 
 async def _resume_game(settings: AvalonSettings, registry: Registry, renderer: Renderer) -> GameState:
-    """从断点续跑：开局方案与对局状态都从 meta/checkpoint 恢复（不重摇），先把产物砍回
-    最后一个完整 super-step 的水位（丢掉断点节点写了一半的脏行），再让图从该 checkpoint 续跑。"""
+    """从断点续跑：开局方案与对局状态都从 meta/checkpoint 恢复（不重摇）。外部运行时
+    先成功探活，再把产物砍回最后一个完整 super-step 的水位，随后从同一 checkpoint 续跑。"""
     meta = validate_resume(settings, registry)  # 边界：目录在、有 checkpoint 与可续水位、模型 key 都齐
     run_dir = settings.replay
     assert run_dir is not None  # settings._check 已保证 --resume 必带 --replay
     wm = resume_mod.last_watermark(run_dir)
     assert wm is not None  # validate_resume 已保证有可续水位
     recorder = open_recorder(run_dir, resume=True)
-    recorder.truncate(wm.events_n, wm.llm_n)  # 砍掉断点节点重写的脏行，水位归到 checkpoint 那一刻
-    deps = _make_deps(settings, registry, recorder, random.Random(settings.seed), meta["setup"]["models"])
-    async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(run_dir)) as saver:
-        graph = build_graph(checkpointer=saver)
-        config = graph_config(deps, thread_id=_THREAD_ID, checkpoint_id=wm.checkpoint_id)
-        try:
+    models = meta["setup"]["models"]
+    installation = _prepare_runtime(settings)
+    async with _open_player(
+        settings, registry, recorder, random.Random(settings.seed), models, installation, run_dir
+    ) as player:
+        # managed runtime 已探活，才允许破坏性截断既有 replay。
+        recorder.truncate(wm.events_n, wm.llm_n)
+        deps = _make_deps(settings, registry, player)
+        async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(run_dir)) as saver:
+            graph = build_graph(checkpointer=saver)
+            config = graph_config(deps, thread_id=_THREAD_ID, checkpoint_id=wm.checkpoint_id)
             return await drive_graph(graph, None, config, recorder, renderer, run_dir, GameState)
-        finally:
-            await deps.player.close()
 
 
 async def _drive_avalon(graph, stream_input, deps: Deps, recorder: Recorder, renderer: Renderer, run_dir: Path | None) -> GameState:
     config = graph_config(deps, thread_id=_THREAD_ID)
-    try:
-        return await drive_graph(graph, stream_input, config, recorder, renderer, run_dir, GameState)
-    finally:
-        await deps.player.close()
+    return await drive_graph(graph, stream_input, config, recorder, renderer, run_dir, GameState)
 
 
-def _make_deps(settings: AvalonSettings, registry: Registry, recorder: Recorder, rng: random.Random, models: list[str] | None = None) -> Deps:
-    return Deps(
-        settings=settings,
-        registry=registry,
-        player=build_player(
+def _prepare_runtime(settings: AvalonSettings) -> OpenCodeInstallation | None:
+    return prepare_opencode_installation() if settings.player == "opencode" else None
+
+
+@asynccontextmanager
+async def _open_player(
+    settings: AvalonSettings,
+    registry: Registry,
+    recorder: Recorder,
+    rng: random.Random,
+    models: list[str],
+    installation: OpenCodeInstallation | None,
+    run_dir: Path | None,
+) -> AsyncIterator[Player]:
+    if settings.player == "random":
+        player = build_player(settings, rng, recorder=recorder, registry=registry, models=models)
+        try:
+            yield player
+        finally:
+            await player.close()
+        return
+
+    assert installation is not None and run_dir is not None  # settings + _prepare_runtime 边界保证
+    async with open_opencode_runtime(installation, run_dir, len(models)) as connection:
+        player = build_player(
             settings,
             rng,
             recorder=recorder,
             registry=registry,
             models=models,
-        ),
-    )
+            connection=connection,
+        )
+        try:
+            yield player
+        finally:
+            await player.close()
+
+
+def _make_deps(settings: AvalonSettings, registry: Registry, player: Player) -> Deps:
+    return Deps(settings=settings, registry=registry, player=player)
 
 
 def main(argv: list[str]) -> None:
@@ -145,4 +183,4 @@ def main(argv: list[str]) -> None:
     pre.add_argument("--config", dest="config", type=Path, default=None, metavar="PATH", help="JSON 配置文件路径")
     args, rest = pre.parse_known_args(argv)
     settings = AvalonSettings.load(cli_args=rest, config_file=args.config)
-    asyncio.run(run_game(settings))
+    run_async_main(run_game(settings))

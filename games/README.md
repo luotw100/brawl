@@ -23,23 +23,21 @@ uv run brawl avalon-tts /tmp/avalon1 --backend qwen3-tts-self-hosted --self-host
 
 ## 用 OpenCode 当玩家后端
 
-把 OpenCode 视为普通 agent 接口：每座位一个 session，游戏引擎每回合把 system + 历史 + 当前提问发过去，取回自由文本，再按玩法约定解析成结构化决策。
+Avalon / 狼人杀 CLI 自己托管一个 `opencode serve`：每座位一个 session，游戏引擎每回合把私人历史和当前提问发过去，再按玩法约定解析成结构化决策。外部 server 连接模式已废弃。
 
 ```bash
-# 1. 在另一个终端启动 OpenCode headless server（自行负责启动、鉴权和模型选择）
-opencode serve --port 4096
+# 先用固定支持版本登录一次；运行机还需安装 bubblewrap(bwrap)
+opencode auth login
 
-# 2. CLI 只负责连上 server，Avalon / 狼人杀都支持
-uv run brawl avalon --player opencode --opencode-url http://127.0.0.1:4096 --replay /tmp/avalon-opencode
-uv run brawl werewolf --player opencode --opencode-url http://127.0.0.1:4096 --replay /tmp/ww-opencode
+# CLI 启动、探活并回收本局专属 server；opencode 模式必须落 replay
+uv run brawl avalon --player opencode --replay /tmp/avalon-opencode
+uv run brawl werewolf --player opencode --replay /tmp/ww-opencode
 
 # 可选：强制指定默认模型（providerID/modelID），空字符串则用 server 默认模型
-uv run brawl avalon --player opencode --opencode-url http://127.0.0.1:4096 --opencode-model opencode-go/deepseek-v4-pro --replay /tmp/avalon-opencode
-
-# 若 server 开了 basic auth，把密码放进环境变量（默认 OPENCODE_SERVER_PASSWORD）
-export OPENCODE_SERVER_PASSWORD=xxx
-uv run brawl avalon --player opencode --opencode-url http://127.0.0.1:4096 --replay /tmp/avalon-opencode
+uv run brawl avalon --player opencode --opencode-model opencode-go/deepseek-v4-pro --replay /tmp/avalon-opencode
 ```
+
+当前固定支持 OpenCode `1.17.18`。CLI 用 `bwrap` 只把 `<replay>/_opencode` 映射给子进程，真实 replay 根目录不在其挂载空间；所有 agent 工具同时在 session 层禁用。每局生成的 workspace、OpenCode DB、XDG state/cache 和 server 日志都保留在 `_opencode/`，长期认证文件只读挂载，不复制进 replay。
 
 模型选择优先级（单座位）：
 
@@ -49,9 +47,9 @@ uv run brawl avalon --player opencode --opencode-url http://127.0.0.1:4096 --rep
 
 因此 `--player opencode --models oc-deepseek-v4-pro,oc-qwen3.7-plus,...` 可以给不同座位分配不同 OpenCode 模型；不配 `--models` 时随机摇到的 `oc-*` 模型也会自动映射到对应 OpenCode provider/model。
 
-OpenCode server 的可用模型可通过 `opencode models` 或 `/config/providers` 查询；`OpenCodeBackend` 会在每次 `POST /session/{id}/prompt_async` 时把该座位模型随 prompt 一起传给 server。
+OpenCode 的可用模型可通过 `opencode models` 查询；`OpenCodeBackend` 会在每次 `POST /session/{id}/prompt_async` 时把该座位模型随 prompt 一起传给本局 server。
 
-连接参数见 `avalon/settings.py` / `werewolf/settings.py`：`opencode_url`、`opencode_username`、`opencode_password_env`、`opencode_model`。不需要 `.opencode.json`、不需要自定义 agent、不需要 `games/scripts/`。
+公开配置只保留 `opencode_model`；动态 URL 和随机密码属于进程内运行时数据，不接受外部注入。不需要 `.opencode.json`、自定义 agent 或 `games/scripts/`。
 
 ## 测试
 

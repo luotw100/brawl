@@ -4,6 +4,7 @@ import random
 from collections import Counter
 
 import pytest
+from pydantic import ValidationError
 
 from werewolf.registry import Registry
 from werewolf.settings import SettingsError, WerewolfSettings
@@ -54,3 +55,12 @@ def test_random_backend_skips_api_key_check(registry: Registry) -> None:
     model_name = registry.model_names()[0]
     setup = resolve_and_validate(WerewolfSettings(player="random", models=[model_name] * 12), registry, random.Random(0))
     assert setup.models == [model_name] * 12
+
+
+def test_managed_opencode_requires_replay_and_rejects_external_url(tmp_path) -> None:
+    assert WerewolfSettings(player="random").replay is None
+    with pytest.raises(ValidationError, match="--player opencode.*--replay"):
+        WerewolfSettings(player="opencode")
+    assert WerewolfSettings(player="opencode", replay=tmp_path / "game").replay == tmp_path / "game"
+    with pytest.raises(ValidationError):
+        WerewolfSettings(player="random", opencode_url="http://127.0.0.1:4096")  # type: ignore[call-arg]

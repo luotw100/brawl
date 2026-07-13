@@ -6,7 +6,6 @@ PlayerView、Player 协议、RandomAgent（本地模拟）与八个决策动作�
 
 from __future__ import annotations
 
-import os
 import random
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -19,6 +18,7 @@ from avalon.registry import ModelSpec, Registry
 from avalon.settings import AvalonSettings
 from avalon.state import Assassination, LadyChoice, Proposal, ProposalRecord, QuestCard, Role, Side, Statement, TeamVote
 from core.actor import AgentActor, ModelBackend, OpenCodeBackend
+from core.opencode_runtime import OpenCodeConnection
 from core.parsing import JsonParseError, parse_json
 from core.recorder import Recorder
 from core.threads import ThreadMessage
@@ -115,14 +115,21 @@ class RandomAgent:
 class AgentPlayer(AgentActor):
     """Avalon agent 玩家：通过 agent 后端获取 JSON 决策并解析。"""
 
+    def __init__(self, recorder: Recorder, backend: ModelBackend) -> None:
+        super().__init__(recorder, backend)
+        self._seeded_seats: set[int] = set()
+
     async def _say(self, phase: str, view: PlayerView) -> str:
         if isinstance(self._backend, OpenCodeBackend):
-            include_context = not self._backend.has_session(view.seat_no) or not view.messages
+            include_context = view.seat_no not in self._seeded_seats
             messages: list[BaseMessage] = [HumanMessage(prompts.opencode_prompt(view, include_context=include_context))]
         else:
             history = [HumanMessage(m.content) if m.role == "human" else AIMessage(m.content) for m in view.messages]
             messages = [SystemMessage(prompts.system_text(view)), *history, HumanMessage(view.prompt)]
-        return await self._invoke(phase, view, view.model, messages)
+        response = await self._invoke(phase, view, view.model, messages)
+        if isinstance(self._backend, OpenCodeBackend) and include_context:
+            self._seeded_seats.add(view.seat_no)
+        return response
 
     async def _parse[T: BaseModel](self, raw: str, model_cls: type[T]) -> T:
         try:
@@ -185,6 +192,7 @@ def build_player(
     recorder: Recorder,
     registry: Registry | None = None,
     models: list[str] | None = None,
+    connection: OpenCodeConnection | None = None,
 ) -> Player:
     """边界工厂：random 注入 RandomAgent，opencode 注入 OpenCodeBackend。
 
@@ -196,6 +204,7 @@ def build_player(
     if kind == "random":
         backend: ModelBackend = RandomAgent(rng)
     elif kind == "opencode":
+        assert connection is not None  # managed runtime 在进入此边界前已启动并探活
         seat_models: dict[int, str] = {}
         logical = models or settings.models or []
         for i, name in enumerate(logical, start=1):
@@ -205,9 +214,7 @@ def build_player(
             if ref:
                 seat_models[i] = ref
         backend = OpenCodeBackend(
-            base_url=settings.opencode_url,
-            username=settings.opencode_username,
-            password=os.environ.get(settings.opencode_password_env),
+            connection=connection,
             default_model=settings.opencode_model,
             seat_models=seat_models,
         )

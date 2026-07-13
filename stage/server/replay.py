@@ -78,13 +78,20 @@ def library(root: Path) -> list[LibraryItem]:
     replay id 统一用 POSIX 相对路径；播放、排队、音频 URL 都走同一个 id，因此 Docker 只挂
     `~/Downloads` 也能发现 `AvalonGames/001`、`WerewolfGames/draft001` 这类二级目录。
     """
-    candidates = (events.parent for events in root.rglob("events.jsonl") if events.is_file())
     items = [
         LibraryItem(id=_replay_id(root, d), game=load_game_id(d), tags=_tags(d))
-        for d in candidates
+        for d in _replay_dirs(root)
         if is_broadcastable(d)
     ]
     return sorted(items, key=lambda item: item.id)
+
+
+def _replay_dirs(root: Path):
+    """Find replay roots without descending into managed OpenCode state."""
+    for directory, dirnames, filenames in root.walk():
+        dirnames[:] = [name for name in dirnames if name != "_opencode"]
+        if "events.jsonl" in filenames:
+            yield directory
 
 
 def load_names(replay_dir: Path) -> dict[str, str]:

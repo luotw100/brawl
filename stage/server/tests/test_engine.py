@@ -197,6 +197,15 @@ def test_library_only_lists_broadcastable_replays(settings):
     assert [item.id for item in engine.library()] == ["game1", "silent"]
 
 
+def test_library_never_discovers_events_inside_opencode_runtime(settings):
+    fake = settings.replay_root / "game1" / "_opencode" / "workspaces" / "seat-01"
+    fake.mkdir(parents=True)
+    fake.joinpath("events.jsonl").write_text('{"type":"game_end"}\n', encoding="utf-8")
+
+    engine, _ = make_engine(settings)
+    assert engine.library_ids() == ["game1"]
+
+
 def test_library_recurses_and_tags_replays(settings):
     nested = write_replay(settings.replay_root / "AvalonGames", "001")
     nested.joinpath("video.mp4").write_bytes(b"mp4")

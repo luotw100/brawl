@@ -7,7 +7,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from server.app import _FAIL_LIMIT, create_app
+from server.app import _FAIL_LIMIT, _public_replay_asset, create_app
 
 API = "?token=t0k3n"  # console_token：控制 API 准入
 WS = "/ws?token=st4ge"  # stage_token：观众频道准入
@@ -114,14 +114,41 @@ def test_replay_audio_served_but_nothing_else(client, settings):
     (tts / "1.1.host.opening.wav").write_bytes(b"RIFF")
     (tts / "manifest.json").write_text('{"x": 1}')
     (settings.replay_root / "game1" / "llm_calls.jsonl").write_text("secret prompts")
+    oc_audio = settings.replay_root / "game1" / "_opencode" / "workspaces" / "seat-01" / "tts" / "context.wav"
+    oc_audio.parent.mkdir(parents=True)
+    oc_audio.write_bytes(b"private session context")
+    (settings.replay_root / "game1" / "oc-alias").symlink_to(oc_audio.parent.parent, target_is_directory=True)
     audio = client.get("/replays/game1/tts/1.1.host.opening.wav")
     assert audio.content == b"RIFF"
     assert "immutable" in audio.headers["cache-control"]  # 预取后正式播放零网络往返
     # 只发 tts/*.{wav,mp3,...}：manifest/llm_calls/meta/events 含台词文本与配置，绝不上公网
     assert client.get("/replays/game1/tts/manifest.json").status_code == 404
     assert client.get("/replays/game1/llm_calls.jsonl").status_code == 404
+    assert client.get("/replays/game1/_opencode/workspaces/seat-01/tts/context.wav").status_code == 404
+    assert client.get("/replays/game1/oc-alias/tts/context.wav").status_code == 404
     assert client.get("/replays/game1/tts/../llm_calls.jsonl").status_code == 404
     assert client.get("/replays/game1/tts/nope.wav").status_code == 404
+
+
+def test_opencode_assets_are_private_even_through_symlink_alias(settings):
+    oc_audio = settings.replay_root / "game1" / "_opencode" / "workspaces" / "seat-01" / "tts" / "context.wav"
+    oc_audio.parent.mkdir(parents=True)
+    oc_audio.write_bytes(b"private session context")
+    (settings.replay_root / "game1" / "oc-alias").symlink_to(oc_audio.parent.parent, target_is_directory=True)
+
+    extensions = (".wav", ".mp3", ".opus", ".m4a")
+    assert _public_replay_asset(
+        settings.replay_root,
+        "game1/_opencode/workspaces/seat-01/tts/context.wav",
+        "tts",
+        extensions,
+    ) is None
+    assert _public_replay_asset(
+        settings.replay_root,
+        "game1/oc-alias/tts/context.wav",
+        "tts",
+        extensions,
+    ) is None
 
 
 def test_nested_replay_assets_and_queue_ids(client, settings):

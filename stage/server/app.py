@@ -49,7 +49,7 @@ class QueuePayload(BaseModel):
 
 def _public_replay_asset(root: Path, asset_path: str, bucket: str, exts: tuple[str, ...]) -> Path | None:
     parts = Path(asset_path).parts
-    if len(parts) < 3 or parts[-2] != bucket:
+    if "_opencode" in parts or len(parts) < 3 or parts[-2] != bucket:
         return None
     filename = parts[-1]
     replay_parts = parts[:-2]
@@ -60,8 +60,10 @@ def _public_replay_asset(root: Path, asset_path: str, bucket: str, exts: tuple[s
     root = root.resolve()
     path = root.joinpath(*replay_parts, bucket, filename).resolve()
     try:
-        path.relative_to(root)
+        resolved_parts = path.relative_to(root).parts
     except ValueError:
+        return None
+    if "_opencode" in resolved_parts:
         return None
     return path if path.is_file() else None
 

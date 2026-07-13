@@ -17,6 +17,7 @@ from avalon import run as avalon_run
 from avalon import tts as avalon_tts
 from avalon.settings import SettingsError as AvalonSettingsError
 from avalon.tts import SettingsError as AvalonTtsError
+from core.opencode_runtime import OpenCodeRuntimeError
 from llmview import show as llm_view
 from llmview.show import ViewError
 from slim_audio import cli as slim_audio_cli
@@ -62,6 +63,7 @@ def main() -> int:
         VoicelabSettingsError,
         ViewError,
         SlimAudioError,
+        OpenCodeRuntimeError,
         ValidationError,
     ) as e:
         # 用户配置错误(坏的 --config、字段校验失败):只打印消息,不甩 traceback。

@@ -58,6 +58,15 @@ def test_concurrency_must_be_positive() -> None:
     assert AvalonSettings(players=5, concurrency=3).concurrency == 3
 
 
+def test_managed_opencode_requires_replay_and_rejects_external_url(tmp_path) -> None:
+    assert AvalonSettings(player="random").replay is None
+    with pytest.raises(ValidationError, match="--player opencode.*--replay"):
+        AvalonSettings(player="opencode")
+    assert AvalonSettings(player="opencode", replay=tmp_path / "game").replay == tmp_path / "game"
+    with pytest.raises(ValidationError):
+        AvalonSettings(player="random", opencode_url="http://127.0.0.1:4096")  # type: ignore[call-arg]
+
+
 # ---------------------------------------------------------------- 来源优先级
 
 def test_kwargs_beat_env(monkeypatch: pytest.MonkeyPatch) -> None:

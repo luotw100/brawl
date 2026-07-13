@@ -44,10 +44,7 @@ class WerewolfSettings(BaseSettings):
     seed: int | None = None
     player: Literal["random", "opencode"] = "random"
 
-    # OpenCode headless server 连接参数。仅 player=opencode 时生效。
-    opencode_url: str = "http://127.0.0.1:4096"
-    opencode_username: str = "opencode"
-    opencode_password_env: str = "OPENCODE_SERVER_PASSWORD"
+    # OpenCode 由本 CLI 在 replay/_opencode 内托管；外部 server 连接模式已废弃。
     opencode_model: str = ""
 
     concurrency: int = 10
@@ -69,6 +66,8 @@ class WerewolfSettings(BaseSettings):
             raise ValueError(f"concurrency 必须 >=1，收到 {self.concurrency}")
         if self.resume and self.replay is None:
             raise ValueError("--resume 需配合 --replay 指向那个要续跑的对局目录")
+        if self.player == "opencode" and self.replay is None:
+            raise ValueError("--player opencode 必须提供 --replay，用于隔离并保存 OpenCode 上下文")
         return self
 
     @classmethod
@@ -106,4 +105,3 @@ class WerewolfSettings(BaseSettings):
 
 
 __all__ = ["SettingsError", "WerewolfSettings"]
-

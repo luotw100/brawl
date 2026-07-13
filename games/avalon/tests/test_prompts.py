@@ -163,11 +163,11 @@ def test_opencode_asks_carry_required_keys() -> None:
 
 
 def test_opencode_asks_include_private_self_check() -> None:
-    """每阶段都要求输出前自检，并允许 OpenCode 子 agent 可用时做合法性/泄密审稿。"""
+    """每阶段都要求模型自己做输出前自检，不依赖已禁用的 agent 工具。"""
     text = prompts.opencode_ask("propose", _view(Role.MERLIN))
     assert "输出前自检（只在心里做）" in text
-    assert "子 agent" in text
-    assert "检查合法性、泄密风险和 JSON 格式" in text
+    assert "子 agent" not in text
+    assert "自己检查行动合法性、泄密风险和 JSON 格式" in text
     assert "最终只输出一个 JSON 对象" in text
     assert "不要写出自检过程" in text
 

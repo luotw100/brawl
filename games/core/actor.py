@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import json
 import random
 import sys
 import time
@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from core.events import decision_id
 from core.models import ModelSpec
+from core.opencode_runtime import OpenCodeConnection
 from core.recorder import Recorder
 
 _ROLE = {SystemMessage: "system", HumanMessage: "human", AIMessage: "assistant"}
@@ -58,21 +59,20 @@ class OpenCodeBackend:
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:4096",
-        username: str = "opencode",
-        password: str | None = None,
+        connection: OpenCodeConnection,
         default_model: str = "",
         seat_models: dict[int, str] | None = None,
         timeout: float = 180.0,
         poll_interval: float = 0.5,
         max_poll_time: float = 300.0,
     ) -> None:
-        password = password or os.environ.get("OPENCODE_SERVER_PASSWORD", "")
         self._client = httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
-            auth=(username, password) if password else None,
+            base_url=connection.base_url.rstrip("/"),
+            auth=(connection.username, connection.password),
             timeout=timeout,
+            trust_env=False,
         )
+        self._workspace_root = connection.workspace_root.rstrip("/")
         self._default_model = default_model
         self._seat_models = seat_models or {}
         self._poll_interval = poll_interval
@@ -116,7 +116,10 @@ class OpenCodeBackend:
         """这个后端实例里是否已经为该座位创建过 OpenCode session。"""
         return seat_no in self._sessions
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+    async def _request(self, method: str, path: str, *, directory: str, **kwargs: Any) -> Any:
+        headers = dict(kwargs.pop("headers", {}))
+        headers["x-opencode-directory"] = directory
+        kwargs["headers"] = headers
         resp = await self._client.request(method, path, **kwargs)
         resp.raise_for_status()
         if resp.status_code == 204:
@@ -125,7 +128,7 @@ class OpenCodeBackend:
 
     async def list_models(self) -> list[dict[str, Any]]:
         """查询 OpenCode server 当前可用的模型列表。"""
-        data = await self._request("GET", "/config/providers")
+        data = await self._request("GET", "/config/providers", directory=self._workspace_root)
         providers = data.get("providers", []) if isinstance(data, dict) else []
         models: list[dict[str, Any]] = []
         for provider in providers:
@@ -135,9 +138,20 @@ class OpenCodeBackend:
         return models
 
     async def _create_session(self, seat_no: int) -> str:
-        payload: dict[str, Any] = {"title": f"game-seat-{seat_no}"}
-        data = await self._request("POST", "/session", json=payload)
+        payload: dict[str, Any] = {
+            "title": f"game-seat-{seat_no}",
+            "permission": [{"permission": "*", "pattern": "*", "action": "deny"}],
+        }
+        data = await self._request(
+            "POST",
+            "/session",
+            directory=self._directory_for_seat(seat_no),
+            json=payload,
+        )
         return data["id"]
+
+    def _directory_for_seat(self, seat_no: int) -> str:
+        return f"{self._workspace_root}/seat-{seat_no:02d}"
 
     def _lock_for_seat(self, seat_no: int) -> asyncio.Lock:
         if seat_no not in self._session_locks:
@@ -150,20 +164,26 @@ class OpenCodeBackend:
                 self._sessions[seat_no] = await self._create_session(seat_no)
             return self._sessions[seat_no]
 
-    async def _send_prompt(self, session_id: str, text: str, model_ref: str) -> str:
+    async def _send_prompt(self, session_id: str, seat_no: int, text: str, model_ref: str) -> str:
         """发送 prompt，返回新建 user message 的 id。"""
+        directory = self._directory_for_seat(seat_no)
         existing_users = self._user_ids(
-            await self._request("GET", f"/session/{session_id}/message")
+            await self._request("GET", f"/session/{session_id}/message", directory=directory)
         )
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if model_ref:
             payload["model"] = self._parse_ref(model_ref)
-        await self._request("POST", f"/session/{session_id}/prompt_async", json=payload)
+        await self._request(
+            "POST",
+            f"/session/{session_id}/prompt_async",
+            directory=directory,
+            json=payload,
+        )
 
         # prompt_async 只返回 204，需要轮询找到新建的 user message
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
-            data = await self._request("GET", f"/session/{session_id}/message")
+            data = await self._request("GET", f"/session/{session_id}/message", directory=directory)
             for msg in self._message_items(data):
                 info = self._message_info(msg)
                 if info.get("role") == "user":
@@ -187,15 +207,18 @@ class OpenCodeBackend:
             return
 
         try:
+            directory = self._directory_for_seat(seat_no)
             # 先终止可能还在跑的老请求
-            await self._request("POST", f"/session/{session_id}/abort")
-            data = await self._request("GET", f"/session/{session_id}/message")
+            await self._request("POST", f"/session/{session_id}/abort", directory=directory)
+            data = await self._request("GET", f"/session/{session_id}/message", directory=directory)
             for msg in self._message_items(data):
                 info = self._message_info(msg)
                 if info.get("role") == "assistant" and info.get("parentID") == user_id:
                     try:
                         await self._request(
-                            "DELETE", f"/session/{session_id}/message/{info['id']}"
+                            "DELETE",
+                            f"/session/{session_id}/message/{info['id']}",
+                            directory=directory,
                         )
                     except Exception as e:
                         print(
@@ -203,7 +226,11 @@ class OpenCodeBackend:
                             file=sys.stderr,
                         )
             try:
-                await self._request("DELETE", f"/session/{session_id}/message/{user_id}")
+                await self._request(
+                    "DELETE",
+                    f"/session/{session_id}/message/{user_id}",
+                    directory=directory,
+                )
             except Exception as e:
                 print(
                     f"[warn] 删除 OpenCode user message {user_id} 失败（忽略）：{e}",
@@ -225,6 +252,22 @@ class OpenCodeBackend:
             text = "\n".join(texts).strip()
             if text:
                 return text
+
+            # 少数模型会把最终 JSON 放进 reasoning part，却不生成 text part。
+            # 只接受完整的 JSON 对象，避免把普通推理过程当作玩家输出。
+            for part in reversed(parts):
+                if not isinstance(part, dict) or part.get("type") != "reasoning":
+                    continue
+                candidate = part.get("text")
+                if not isinstance(candidate, str):
+                    continue
+                candidate = candidate.strip()
+                try:
+                    value = json.loads(candidate)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(value, dict):
+                    return candidate
         content = msg.get("content", [])
         if isinstance(content, list):
             texts = [part.get("text", "") for part in content if part.get("type") == "text"]
@@ -263,12 +306,13 @@ class OpenCodeBackend:
                     ids.add(str(msg_id))
         return ids
 
-    async def _wait_for_response(self, session_id: str, user_id: str) -> tuple[str, str]:
+    async def _wait_for_response(self, session_id: str, seat_no: int, user_id: str) -> tuple[str, str]:
         """等待 user_id 对应的 assistant 回复，返回 (assistant_id, text)。"""
         deadline = time.monotonic() + self._max_poll_time
+        directory = self._directory_for_seat(seat_no)
 
         while time.monotonic() < deadline:
-            data = await self._request("GET", f"/session/{session_id}/message")
+            data = await self._request("GET", f"/session/{session_id}/message", directory=directory)
             messages = self._message_items(data)
             for msg in messages:
                 info = self._message_info(msg)
@@ -298,10 +342,10 @@ class OpenCodeBackend:
         model_ref = self._model_for_seat(seat_no)
         # 清理上一轮失败的残留消息，避免失败上下文累积
         await self._cleanup_failed_turn(session_id, seat_no)
-        user_id = await self._send_prompt(session_id, text, model_ref)
+        user_id = await self._send_prompt(session_id, seat_no, text, model_ref)
         self._last_user[seat_no] = user_id
         try:
-            assistant_id, response_text = await self._wait_for_response(session_id, user_id)
+            assistant_id, response_text = await self._wait_for_response(session_id, seat_no, user_id)
             self._last_user[seat_no] = None
             return AIMessage(content=response_text)
         except Exception:

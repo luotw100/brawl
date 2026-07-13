@@ -1,12 +1,13 @@
 """录制落盘：把一局的完整产物写进 --replay 指定的目录，供直播回放与复盘。
 
 games 是"对局快照生成器"：跑一遍把一局冻成 replay，直播时回放它而非实时跑。
-一个目录 = 一局的完整产物（replay），平铺三份文件（各玩法统一契约）：
+一个目录 = 一局的完整产物（replay），根目录文件是各玩法统一契约：
 
     events.jsonl     god-view 事件时间线，驱动回放/画面（与 console.Renderer 同源）
     llm_calls.jsonl  每次 agent 调用一行（含离线 RandomAgent：它也走完整 AgentPlayer 链路，照常落盘）
     meta.json        本局配置快照 + 起始时间
     avatars/<座位号>.png  各座位厂商 logo（开局一次性烧入，缺省=该座位无头像，渲染回退 hash 色）
+    _opencode/       managed OpenCode 的隔离 workspace、会话数据库与日志（仅 opencode 玩家）
 
 不给 --replay 时走 NullRecorder（空对象），调用方零分叉、只渲染不落盘、零开销。
 "目录已存在即报错——不覆盖、不加 --force，要重跑换个名"这条约束由 validation.py 在
@@ -49,7 +50,7 @@ def _truncate_lines(path: Path, n: int) -> None:
 
 
 class DirRecorder:
-    """一局=一个目录：平铺写 events.jsonl / llm_calls.jsonl / meta.json。
+    """一局=一个目录：根目录写 events.jsonl / llm_calls.jsonl / meta.json。
 
     维护两份文件的行数水位（counts）：续跑时由编排层把它和 checkpoint 配成一对存进
     sidecar，恢复时据此 truncate 掉断点节点重写的脏行（见 resume.py）。"""
@@ -114,7 +115,7 @@ class NullRecorder:
 
 
 def open_recorder(replay: Path | None, resume: bool = False) -> Recorder:
-    """--replay 给了就把这局产物平铺写进该目录；不给返回 NullRecorder（只渲染不落盘）。
+    """--replay 给了就把这局产物写进该目录；不给返回 NullRecorder（只渲染不落盘）。
 
     resume=True 时按"续跑"打开既有目录（不重建、不清空，承接现有行数水位）；新局
     （resume=False）目录不存在由 validation 在边界保证，DirRecorder 的 exist_ok=False

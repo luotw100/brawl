@@ -18,13 +18,17 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import pytest
 
 from avalon import player as player_mod
+from avalon import run as run_mod
 from avalon.run import run_game
 from avalon.settings import AvalonSettings
 from core import resume as resume_mod
+from core.opencode_runtime import OpenCodeRuntimeError
 
 
 class _HardCrash(BaseException):
@@ -86,3 +90,30 @@ async def test_resume_requires_existing_dir_with_checkpoint(tmp_path) -> None:
     empty.mkdir()
     with pytest.raises(SettingsError):
         await run_game(AvalonSettings(player="random", players=5, seed=1, replay=empty, resume=True))
+
+
+async def test_resume_does_not_truncate_before_managed_server_is_ready(tmp_path, monkeypatch) -> None:
+    run_dir = tmp_path / "g"
+    run_dir.mkdir()
+    truncated: list[tuple[int, int]] = []
+
+    class SpyRecorder:
+        def truncate(self, events_n: int, llm_n: int) -> None:
+            truncated.append((events_n, llm_n))
+
+    @asynccontextmanager
+    async def failing_player(*args, **kwargs) -> AsyncIterator[object]:
+        raise OpenCodeRuntimeError("server failed")
+        yield object()
+
+    monkeypatch.setattr(run_mod, "validate_resume", lambda settings, registry: {"setup": {"models": ["m"] * 5}})
+    monkeypatch.setattr(run_mod.resume_mod, "last_watermark", lambda path: resume_mod.Watermark("cp", 7, 9))
+    monkeypatch.setattr(run_mod, "open_recorder", lambda path, resume=False: SpyRecorder())
+    monkeypatch.setattr(run_mod, "_prepare_runtime", lambda settings: object())
+    monkeypatch.setattr(run_mod, "_open_player", failing_player)
+
+    settings = AvalonSettings(player="opencode", players=5, replay=run_dir, resume=True)
+    with pytest.raises(OpenCodeRuntimeError, match="server failed"):
+        await run_mod._resume_game(settings, object(), object())  # type: ignore[arg-type]
+
+    assert truncated == []

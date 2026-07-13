@@ -88,21 +88,17 @@ class AvalonSettings(BaseSettings):
     # 决策后端:random = 本地随机 agent(零 key 跑通全流程);opencode = 走 OpenCode headless server
     player: Literal["random", "opencode"] = "random"
 
-    # OpenCode headless server 连接参数。仅 player=opencode 时生效。
-    # 用户需自行启动 `opencode serve`,然后在 CLI 传入 --opencode-url 等参数。
-    opencode_url: str = "http://127.0.0.1:4096"
-    opencode_username: str = "opencode"
-    opencode_password_env: str = "OPENCODE_SERVER_PASSWORD"
-    # OpenCode 会话使用的模型,格式为 providerID/modelID,例如 opencode-go/deepseek-v4-pro。
-    # 空字符串表示让 OpenCode server 使用其默认模型。
+    # OpenCode 由本 CLI 在 replay/_opencode 内托管；外部 server 连接模式已废弃。
+    # 会话使用的模型格式为 providerID/modelID,例如 opencode-go/deepseek-v4-pro；
+    # 空字符串表示使用 models.yaml 的逐座位映射，仍缺省时才让 server 选默认模型。
     opencode_model: str = ""
 
     # 同时行动阶段(组队表决/任务出牌)的并发上限:全员 asyncio.gather 并行调模型,
     # 用信号量限流。默认 10 = 最大桌全并发;撞限流时调小,不用改代码。
     concurrency: int = 10
 
-    # 回放产物目录:给了就把这局完整产物(events.jsonl + llm_calls.jsonl + meta.json)
-    # 平铺写进该目录;不给=只渲染不落盘。目录已存在即报错(不覆盖、无 --force)。
+    # 回放产物目录:给了就写本局完整产物;opencode 模式还会在 _opencode/ 保存隔离工作区、
+    # 会话 DB 与日志。random 不给=只渲染不落盘。目录已存在即报错(不覆盖、无 --force)。
     replay: Path | None = None
 
     # 断点续生成:--resume 配合 --replay 指向一个**已存在**、中途崩掉的对局目录,从最后一个
@@ -138,6 +134,8 @@ class AvalonSettings(BaseSettings):
             raise ValueError(f"concurrency 必须 ≥1,收到 {self.concurrency}")
         if self.resume and self.replay is None:
             raise ValueError("--resume 需配合 --replay 指向那个要续跑的对局目录")
+        if self.player == "opencode" and self.replay is None:
+            raise ValueError("--player opencode 必须提供 --replay，用于隔离并保存 OpenCode 上下文")
         return self
 
     # ------------------------------------------------------------------

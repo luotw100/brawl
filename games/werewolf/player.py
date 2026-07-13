@@ -6,7 +6,6 @@ PlayerView、Player 协议、RandomAgent（本地模拟）与七个决策动作�
 
 from __future__ import annotations
 
-import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from pydantic import BaseModel
 
 from core.actor import AgentActor, ModelBackend, OpenCodeBackend
+from core.opencode_runtime import OpenCodeConnection
 from core.parsing import JsonParseError
 from core.recorder import Recorder
 from core.threads import ThreadMessage
@@ -306,12 +306,14 @@ def build_player(
     recorder: Recorder,
     registry: Registry | None = None,
     models: list[str] | None = None,
+    connection: OpenCodeConnection | None = None,
 ) -> Player:
     """边界工厂：random 注入 RandomAgent，opencode 注入 OpenCodeBackend。"""
     kind = settings.player
     if kind == "random":
         backend: ModelBackend = RandomAgent(rng)
     elif kind == "opencode":
+        assert connection is not None  # managed runtime 在进入此边界前已启动并探活
         seat_models: dict[int, str] = {}
         logical = models or settings.models or []
         for i, name in enumerate(logical, start=1):
@@ -321,9 +323,7 @@ def build_player(
             if ref:
                 seat_models[i] = ref
         backend = OpenCodeBackend(
-            base_url=settings.opencode_url,
-            username=settings.opencode_username,
-            password=os.environ.get(settings.opencode_password_env),
+            connection=connection,
             default_model=settings.opencode_model,
             seat_models=seat_models,
         )
