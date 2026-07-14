@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
-from core.sr.types import Expectation, ParseResult
+from core.sr.types import Expectation, HostEmit, ParseResult
 
 State_contra = TypeVar("State_contra", contravariant=True)  # noqa: F841 — 仅用于 Protocol 类型示意
 
@@ -64,8 +64,17 @@ class Rules(Protocol):
         """阶段或回合推进。可在 apply 之后把状态机往前推一格到下一个 expected。"""
         ...
 
+    def pending(self, state: Any) -> list[HostEmit]:
+        """apply/advance 之后、下一次 expected 之前要落日志+路由的非玩家句子。
+
+        host 串场词、观众事件（reveal / 计票公布 / 胜负）由本方法产出。loop 不对 host 调
+        actor（host 是 rules 纯函数模板），拿到本列表后逐条记进 Sentence 日志、按 channels
+        路由、但不 apply（这些句子的语义已由 apply/advance 在 state 里反映）。
+        无则返回 []。终局前的 reveal 等也走这里。"""
+        ...
+
     def turn_id(self, state: Any) -> str:
-        """回合定位，替代旧 decision_id(quest, attempt, phase, seat)。core 只当字符串用。"""
+        """回合定位串（玩法自定义格式）。core 只当字符串用。"""
         ...
 
     def pack(self, state: Any) -> bytes:
@@ -77,5 +86,5 @@ class Rules(Protocol):
         ...
 
 
-# 旧名兼容：rules 即玩法。后续迁移期间 avalon/werewolf 各发一个 Rules 实现。
-__all__ = ["Rules", "Expectation", "ParseResult"]
+# rules 即玩法：每个玩法提供一个 Rules 实现，core 持有一个实例驱动。
+__all__ = ["Rules", "Expectation", "HostEmit", "ParseResult"]

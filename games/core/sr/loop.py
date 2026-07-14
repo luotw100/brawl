@@ -62,7 +62,7 @@ def deliver(deliveries: list[Delivery], threads: dict[int, SeatThread]) -> None:
                 threads[ch].inbox.append(d.text)
 
 
-_MAX_ATTEMPTS = 5
+_MAX_RETRIES = 5
 _BACKOFF_BASE = 1.0
 _BACKOFF_CAP = 30.0
 
@@ -82,24 +82,43 @@ async def run(
     """
     state = rules.initial_state(setup)
     seq = -1
+
+    def _flush_host() -> None:
+        """落日志 + 路由当前 state 对应的 host/观众串场词（rules 纯函数模板产出，不调 actor）。
+
+        这些句子的语义已在 apply/advance 里反映，不进 apply——core 只记 + 路由。
+        rules.pending 必须是无状态纯查询：同一 state 反复调用返回同一批，否则会重发。
+        """
+        nonlocal seq
+        for emit in rules.pending(state):
+            seq = journal.next_seq()
+            hsent = Sentence(seq=seq, turn_id=emit.turn_id, speaker="host", raw="",
+                             deliveries=emit.deliveries, action=emit.action)
+            journal.append_sentence(hsent, None)
+            deliver(emit.deliveries, threads)
+
+    _flush_host()  # 开局串场（主持人开场、发牌揭示）：首句玩家行动之前先落
+
     while not rules.is_terminal(state):
         exp = rules.expected(state)
         seat = exp.seat
         actor = actors.get(seat) if isinstance(seat, int) else None
         if actor is None:
             # host 串场词等非玩家 expectation：rules 应已用 action/deliveries 给出，无需 actor。
-            # 为 KISS，host 由 rules 在 advance/apply 内自行产生并 emit（见 DummyRules），
-            # loop 不对 host 调 actor。到此分支意味着玩法把 host 放进 expected 却没在 rules 内消化。
+            # loop 不对 host 调 actor；到此分支意味着玩法把 host 放进 expected 却没在 rules 内消化。
             raise RuntimeError(f"no actor for seat={seat!r}; host sentences must not go through actors")
 
         seq = journal.next_seq()
         raw, audit = await _speak_with_retry(actor, seat, exp.view, exp.turn_id, seq)
         pr = rules.parse(raw, state, exp)  # 不过 -> ValueError，重试语义见文档风险项 2
 
-        sent = Sentence(seq=seq, turn_id=exp.turn_id, speaker=seat, raw=raw, deliveries=pr.deliveries, action=pr.action)
+        sent = Sentence(seq=seq, turn_id=exp.turn_id, speaker=seat, raw=raw,
+                        deliveries=pr.deliveries, action=pr.action)
         journal.append_sentence(sent, audit)
         deliver(pr.deliveries, threads)
         state = rules.advance(rules.apply(state, pr.action))
+
+        _flush_host()  # 每步玩家行动后的串场（开票公布、阶段提示、终局 reveal 等）
 
         if snapshot_every and seq % snapshot_every == 0:
             journal.save_snapshot(seq, rules.pack(state))
@@ -138,6 +157,8 @@ async def resume(
 
     for i in range(start_idx, len(recorded)):
         d = recorded[i]
+        if d["speaker"] == "host":
+            continue  # host 串场词不参与状态推进（语义已在玩家句子的 apply/advance 里反映）
         state = rules.advance(rules.apply(state, d["action"]))
     return state
 
@@ -150,15 +171,15 @@ async def _speak_with_retry(
     seq: int,
 ) -> tuple[str, dict[str, Any] | None]:
     """调 actor，带退避重试（沿用旧 AgentActor 的策略）。"""
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
+    for retry_no in range(1, _MAX_RETRIES + 1):
         try:
             return await actor.speak(seat, prompt, turn_id, seq)
         except Exception as e:
-            if attempt == _MAX_ATTEMPTS:
+            if retry_no == _MAX_RETRIES:
                 raise
-            delay = min(_BACKOFF_BASE * 2 ** (attempt - 1), _BACKOFF_CAP) + random.random()
+            delay = min(_BACKOFF_BASE * 2 ** (retry_no - 1), _BACKOFF_CAP) + random.random()
             print(
-                f"[retry] 座位{seat} turn={turn_id} 第 {attempt}/{_MAX_ATTEMPTS} 次失败，{delay:.1f}s 后重试：{e}",
+                f"[retry] 座位{seat} turn={turn_id} 第 {retry_no}/{_MAX_RETRIES} 次失败，{delay:.1f}s 后重试：{e}",
                 file=sys.stderr,
             )
             await _sleep(delay)

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.sr.rules import Rules as RulesProtocol  # noqa: F401 — 仅供类型提示
-from core.sr.types import Delivery, Expectation, ParseResult
+from core.sr.types import Delivery, Expectation, HostEmit, ParseResult
 
 SEATS = [1, 2, 3]
 
@@ -43,6 +43,19 @@ class DummyRules:
 
     def advance(self, state: dict) -> dict:
         return {**state, "step": state["step"] + 1}
+
+    def pending(self, state: dict) -> list[HostEmit]:
+        """演示 host 串场：终局（step==3）时向观众广播一句收尾。每一步 pending 都是
+        纯查询：只在 is_terminal 后返一句，其余返回 []——故 loop 终局 flush 不会重复。"""
+        if state["step"] < len(SEATS):
+            return []
+        return [
+            HostEmit(
+                turn_id="dummy.host.closing",
+                deliveries=[Delivery(text="主持人：本局结束。", channels=["broadcast", "audience"])],
+                action='{"kind":"closing"}',
+            )
+        ]
 
     def turn_id(self, state: dict) -> str:
         return f"dummy.{state['step']}"

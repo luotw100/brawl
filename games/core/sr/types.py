@@ -36,12 +36,11 @@ class Delivery(BaseModel):
 class Sentence(BaseModel):
     """一次发言/动作的完整记录。core 的 checkpoint 原子单位。
 
-    - `turn_id`：rules.turn_id(state) 给（如 "quest3.attempt2.vote" / "day2.wolf_kill"）；core
-      当字符串用，替代旧的 decision_id(quest, attempt, phase, seat)。回放层据此把
-      sentence 与 llm_calls.jsonl 的审计行对齐。
+    - `turn_id`：rules.turn_id(state) 给的回合定位串（玩法自定义格式，core 只当字符串用）。
+      回放层据此把 sentence 与 llm_calls.jsonl 的审计行对齐。
     - `speaker`：席位号，或 "host"（主持人串场词，rules 纯函数模板生成）。
     - `raw`：该席位 opencode 的原始响应文本；给 replay / llm_calls join 存原文。
-    - `deliveries`：路由后的多段话（一般 1 段；夜晚刀人可能 1 段给狼群 + 1 段 audience）。
+    - `deliveries`：路由后的多段话（一般 1 段；私密动作可能 1 段给子群 + 1 段 audience）。
     - `action`：rules.parse 解析出的结构化结果，序列化成字符串。**core 当 bytes 存**，从不读字段。
     - `seq`：core 赋的全局自增序号，日志定位用。
     """
@@ -72,5 +71,18 @@ class Expectation(BaseModel):
 class ParseResult(BaseModel):
     """rules.parse 的产物：路由 + opaque action。唯一懂语义的解析点。"""
 
+    deliveries: list[Delivery] = Field(default_factory=list)
+    action: str = ""
+
+
+class HostEmit(BaseModel):
+    """host/观众串场词：apply/advance 之后、下一次 expected 之前要落日志的非玩家句子。
+
+    host 是 rules 纯函数模板产出（不调 actor）。speaker 固定 "host"；turn_id/路由/action 由
+    rules 在此处给定。`action` 是给观众/stage 读的结构化 payload（如 reveal 的角色揭示），
+    `deliveries` 的 text 是面向席位的自然语言话。两者同一条总线服务两端（见 §8）。
+    """
+
+    turn_id: str
     deliveries: list[Delivery] = Field(default_factory=list)
     action: str = ""

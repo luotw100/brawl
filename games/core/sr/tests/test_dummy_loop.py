@@ -36,16 +36,18 @@ async def test_run_routes_broadcast_and_records(tmp_path):
     assert final["step"] == 3
     assert len(final["said"]) == 3
 
-    # 路由：每席位 inbox 收到 3 条广播（含自己那句）
+    # 路由：每席位 inbox 收到 4 条——3 条玩家广播 + 1 条主持人收场广播（pending 机制）
     for no in SEATS:
-        assert len(threads[no].inbox) == 3, f"seat {no} 应收到 3 条广播，实得 {len(threads[no].inbox)}"
+        assert len(threads[no].inbox) == 4, f"seat {no} 应收到 4 条，实得 {len(threads[no].inbox)}"
+        assert threads[no].inbox[-1] == "主持人：本局结束。"
 
-    # journal 落盘：3 条 sentence
+    # journal 落盘：4 条 sentence（3 玩家 + 1 host 收场）
     sentences = journal.load_sentences()
-    assert len(sentences) == 3
+    assert len(sentences) == 4
+    assert sentences[3]["speaker"] == "host"
     journal.close()
 
-    # llm_calls.jsonl 等长
+    # llm_calls.jsonl 只有玩家句（host 不调 actor，不写审计行）
     import json
 
     llm_lines = (tmp_path / "rep" / "llm_calls.jsonl").read_text().splitlines()
@@ -104,4 +106,5 @@ async def test_null_journal_no_disk(tmp_path):
 
     assert final["step"] == 3
     for no in SEATS:
-        assert len(threads[no].inbox) == 3
+        # 3 条玩家广播 + 1 条主持人收场广播（pending 在 NullJournal 下仍路由）
+        assert len(threads[no].inbox) == 4
