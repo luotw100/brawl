@@ -2,7 +2,7 @@
 
 验证：
 1. loop 跑完 3 句后终局，threads 各席位的 inbox 收到了 3 条广播。
-2. journal 落了 3 条 sentence + 3 条 llm_call，meta 可写。
+2. journal 落了 4 条 sentence（3 玩家 + 1 host 收场），meta 可写。
 3. resume 从 snapshot 恢复的 state 与实时跑的终态相等。
 4. resume 无 snapshot 冷续跑（传 setup）从零重放全部 sentences，仍得同一终态。
 core 全程不读 state 字段，未触发任何玩法名词。
@@ -50,15 +50,6 @@ async def test_run_routes_broadcast_and_records(tmp_path):
     assert len(sentences) == 4
     assert sentences[3]["speaker"] == "host"
     journal.close()
-
-    # llm_calls.jsonl 只有玩家句（host 不调 actor，不写审计行）；seq/turn_id/speaker 由 journal 补
-    import json
-
-    llm_lines = (tmp_path / "rep" / "llm_calls.jsonl").read_text().splitlines()
-    assert len([ln for ln in llm_lines if ln.strip()]) == 3
-    call0 = json.loads(llm_lines[0])
-    assert call0["seat_no"] == 1 and call0["ok"]
-    assert call0["seq"] == 0 and call0["speaker"] == 1 and call0["turn_id"] == "dummy.0.say"
 
 
 @pytest.mark.asyncio

@@ -37,9 +37,9 @@ class Sentence(BaseModel):
     """一次发言/动作的完整记录。core 的 checkpoint 原子单位。
 
     - `turn_id`：rules.turn_id(state) 给的回合定位串（玩法自定义格式，core 只当字符串用）。
-      回放层据此把 sentence 与 llm_calls.jsonl 的审计行对齐。
+      回放层据此把 sentence 与对应 LLM 调用对齐（审计现在由 opencode server 承担）。
     - `speaker`：席位号，或 "host"（主持人串场词，rules 纯函数模板生成）。
-    - `raw`：该席位 opencode 的原始响应文本；给 replay / llm_calls join 存原文。
+    - `raw`：该 seat actor 的原始响应文本；给回放层存档。
     - `deliveries`：路由后的多段话（一般 1 段；私密动作可能 1 段给子群 + 1 段 audience）。
     - `action`：rules.parse 解析出的结构化结果，序列化成字符串。**core 当 bytes 存**，从不读字段。
     - `seq`：core 赋的全局自增序号，日志定位用。

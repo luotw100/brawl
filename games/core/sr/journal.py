@@ -4,15 +4,7 @@
 sidecar / watermark / "custom 事件严格先于 checkpoint chunk"的两路流对齐——只有
 一路 sentences，torn 超步不存在（fsync 后才递进 seq）。
 
-同时记两份产物：
-
-    sentences.jsonl   每条 Sentence一行（玩家发言 + host 串场 + audience 事件，同一条总线）
-    llm_calls.jsonl   每次 Actor 调用一行（审计：prompt/raw/latency/usage/error）
-
-llm_calls.jsonl 与旧格式同源，让 replay / tts / chat-view 子命令在阶段 6 之前
-不必重写（呼应文档风险项 4 的过渡）。sentences.jsonl 是 stage 阶段 6 的数据源。
-
-不给 --replay 时走 NullJournal（空对象），调用方零分叉。
+`--replay` 给了就落盘；不给时走 NullJournal（空对象），调用方零分叉。
 """
 
 from __future__ import annotations
@@ -23,7 +15,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 _SENTENCES = "sentences.jsonl"
-_LLM_CALLS = "llm_calls.jsonl"
 _SNAPSHOT = "_snapshot.json"
 _META = "meta.json"
 
@@ -33,7 +24,7 @@ class Journal(Protocol):
 
     def write_meta(self, meta: dict[str, Any]) -> None: ...
     def write_avatar(self, seat_no: int, src: Path) -> None: ...
-    def append_sentence(self, sent: Any, llm_call: dict[str, Any] | None) -> None: ...
+    def append_sentence(self, sent: Any) -> None: ...
     def save_snapshot(self, seq: int, state_bytes: bytes) -> None: ...
     def latest_snapshot(self) -> tuple[int, bytes] | None: ...
     def load_sentences(self) -> list[dict[str, Any]]: ...
@@ -51,16 +42,12 @@ class DirJournal:
     def __init__(self, run_dir: Path, *, resume: bool = False) -> None:
         self.run_dir = run_dir
         self._sent_path = run_dir / _SENTENCES
-        self._llm_path = run_dir / _LLM_CALLS
         if resume:
             self._sent_path.touch(exist_ok=True)
-            self._llm_path.touch(exist_ok=True)
         else:
             run_dir.mkdir(parents=True, exist_ok=False)
             self._sent_path.touch()
-            self._llm_path.touch()  # 预创建：即便零调用也留空文件
         self._sent_fp = self._sent_path.open("a", encoding="utf-8")
-        self._llm_fp = self._llm_path.open("a", encoding="utf-8")
         # 续跑：以已有句子序号水位续接，避免重复写
         self._next_seq = self._existing_seq_count()
 
@@ -83,20 +70,8 @@ class DirJournal:
         self._next_seq += 1
         return s
 
-    def append_sentence(self, sent: Any, llm_call: dict[str, Any] | None) -> None:
-        """原子记录一条 Sentence + 其伴随的 llm 审计行（若有）。
-
-        先写 llm_call（fsync），再写 sentence（fsync），最后才由 loop 推进 state。
-        崩在写完 llm_call 但 sentence 之前：续跑时 sentence 缺这一条，llm_calls 比
-        sentences 多一行——属"半句未成"的脏尾部，loop.resume 据序号对齐时丢弃该 llm 行。
-
-        seq/turn_id/speaker 由本方法从 sentence 补进 llm_call——actor 的 speak 不再拿 seq，
-        审计行与句子行的对齐在这里保证（replay/tts 据此 join）。
-        """
-        if llm_call is not None:
-            row = {"seq": sent.seq, "turn_id": sent.turn_id, "speaker": sent.speaker, **llm_call}
-            self._llm_fp.write(json.dumps(row, ensure_ascii=False) + "\n")
-            self._llm_fp.flush()
+    def append_sentence(self, sent: Any) -> None:
+        """原子记录一条 Sentence。写盘并 fsync 后才算完成一次超推进。"""
         self._sent_fp.write(json.dumps(sent.model_dump(), ensure_ascii=False) + "\n")
         self._sent_fp.flush()
         import os
@@ -131,7 +106,6 @@ class DirJournal:
 
     def close(self) -> None:
         self._sent_fp.close()
-        self._llm_fp.close()
 
 
 class NullJournal:
@@ -142,7 +116,7 @@ class NullJournal:
     def next_seq(self) -> int:
         return 0
 
-    def append_sentence(self, sent: Any, llm_call: dict[str, Any] | None) -> None: ...
+    def append_sentence(self, sent: Any) -> None: ...
     def save_snapshot(self, seq: int, state_bytes: bytes) -> None: ...
     def latest_snapshot(self) -> tuple[int, bytes] | None:
         return None

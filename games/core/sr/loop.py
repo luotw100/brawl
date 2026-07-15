@@ -37,9 +37,9 @@ class Actor(Protocol):
     """一个席位的说话者契约。core 用它替代旧的 ModelBackend + AgentActor 两层。
 
     rules.view 产出的 opaque 视图对象原样进来；actor 把它的 `.prompt` 发给该 seat 的
-    opencode/session（或读它的结构化字段做本地模拟），拿回 (raw, audit)。audit 是写到
-    llm_calls.jsonl 的一行字段，形状由 actor 自定（OpenCodeActor 复用旧格式，RandomActor
-    填等价字段）；seq/turn_id 由 journal 在落盘时补，actor 不必知道。
+    opencode/session（或读它的结构化字段做本地模拟），拿回 (raw, audit)。audit 是可选
+    调试元数据（OpenCodeActor 可带 usage/latency，RandomActor 可带随机标记），core 不
+    强制落盘；本地审计已移除，审计源以 opencode server 自身为准。
     """
 
     async def speak(self, seat: int, view: Any, turn_id: str) -> tuple[str, dict[str, Any] | None]: ...
@@ -103,7 +103,7 @@ async def run(
             seq = journal.next_seq()
             hsent = Sentence(seq=seq, turn_id=emit.turn_id, speaker="host", raw="",
                              deliveries=emit.deliveries, action=emit.action)
-            journal.append_sentence(hsent, None)
+            journal.append_sentence(hsent)
             deliver(emit.deliveries, threads)
 
     _flush_host()  # 开局串场（主持人开场、发牌揭示）：首句玩家行动之前先落
@@ -127,12 +127,12 @@ async def run(
         gathered = await asyncio.gather(*(_ask(s) for s in seats))
 
         # 按座位序落日志 + 解析 + 路由 + apply（确定性顺序，与并发无关）。
-        for s, raw, audit in gathered:
+        for s, raw, _audit in gathered:
             pr = rules.parse(s, raw, state)  # 不过 -> ValueError，重试语义见文档风险项 2
             seq = journal.next_seq()
             sent = Sentence(seq=seq, turn_id=exp.turn_id, speaker=s, raw=raw,
                             deliveries=pr.deliveries, action=pr.action)
-            journal.append_sentence(sent, audit)
+            journal.append_sentence(sent)
             threads[s].inbox.clear()  # 该席位已看到它的 prompt（等价旧 commit 清 inbox）
             spoken.add(s)
             deliver(pr.deliveries, threads)
