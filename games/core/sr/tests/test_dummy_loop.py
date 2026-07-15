@@ -36,9 +36,13 @@ async def test_run_routes_broadcast_and_records(tmp_path):
     assert final["step"] == 3
     assert len(final["said"]) == 3
 
-    # 路由：每席位 inbox 收到 4 条——3 条玩家广播 + 1 条主持人收场广播（pending 机制）
+    # clear-on-speak：席位发言后清自己的 inbox（等价旧 commit），故早发言者累积更多。
+    # seat1（首发）inbox = 自己 + 后两人 + 收场 = 4；seat2 = 自己 + seat3 + 收场 = 3；
+    # seat3（末发）= 自己 + 收场 = 2。收场广播在所有人之后、无人再清，全员末位都是它。
+    assert len(threads[1].inbox) == 4
+    assert len(threads[2].inbox) == 3
+    assert len(threads[3].inbox) == 2
     for no in SEATS:
-        assert len(threads[no].inbox) == 4, f"seat {no} 应收到 4 条，实得 {len(threads[no].inbox)}"
         assert threads[no].inbox[-1] == "主持人：本局结束。"
 
     # journal 落盘：4 条 sentence（3 玩家 + 1 host 收场）
@@ -47,13 +51,14 @@ async def test_run_routes_broadcast_and_records(tmp_path):
     assert sentences[3]["speaker"] == "host"
     journal.close()
 
-    # llm_calls.jsonl 只有玩家句（host 不调 actor，不写审计行）
+    # llm_calls.jsonl 只有玩家句（host 不调 actor，不写审计行）；seq/turn_id/speaker 由 journal 补
     import json
 
     llm_lines = (tmp_path / "rep" / "llm_calls.jsonl").read_text().splitlines()
     assert len([ln for ln in llm_lines if ln.strip()]) == 3
     call0 = json.loads(llm_lines[0])
     assert call0["seat_no"] == 1 and call0["ok"]
+    assert call0["seq"] == 0 and call0["speaker"] == 1 and call0["turn_id"] == "dummy.0.say"
 
 
 @pytest.mark.asyncio
@@ -105,6 +110,9 @@ async def test_null_journal_no_disk(tmp_path):
     final = await run(rules, setup=None, actors=actors, journal=journal, threads=threads)
 
     assert final["step"] == 3
+    # clear-on-speak 同 test_run_routes_broadcast_and_records：早发言者累积更多。
+    assert len(threads[1].inbox) == 4
+    assert len(threads[2].inbox) == 3
+    assert len(threads[3].inbox) == 2
     for no in SEATS:
-        # 3 条玩家广播 + 1 条主持人收场广播（pending 在 NullJournal 下仍路由）
-        assert len(threads[no].inbox) == 4
+        assert threads[no].inbox[-1] == "主持人：本局结束。"

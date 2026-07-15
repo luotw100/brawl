@@ -41,14 +41,22 @@ class Rules(Protocol):
         ...
 
     def expected(self, state: Any) -> Expectation:
-        """该谁说话、要遵守什么 schema、本回合 turn_id。终局时不应被调用。"""
+        """该谁说话、本回合 turn_id。seats 长度 >1 即同时行动（core gather 并发收齐）。
+        终局时不应被调用。"""
         ...
 
-    def view(self, seat: int, state: Any) -> str:
-        """给某席位注入的最终 prompt 文本。含私密信息隔离（只取该席位有权看到的状态子集）。"""
+    def view(self, seat: int, state: Any, inbox: list[str], *, first_speak: bool = False) -> Any:
+        """给某席位拼一个 opaque 视图对象，其 `.prompt` 是最终发给该 seat 的 prompt 文本。
+
+        `inbox` 是该席位自上次发言以来累积的公开事件（core 维护的 threads[seat].inbox），
+        rules 据此拼 human 消息；`first_speak` 为 True 表示该席位在本进程内首次发言（冷续跑后
+        也为 True）——rules 据此决定是否在 `.prompt` 里 seed 全量上下文（身份/规则/阵容）。
+        私密信息隔离（只取该席位有权看到的状态子集）全在这里。返回值对 core 是 opaque，
+        core 原样递给 actor，不读字段。
+        """
         ...
 
-    def parse(self, raw: str, state: Any, exp: Expectation) -> ParseResult:
+    def parse(self, seat: int, raw: str, state: Any) -> ParseResult:
         """解析 + 校验该席位产出的 raw。唯一懂语义的地方。
 
         校验不过抛 ValueError，core 会按重试策略重新对该 expectation 调 actor（呼应旧

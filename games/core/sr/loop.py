@@ -4,14 +4,17 @@
 
     state = rules.initial_state(setup)
     while not rules.is_terminal(state):
-        exp     = rules.expected(state)
-        raw, ll = await actor.speak(exp.seat, exp.view)    # opencode 调用，返回原文 + 审计行
-        pr      = rules.parse(raw, state, exp)             # 唯一懂语义；不过 raise 重试
-        seq     = journal.next_seq()
-        sent    = Sentence(seq, exp.turn_id, exp.seat, raw, pr.deliveries, pr.action)
-        journal.append_sentence(sent, ll)
-        deliver(pr.deliveries, threads)                    # 唯一懂路由
-        state = rules.advance(rules.apply(state, pr.action))
+        exp = rules.expected(state)                       # 该谁、turn_id；seats 长度>1 即同时
+        raws = await gather(*[actor.speak(s, rules.view(s, state, inbox[s], first_speak=…))
+                              for s in exp.seats])         # 并发收齐（同时亮牌/扣牌）
+        for s, raw in zip(exp.seats, raws):                 # 按座位序确定性落日志/路由/apply
+            pr   = rules.parse(s, raw, state)              # 唯一懂语义；不过 raise 重试
+            sent = Sentence(seq, exp.turn_id, s, raw, pr.deliveries, pr.action)
+            journal.append_sentence(sent, audit)
+            inbox[s].clear(); deliver(pr.deliveries, threads)
+            state = rules.apply(state, pr.action)
+        flush(rules.pending(state))                        # 串场词（开票/reveal/收场）
+        state = rules.advance(state); flush(rules.pending(state))
 
 句子日志即 checkpoint：resume 时从 snapshot 重放 sentences，回到崩溃前状态。
 没有两路流对齐，没有 sidecar/watermark，没有 torn 超步。
@@ -19,6 +22,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import sys
 from typing import Any, Protocol
@@ -32,12 +36,13 @@ from core.threads import SeatThread
 class Actor(Protocol):
     """一个席位的说话者契约。core 用它替代旧的 ModelBackend + AgentActor 两层。
 
-    rules.view 产出的 prompt 文本原样进来；actor 原样发给该 seat 的 opencode/session，
-    拿回 (raw, audit)。audit 是写到 llm_calls.jsonl 的一行字段，形状由 actor 自定
-    （OpenCodeActor 复用旧格式，RandomActor 填等价字段）。author 字段是 seq+turn_id。
+    rules.view 产出的 opaque 视图对象原样进来；actor 把它的 `.prompt` 发给该 seat 的
+    opencode/session（或读它的结构化字段做本地模拟），拿回 (raw, audit)。audit 是写到
+    llm_calls.jsonl 的一行字段，形状由 actor 自定（OpenCodeActor 复用旧格式，RandomActor
+    填等价字段）；seq/turn_id 由 journal 在落盘时补，actor 不必知道。
     """
 
-    async def speak(self, seat: int, prompt: str, turn_id: str, seq: int) -> tuple[str, dict[str, Any] | None]: ...
+    async def speak(self, seat: int, view: Any, turn_id: str) -> tuple[str, dict[str, Any] | None]: ...
 
     async def close(self) -> None: ...
 
@@ -82,6 +87,7 @@ async def run(
     """
     state = rules.initial_state(setup)
     seq = -1
+    spoken: set[int] = set()  # 本进程内已发言过的席位——rules.view 据此决定首句是否 seed 全量上下文
 
     def _flush_host() -> None:
         """落日志 + 路由当前 state 对应的 host/观众串场词（rules 纯函数模板产出，不调 actor）。
@@ -101,24 +107,37 @@ async def run(
 
     while not rules.is_terminal(state):
         exp = rules.expected(state)
-        seat = exp.seat
-        actor = actors.get(seat) if isinstance(seat, int) else None
-        if actor is None:
-            # host 串场词等非玩家 expectation：rules 应已用 action/deliveries 给出，无需 actor。
-            # loop 不对 host 调 actor；到此分支意味着玩法把 host 放进 expected 却没在 rules 内消化。
-            raise RuntimeError(f"no actor for seat={seat!r}; host sentences must not go through actors")
+        seats = exp.seats
+        for s in seats:
+            if actors.get(s) is None:
+                # host 串场词等非玩家 expectation：rules 应已用 pending 给出，无需 actor。
+                # loop 不对 host 调 actor；到此分支意味着玩法把 host 放进 expected 却没在 rules 内消化。
+                raise RuntimeError(f"no actor for seat={s!r}; host sentences must not go through actors")
 
-        seq = journal.next_seq()
-        raw, audit = await _speak_with_retry(actor, seat, exp.view, exp.turn_id, seq)
-        pr = rules.parse(raw, state, exp)  # 不过 -> ValueError，重试语义见文档风险项 2
+        # 同时亮牌/扣牌：并发收齐所有座位的 raw（单席位即一次调用），每人 prompt 互不依赖。
+        # 顺序不影响语义——下面按座位序确定性落日志/apply，与并发采集分离。
+        async def _ask(s: int) -> tuple[int, str, dict[str, Any] | None]:
+            v = rules.view(s, state, threads[s].inbox, first_speak=s not in spoken)
+            raw, audit = await _speak_with_retry(actors[s], s, v, exp.turn_id)
+            return s, raw, audit
 
-        sent = Sentence(seq=seq, turn_id=exp.turn_id, speaker=seat, raw=raw,
-                        deliveries=pr.deliveries, action=pr.action)
-        journal.append_sentence(sent, audit)
-        deliver(pr.deliveries, threads)
-        state = rules.advance(rules.apply(state, pr.action))
+        gathered = await asyncio.gather(*(_ask(s) for s in seats))
 
-        _flush_host()  # 每步玩家行动后的串场（开票公布、阶段提示、终局 reveal 等）
+        # 按座位序落日志 + 解析 + 路由 + apply（确定性顺序，与并发无关）。
+        for s, raw, audit in gathered:
+            pr = rules.parse(s, raw, state)  # 不过 -> ValueError，重试语义见文档风险项 2
+            seq = journal.next_seq()
+            sent = Sentence(seq=seq, turn_id=exp.turn_id, speaker=s, raw=raw,
+                            deliveries=pr.deliveries, action=pr.action)
+            journal.append_sentence(sent, audit)
+            threads[s].inbox.clear()  # 该席位已看到它的 prompt（等价旧 commit 清 inbox）
+            spoken.add(s)
+            deliver(pr.deliveries, threads)
+            state = rules.apply(state, pr.action)
+
+        _flush_host()  # 本轮玩家行动后的串场（开票公布、阶段提示、终局 reveal 等）
+        state = rules.advance(state)
+        _flush_host()  # advance 后的串场（阶段交接、终局收场）
 
         if snapshot_every and seq % snapshot_every == 0:
             journal.save_snapshot(seq, rules.pack(state))
@@ -166,14 +185,13 @@ async def resume(
 async def _speak_with_retry(
     actor: Actor,
     seat: int,
-    prompt: str,
+    view: Any,
     turn_id: str,
-    seq: int,
 ) -> tuple[str, dict[str, Any] | None]:
     """调 actor，带退避重试（沿用旧 AgentActor 的策略）。"""
     for retry_no in range(1, _MAX_RETRIES + 1):
         try:
-            return await actor.speak(seat, prompt, turn_id, seq)
+            return await actor.speak(seat, view, turn_id)
         except Exception as e:
             if retry_no == _MAX_RETRIES:
                 raise
@@ -187,8 +205,6 @@ async def _speak_with_retry(
 
 
 async def _sleep(delay: float) -> None:
-    import asyncio
-
     await asyncio.sleep(delay)
 
 

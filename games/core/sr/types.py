@@ -54,18 +54,19 @@ class Sentence(BaseModel):
 
 
 class Expectation(BaseModel):
-    """该谁说话、要什么。
+    """该谁说话、这一回合的 turn_id。
 
-    `view` 是 rules.view(seat, state) 生成的最终 prompt 文本——core 原样发给该 seat 的
-    opencode/session，不套任何通用模板（模板里写"你是 3 号狼人"就是玩法泄漏）。
-    `schema_text` 是塞进 prompt 里告诉玩家"请按这个 JSON 形状回答"的约束文本，由 rules
-    生成（因为合法形状是玩法专属的）。
+    `seats` 是本轮要发言的席位（≥1）。长度 >1 即"同时亮牌/扣牌"——core 用 asyncio.gather
+    真并发收齐所有人的 raw，再按座位序落日志、解析、apply（贴合规则里表决/出牌的 simultaneity，
+    每人各自的 prompt 互不依赖）。单席位就是普通的轮流发言。
+
+    每个 seat 的最终 prompt 文本由 rules.view(seat, state, inbox, first_speak=...) 给出——
+    core 不套任何通用模板（模板里写"你是 3 号狼人"就是玩法泄漏）。core 把该 view 对象原样
+    递给该 seat 的 actor，不读它的字段。
     """
 
-    seat: int | Literal["host"]
+    seats: list[int]
     turn_id: str
-    view: str
-    schema_text: str = ""
 
 
 class ParseResult(BaseModel):

@@ -6,6 +6,7 @@ DummyRules：3 个席位轮流广播说一句，3 句后终局。覆盖 broadcas
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from core.sr.rules import Rules as RulesProtocol  # noqa: F401 — 仅供类型提示
@@ -26,14 +27,14 @@ class DummyRules:
 
     def expected(self, state: dict) -> Expectation:
         seat = SEATS[state["step"]]
-        return Expectation(
-            seat=seat, turn_id=f"dummy.{state['step']}.say", view=f"你是 {seat} 号，请说一句话。", schema_text=""
-        )
+        return Expectation(seats=[seat], turn_id=f"dummy.{state['step']}.say")
 
-    def view(self, seat: int, state: dict) -> str:
-        return f"你是 {seat} 号，请说一句话。"  # 与 expected 内一致；loop 主路径用 expected.view
+    def view(self, seat: int, state: dict, inbox: list[str], *, first_speak: bool = False) -> Any:
+        # 返回一个带 .prompt 的 opaque 视图对象；core 原样递给 actor，不读字段。
+        # Dummy 不用 first_speak/inbox（真玩法据此拼 seed 与 human 消息），这里只给固定串。
+        return SimpleNamespace(prompt=f"你是 {seat} 号，请说一句话。")
 
-    def parse(self, raw: str, state: dict, exp: Expectation) -> ParseResult:
+    def parse(self, seat: int, raw: str, state: dict) -> ParseResult:
         # 玩家发言广播给全员（broadcast 含自己）。唯一懂语义的地方。
         return ParseResult(deliveries=[Delivery(text=raw, channels=["broadcast"])], action=raw)
 
@@ -75,12 +76,12 @@ class DummyActor:
     """回声 actor：按席位返回固定串，零网络。每一次 speak 都入账供断言。"""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[int, str, str, int]] = []
+        self.calls: list[tuple[int, str, str]] = []
 
-    async def speak(self, seat: int, prompt: str, turn_id: str, seq: int) -> tuple[str, dict[str, Any] | None]:
-        self.calls.append((seat, prompt, turn_id, seq))
+    async def speak(self, seat: int, view: Any, turn_id: str) -> tuple[str, dict[str, Any] | None]:
+        self.calls.append((seat, view.prompt, turn_id))
         raw = f"{seat}号说：大家好"
-        audit = {"call_id": turn_id, "seat_no": seat, "seq": seq, "ok": True}
+        audit = {"call_id": turn_id, "seat_no": seat, "ok": True}
         return raw, audit
 
     async def close(self) -> None: ...

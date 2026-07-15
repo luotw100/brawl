@@ -89,9 +89,13 @@ class DirJournal:
         先写 llm_call（fsync），再写 sentence（fsync），最后才由 loop 推进 state。
         崩在写完 llm_call 但 sentence 之前：续跑时 sentence 缺这一条，llm_calls 比
         sentences 多一行——属"半句未成"的脏尾部，loop.resume 据序号对齐时丢弃该 llm 行。
+
+        seq/turn_id/speaker 由本方法从 sentence 补进 llm_call——actor 的 speak 不再拿 seq，
+        审计行与句子行的对齐在这里保证（replay/tts 据此 join）。
         """
         if llm_call is not None:
-            self._llm_fp.write(json.dumps(llm_call, ensure_ascii=False) + "\n")
+            row = {"seq": sent.seq, "turn_id": sent.turn_id, "speaker": sent.speaker, **llm_call}
+            self._llm_fp.write(json.dumps(row, ensure_ascii=False) + "\n")
             self._llm_fp.flush()
         self._sent_fp.write(json.dumps(sent.model_dump(), ensure_ascii=False) + "\n")
         self._sent_fp.flush()
