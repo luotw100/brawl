@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-EXPECTED_OPENCODE_VERSION = "1.17.18"
+EXPECTED_OPENCODE_VERSION = "1.17.20"
 RUNTIME_DIR = "_opencode"
 
 _SERVER_USERNAME = "opencode"
@@ -58,7 +58,7 @@ def prepare_opencode_installation() -> OpenCodeInstallation:
     """Fail fast before creating a fresh replay directory."""
     executable_raw = shutil.which("opencode")
     if executable_raw is None:
-        raise OpenCodeRuntimeError("找不到 opencode 可执行文件，请先安装 OpenCode 1.17.18")
+        raise OpenCodeRuntimeError("找不到 opencode 可执行文件，请先安装 OpenCode 1.17.20")
     sandbox_raw = shutil.which("bwrap")
     if sandbox_raw is None:
         raise OpenCodeRuntimeError("找不到 bwrap；OpenCode 玩家必须在文件系统沙箱内运行")

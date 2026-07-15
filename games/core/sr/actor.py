@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from time import perf_counter
 from typing import Any, Protocol, runtime_checkable
 
@@ -85,17 +86,22 @@ class OpenCodeActor:
 
 
 class RandomActor:
-    """零网络 actor：按固定模式返回 raw，用于冒烟/负载测试。"""
+    """零网络 actor：由规则层传入一个生成器，按 view 产出合法 raw。
 
-    def __init__(self, answer: str = "我同意。") -> None:
-        self._answer = answer
+    生成器签名：generator(seat: int, view: Any) -> str。规则层最清楚当前 phase 要输出
+    什么 JSON，所以 sampler 下沉到 rules；core 只负责调用并落审计行。
+    """
+
+    def __init__(self, generator: Callable[[int, Any], str]) -> None:
+        self._generator = generator
 
     async def speak(self, seat: int, view: Any, turn_id: str) -> tuple[str, dict[str, Any] | None]:
-        return self._answer, {
+        raw = self._generator(seat, view)
+        return raw, {
             "call_id": turn_id,
             "seat_no": seat,
             "model": "random",
-            "output": self._answer,
+            "output": raw,
             "ok": True,
         }
 

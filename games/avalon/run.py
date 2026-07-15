@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from avalon.random_actor import AvalonRandomActor
 from avalon.registry import load_registry
 from avalon.rules_engine import AvalonRules, AvalonState
 from avalon.settings import AvalonSettings
@@ -20,7 +19,7 @@ from core.opencode_runtime import (
     open_opencode_runtime,
     prepare_opencode_installation,
 )
-from core.sr.actor import OpenCodeActor
+from core.sr.actor import OpenCodeActor, RandomActor
 from core.sr.journal import open_journal
 from core.sr.loop import resume, run, run_async_main
 from core.sr.opencode_backend import OpenCodeBackend
@@ -63,8 +62,8 @@ async def _fresh_game(settings: AvalonSettings, registry: Any) -> AvalonState:
         if src is not None:
             journal.write_avatar(seat.no, src)
 
-    async with _open_actors(settings, registry, rng, setup, installation) as actors:
-        rules = AvalonRules(registry, settings)
+    rules = AvalonRules(registry, settings)
+    async with _open_actors(settings, registry, setup, installation, rules) as actors:
         threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
         return await run(rules, setup, actors, journal, threads)
 
@@ -74,8 +73,8 @@ async def _resume_game(settings: AvalonSettings, registry: Any) -> AvalonState:
     setup = _setup_from_meta(meta)
     installation = _prepare_runtime(settings)
     journal = open_journal(settings.replay, resume=True)
-    async with _open_actors(settings, registry, random.Random(settings.seed), setup, installation) as actors:
-        rules = AvalonRules(registry, settings)
+    rules = AvalonRules(registry, settings)
+    async with _open_actors(settings, registry, setup, installation, rules) as actors:
         threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
         restored = await resume(rules, actors={}, journal=journal, threads=threads, setup=setup)
         if not rules.is_terminal(restored):
@@ -87,12 +86,12 @@ async def _resume_game(settings: AvalonSettings, registry: Any) -> AvalonState:
 async def _open_actors(
     settings: AvalonSettings,
     registry: Any,
-    rng: random.Random,
     setup: GameSetup,
     installation: OpenCodeInstallation | None,
+    rules: AvalonRules,
 ) -> AsyncIterator[dict[int, Any]]:
     if settings.player == "random":
-        actors = {no: AvalonRandomActor(rng) for no in range(1, len(setup.roles) + 1)}
+        actors = {no: RandomActor(rules.random_action) for no in range(1, len(setup.roles) + 1)}
         try:
             yield actors
         finally:

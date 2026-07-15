@@ -58,7 +58,7 @@ async def test_opencode_actor_infers_seat_no_when_view_lacks_it():
 
 @pytest.mark.asyncio
 async def test_random_actor_returns_fixed_answer():
-    actor = RandomActor("投赞成票")
+    actor = RandomActor(lambda seat, view: "投赞成票")
     raw, audit = await actor.speak(2, SimpleNamespace(prompt="x"), "vote")
     assert raw == "投赞成票"
     assert audit["seat_no"] == 2

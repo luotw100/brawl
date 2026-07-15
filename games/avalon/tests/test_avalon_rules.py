@@ -8,13 +8,13 @@ from typing import Any
 
 import pytest
 
-from avalon.random_actor import AvalonRandomActor
 from avalon.registry import load_registry
 from avalon.rules_engine import AvalonRules, AvalonState
 from avalon.settings import AvalonSettings
 from avalon.state import Role
 from avalon.validation import resolve_and_validate
 from avalon.view import PlayerView
+from core.sr.actor import RandomActor
 from core.sr.journal import DirJournal
 from core.sr.loop import resume, run
 from core.threads import SeatThread
@@ -30,8 +30,7 @@ def _setup(seed: int = 42, players: int = 5) -> tuple[AvalonSettings, Any, Any]:
 
 async def _run(settings: AvalonSettings, registry: Any, setup: Any, rep: Path) -> AvalonState:
     rules = AvalonRules(registry, settings)
-    rng = random.Random(settings.seed)
-    actors = {no: AvalonRandomActor(rng) for no in range(1, len(setup.roles) + 1)}
+    actors = {no: RandomActor(rules.random_action) for no in range(1, len(setup.roles) + 1)}
     journal = DirJournal(rep, resume=False)
     threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
     try:
@@ -75,7 +74,9 @@ async def test_resume_matches_runtime(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_avalon_random_actor_produces_valid_json() -> None:
+async def test_random_actor_produces_valid_json() -> None:
+    settings, registry, setup = _setup()
+    rules = AvalonRules(registry, settings)
     view = PlayerView(
         seat_no=1,
         role=Role.MERLIN,
@@ -84,7 +85,7 @@ async def test_avalon_random_actor_produces_valid_json() -> None:
         team_size=2,
         phase="propose",
     )
-    actor = AvalonRandomActor(random.Random(1))
+    actor = RandomActor(rules.random_action)
     raw, audit = await actor.speak(1, view, "q1.a1.propose")
     assert "team" in raw
     assert audit["seat_no"] == 1
