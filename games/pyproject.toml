@@ -5,9 +5,7 @@ description = "AI 直播对战的纯游戏逻辑层：玩法状态机 + 跨玩�
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "langgraph>=0.2.50",
     "langchain-core>=0.3.0",
-    "langchain-openai>=0.2.0",
     "pydantic>=2.7.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
@@ -15,8 +13,7 @@ dependencies = [
     "pydantic-settings>=2.4.0",
     "json-repair>=0.30",
     "httpx>=0.27",
-    "soundfile>=0.12",  # 读 wav 时长：真解码数据，故能识破百炼流式 wav 头里的假 data 大小
-    "langgraph-checkpoint-sqlite>=3.1.0",
+    "soundfile>=0.12",
 ]
 
 [project.scripts]
@@ -54,6 +51,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # 测试随玩法自包含：一个文件夹一个玩法、各自带 tests/（不变量 #7）。加玩法在此追加其路径。
-testpaths = ["avalon/tests", "werewolf/tests", "slim_audio/tests"]
+testpaths = ["avalon/tests", "core/sr/tests", "slim_audio/tests"]
 # 各玩法的测试文件同名（test_nodes.py 等）：importlib 导入模式按路径区分，无需 __init__.py
 addopts = ["--import-mode=importlib"]

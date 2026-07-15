@@ -1,31 +1,22 @@
-"""通用 agent actor 运行时。
+"""OpenCode headless server 后端与协议。
 
-现在 games 只抽象「agent 后端」：
-- OpenCodeBackend：通过 HTTP 与 `opencode serve` 通信
-- RandomAgent：本地模拟 agent 返回（零网络，用于测试/离线跑局）
-
-不再保留裸 LLM API 调用链路。
+通过 HTTP API 与 `opencode serve` 通信：每个座位一个 session，保留该座位记忆。
+调用方渲染好最终 prompt 文本后交给本后端，由它发送并轮询 assistant 回复。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import random
 import sys
 import time
-from collections.abc import Awaitable, Callable
-from datetime import datetime
-from time import perf_counter
 from typing import Any, Protocol
 
 import httpx
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from core.events import decision_id
 from core.models import ModelSpec
 from core.opencode_runtime import OpenCodeConnection
-from core.recorder import Recorder
 
 _ROLE = {SystemMessage: "system", HumanMessage: "human", AIMessage: "assistant"}
 
@@ -34,11 +25,6 @@ class ModelBackend(Protocol):
     """一次 agent 调用的抽象。"""
 
     async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[BaseMessage]) -> BaseMessage: ...
-
-
-_MAX_ATTEMPTS = 5
-_BACKOFF_BASE = 1.0
-_BACKOFF_CAP = 30.0
 
 
 class OpenCodeBackend:
@@ -354,87 +340,3 @@ class OpenCodeBackend:
 
     async def close(self) -> None:
         await self._client.aclose()
-
-
-class AgentActor:
-    """通用 agent 玩家：负责调用后端、重试、落 llm_calls 审计。
-
-    子类只需实现 `_say(phase, view)`：把 system + history + prompt 拼成消息列表，
-    调 `self._invoke(...)` 拿到后端返回的原始文本，再按玩法约定解析成结构化决策。
-    """
-
-    def __init__(self, recorder: Recorder, backend: ModelBackend) -> None:
-        self._recorder = recorder
-        self._backend = backend
-
-    async def _invoke(self, phase: str, view: Any, spec: ModelSpec | None, messages: list[BaseMessage]) -> str:
-        t0 = perf_counter()
-        try:
-            resp = await self._backend.call(phase, view, spec, messages)
-        except Exception as e:
-            self._record(phase, view, spec, messages, None, None, round((perf_counter() - t0) * 1000), f"agent 调用失败：{e}")
-            raise
-        latency_ms = round((perf_counter() - t0) * 1000)
-        text = resp.content if isinstance(resp.content, str) else str(resp.content)
-        self._record(phase, view, spec, messages, text, resp, latency_ms, None)
-        return text
-
-    async def _act[R](self, phase: str, view: Any, once: Callable[[], Awaitable[R]]) -> R:
-        for attempt in range(1, _MAX_ATTEMPTS + 1):
-            try:
-                return await once()
-            except Exception as e:
-                if attempt == _MAX_ATTEMPTS:
-                    raise
-                delay = min(_BACKOFF_BASE * 2 ** (attempt - 1), _BACKOFF_CAP) + random.random()
-                print(
-                    f"[retry] 座位{view.seat_no} {phase} 第 {attempt}/{_MAX_ATTEMPTS} 次失败，"
-                    f"{delay:.1f}s 后重试：{e}",
-                    file=sys.stderr,
-                )
-                await asyncio.sleep(delay)
-        raise AssertionError("unreachable: 循环要么 return 要么在末次 raise")
-
-    def _record(
-        self,
-        phase: str,
-        view: Any,
-        spec: ModelSpec | None,
-        messages: list[BaseMessage],
-        text: str | None,
-        resp: BaseMessage | None,
-        latency_ms: int,
-        error: str | None,
-    ) -> None:
-        usage = dict(resp.usage_metadata) if (resp is not None and getattr(resp, "usage_metadata", None)) else {}
-        model_name = "unknown"
-        if spec is not None:
-            model_name = spec.opencode_model or spec.name
-        self._recorder.record_llm_call(
-            {
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "call_id": decision_id(view.quest_no, view.attempt, phase, view.seat_no),
-                "quest": view.quest_no,
-                "attempt": view.attempt,
-                "phase": phase,
-                "seat_no": view.seat_no,
-                "model": model_name,
-                "messages": [{"role": _ROLE.get(type(m), "?"), "content": m.content} for m in messages],
-                "output": text,
-                "usage": usage,
-                "latency_ms": latency_ms,
-                "ok": error is None,
-                "error": error,
-            }
-        )
-
-    async def close(self) -> None:
-        if hasattr(self._backend, "close"):
-            try:
-                await self._backend.close()
-            except Exception as e:
-                print(f"[warn] 关闭 agent 后端失败（忽略）：{e}", file=sys.stderr)
-
-
-# 保留旧名，避免外部引用瞬间全部失效；后续可逐步迁到 AgentActor。
-LLMActor = AgentActor

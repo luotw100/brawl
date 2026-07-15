@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage
 
-from core.actor import ModelBackend
 from core.models import ModelSpec
 from core.sr.actor import OpenCodeActor, RandomActor
+from core.sr.opencode_backend import ModelBackend
 
 
 class FakeBackend(ModelBackend):

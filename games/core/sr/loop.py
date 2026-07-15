@@ -80,12 +80,15 @@ async def run(
     threads: dict[int, SeatThread],
     *,
     snapshot_every: int = 0,
+    state: Any = None,
 ) -> Any:
     """跑一整局到终局，返回终局 state。
 
     `snapshot_every > 0` 时每 N 条 sentence 存一次 state 快照加速 resume；0 = 不存（靠重放）。
+    若传入 `state`，则从该状态继续（用于 resume 后恢复）。
     """
-    state = rules.initial_state(setup)
+    if state is None:
+        state = rules.initial_state(setup)
     seq = -1
     spoken: set[int] = set()  # 本进程内已发言过的席位——rules.view 据此决定首句是否 seed 全量上下文
 

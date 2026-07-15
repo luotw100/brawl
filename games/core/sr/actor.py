@@ -12,8 +12,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from core.actor import ModelBackend
 from core.models import ModelSpec
+from core.sr.opencode_backend import ModelBackend
 
 
 @runtime_checkable
