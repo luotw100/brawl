@@ -1,14 +1,4 @@
-"""一局的编排：解析校验配置 → 装配 Deps → 建初始席位 → 跑图 → 把事件流喂给渲染器。
-
-整局的"开局设定"（座位→人设、谁拿什么角色、首任队长）在 validation.py 边界一次性
-解析+摇定成 GameSetup（缺省即用 registry 默认/rng 摇定），图里拿到的是确定值；
-这里拿现成的方案按座位号拼装初始席位，role/intel 入图前就填好——夜晚环节（梅林看红方、
-红方互认）是 roles 的纯派生，不另掷骰子。
-
-给了 --replay 时，跑图挂一个 LangGraph checkpointer（落 replay/state.sqlite），每个
-super-step 后持久化整份 GameState，并在 `values` 边界把 (checkpoint_id, 产物行数) 配对
-追加进 sidecar；中途崩了用 --resume 从最后一个完整 super-step 接着跑（见 resume.py）。
-"""
+"""Avalon 新 runtime 入口：用 core.sr.loop 驱动 AvalonRules。"""
 
 from __future__ import annotations
 
@@ -16,169 +6,165 @@ import argparse
 import random
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-from avalon import rules
-from avalon.console import Renderer
-from avalon.deps import Deps
-from avalon.graph import build_graph
-from avalon.player import Player, build_player
-from avalon.registry import Registry, load_registry
+from avalon.random_actor import AvalonRandomActor
+from avalon.registry import load_registry
+from avalon.rules_engine import AvalonRules, AvalonState
 from avalon.settings import AvalonSettings
-from avalon.state import GameState, Seat
 from avalon.validation import GameSetup, resolve_and_validate, validate_resume
-from core import resume as resume_mod
 from core.opencode_runtime import (
     OpenCodeInstallation,
     open_opencode_runtime,
     prepare_opencode_installation,
 )
-from core.recorder import Recorder, open_recorder
-from core.runner import drive_graph, graph_config, run_async_main
+from core.sr.actor import OpenCodeActor
+from core.sr.journal import open_journal
+from core.sr.loop import resume, run, run_async_main
+from core.sr.opencode_backend import OpenCodeBackend
+from core.threads import SeatThread
 
-_THREAD_ID = "avalon"
 
+def _build_seats(setup: GameSetup) -> list[Any]:
+    """setup 已解析+摇定，这里只管拼装 Seat 并把 role/intel 填进去。"""
+    from avalon import rules
+    from avalon.state import Seat
 
-def _build_seats(registry: Registry, setup: GameSetup) -> list[Seat]:
-    """setup 已由 resolve_and_validate 解析+摇定好，这里只管按座位号（1 起）拼装、把
-    role/intel 填进去——夜晚环节（可见性矩阵 rules.night_intel）是 roles 的纯派生，
-    不另掷骰子。"""
-    seats = []
-    for i, role in enumerate(setup.roles):
-        no = i + 1
-        seats.append(
-            Seat(
-                no=no, persona_id=setup.cast[i], strategy_id=setup.strategies[i],
-                model=setup.models[i], role=role, intel=rules.night_intel(setup.roles, no),
-            )
+    return [
+        Seat(
+            no=i + 1,
+            persona_id=setup.cast[i],
+            strategy_id=setup.strategies[i],
+            model=setup.models[i],
+            role=role,
+            intel=rules.night_intel(setup.roles, i + 1),
         )
-    return seats
+        for i, role in enumerate(setup.roles)
+    ]
 
 
-async def run_game(settings: AvalonSettings) -> GameState:
-    """跑完整一局，边跑边渲染，返回最终状态。--resume 则从既有对局的断点接着跑。"""
+async def run_game(settings: AvalonSettings) -> AvalonState:
     registry = load_registry()
-    renderer = Renderer()
     if settings.resume:
-        return await _resume_game(settings, registry, renderer)
-    return await _fresh_game(settings, registry, renderer)
+        return await _resume_game(settings, registry)
+    return await _fresh_game(settings, registry)
 
 
-async def _fresh_game(settings: AvalonSettings, registry: Registry, renderer: Renderer) -> GameState:
+async def _fresh_game(settings: AvalonSettings, registry: Any) -> AvalonState:
     rng = random.Random(settings.seed)
-    setup = resolve_and_validate(settings, registry, rng)  # 边界：解析+摇定整局方案 + 查清所有跨引用约束
+    setup = resolve_and_validate(settings, registry, rng)
     installation = _prepare_runtime(settings)
-    recorder = open_recorder(settings.replay)
-    recorder.write_meta({
-        "started_at": datetime.now().isoformat(timespec="seconds"),
-        "player": settings.player,  # 用哪个后端跑的——推不出来，留着；其余 settings 字段都被 setup 覆盖或可派生
-        "setup": setup.to_meta(),  # 这一局的确定性方案：角色/首任队长都已摇定，复盘唯一真源
-        # 逻辑名→对外展示名：烧进 meta 让回放自包含（stage 据座位 model 查这表显在头像下，
-        # 与 names 同套路）。缺 display 的模型不收，stage 那边查不到就不显。
-        "model_labels": {
-            m: registry.models[m].display
-            for m in dict.fromkeys(setup.models)  # 去重保序
-            if m and m in registry.models and registry.models[m].display
-        },
-    })
-    initial = GameState(
-        seats=_build_seats(registry, setup),
-        leader=setup.first_leader,
-        lady_holder=setup.lady_holder,
-        lady_used=[setup.lady_holder] if setup.lady_holder is not None else [],
-    )
-    for seat in initial.seats:  # 开局一次性烧入各座位厂商 logo（无 --replay 时 NullRecorder 空操作）
+    journal = open_journal(settings.replay, resume=False)
+    journal.write_meta(_build_meta(registry, setup))
+    for seat in _build_seats(setup):
         src = registry.avatar_path(seat.model)
-        if src is not None:  # 该模型没配 avatar / 源文件缺失 → 不烧入，回放渲染走 hash 色回退
-            recorder.write_avatar(seat.no, src)
-    async with _open_player(
-        settings, registry, recorder, rng, setup.models, installation, settings.replay
-    ) as player:
-        deps = _make_deps(settings, registry, player)
-        if settings.replay is None:  # 无产物目录=不可续：纯内存跑，不挂 checkpointer/sidecar
-            return await _drive_avalon(build_graph(), initial, deps, recorder, renderer, run_dir=None)
-        async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(settings.replay)) as saver:
-            graph = build_graph(checkpointer=saver)
-            return await _drive_avalon(graph, initial, deps, recorder, renderer, run_dir=settings.replay)
+        if src is not None:
+            journal.write_avatar(seat.no, src)
+
+    async with _open_actors(settings, registry, rng, setup, installation) as actors:
+        rules = AvalonRules(registry, settings)
+        threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
+        return await run(rules, setup, actors, journal, threads)
 
 
-async def _resume_game(settings: AvalonSettings, registry: Registry, renderer: Renderer) -> GameState:
-    """从断点续跑：开局方案与对局状态都从 meta/checkpoint 恢复（不重摇）。外部运行时
-    先成功探活，再把产物砍回最后一个完整 super-step 的水位，随后从同一 checkpoint 续跑。"""
-    meta = validate_resume(settings, registry)  # 边界：目录在、有 checkpoint 与可续水位、模型 key 都齐
-    run_dir = settings.replay
-    assert run_dir is not None  # settings._check 已保证 --resume 必带 --replay
-    wm = resume_mod.last_watermark(run_dir)
-    assert wm is not None  # validate_resume 已保证有可续水位
-    recorder = open_recorder(run_dir, resume=True)
-    models = meta["setup"]["models"]
+async def _resume_game(settings: AvalonSettings, registry: Any) -> AvalonState:
+    meta = validate_resume(settings, registry)
+    setup = _setup_from_meta(meta)
     installation = _prepare_runtime(settings)
-    async with _open_player(
-        settings, registry, recorder, random.Random(settings.seed), models, installation, run_dir
-    ) as player:
-        # managed runtime 已探活，才允许破坏性截断既有 replay。
-        recorder.truncate(wm.events_n, wm.llm_n)
-        deps = _make_deps(settings, registry, player)
-        async with AsyncSqliteSaver.from_conn_string(resume_mod.db_path(run_dir)) as saver:
-            graph = build_graph(checkpointer=saver)
-            config = graph_config(deps, thread_id=_THREAD_ID, checkpoint_id=wm.checkpoint_id)
-            return await drive_graph(graph, None, config, recorder, renderer, run_dir, GameState)
+    journal = open_journal(settings.replay, resume=True)
+    async with _open_actors(settings, registry, random.Random(settings.seed), setup, installation) as actors:
+        rules = AvalonRules(registry, settings)
+        threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
+        restored = await resume(rules, actors={}, journal=journal, threads=threads, setup=setup)
+        if not rules.is_terminal(restored):
+            return await run(rules, setup, actors, journal, threads, state=restored)
+        return restored
 
 
-async def _drive_avalon(graph, stream_input, deps: Deps, recorder: Recorder, renderer: Renderer, run_dir: Path | None) -> GameState:
-    config = graph_config(deps, thread_id=_THREAD_ID)
-    return await drive_graph(graph, stream_input, config, recorder, renderer, run_dir, GameState)
+@asynccontextmanager
+async def _open_actors(
+    settings: AvalonSettings,
+    registry: Any,
+    rng: random.Random,
+    setup: GameSetup,
+    installation: OpenCodeInstallation | None,
+) -> AsyncIterator[dict[int, Any]]:
+    if settings.player == "random":
+        actors = {no: AvalonRandomActor(rng) for no in range(1, len(setup.roles) + 1)}
+        try:
+            yield actors
+        finally:
+            for a in actors.values():
+                await a.close()
+        return
+
+    assert installation is not None and settings.replay is not None
+    async with open_opencode_runtime(installation, settings.replay, len(setup.roles)) as connection:
+        backend = OpenCodeBackend(
+            connection=connection,
+            default_model=settings.opencode_model,
+            seat_models=_build_seat_models(registry, setup),
+        )
+        actors = {no: OpenCodeActor(backend) for no in range(1, len(setup.roles) + 1)}
+        try:
+            yield actors
+        finally:
+            for a in actors.values():
+                await a.close()
+
+
+def _build_seat_models(registry: Any, setup: GameSetup) -> dict[int, str]:
+    seat_models: dict[int, str] = {}
+    for i, name in enumerate(setup.models, start=1):
+        spec = registry.models.get(name)
+        if spec is not None and spec.opencode_model:
+            seat_models[i] = spec.opencode_model
+    return seat_models
 
 
 def _prepare_runtime(settings: AvalonSettings) -> OpenCodeInstallation | None:
     return prepare_opencode_installation() if settings.player == "opencode" else None
 
 
-@asynccontextmanager
-async def _open_player(
-    settings: AvalonSettings,
-    registry: Registry,
-    recorder: Recorder,
-    rng: random.Random,
-    models: list[str],
-    installation: OpenCodeInstallation | None,
-    run_dir: Path | None,
-) -> AsyncIterator[Player]:
-    if settings.player == "random":
-        player = build_player(settings, rng, recorder=recorder, registry=registry, models=models)
-        try:
-            yield player
-        finally:
-            await player.close()
-        return
-
-    assert installation is not None and run_dir is not None  # settings + _prepare_runtime 边界保证
-    async with open_opencode_runtime(installation, run_dir, len(models)) as connection:
-        player = build_player(
-            settings,
-            rng,
-            recorder=recorder,
-            registry=registry,
-            models=models,
-            connection=connection,
-        )
-        try:
-            yield player
-        finally:
-            await player.close()
+def _build_meta(registry: Any, setup: GameSetup) -> dict[str, Any]:
+    return {
+        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "player": "avalon",
+        "setup": setup.to_meta(),
+        "model_labels": {
+            m: registry.models[m].display
+            for m in dict.fromkeys(setup.models)
+            if m and m in registry.models and registry.models[m].display
+        },
+    }
 
 
-def _make_deps(settings: AvalonSettings, registry: Registry, player: Player) -> Deps:
-    return Deps(settings=settings, registry=registry, player=player)
+def _setup_from_meta(meta: dict[str, Any]) -> GameSetup:
+    from avalon.state import Role
+
+    s = meta["setup"]
+    return GameSetup(
+        cast=s["cast"],
+        host_cast=s["host_cast"],
+        names=s["names"],
+        host_name=s["host_name"],
+        voices=s["voices"],
+        host_voice=s["host_voice"],
+        self_hosted_voices=s["self_hosted_voices"],
+        host_self_hosted_voice=s["host_self_hosted_voice"],
+        voice_designs=s["voice_designs"],
+        host_voice_design=s["host_voice_design"],
+        strategies=s["strategies"],
+        models=s["models"],
+        roles=[Role(r) for r in s["roles"]],
+        first_leader=s["first_leader"],
+        lady_holder=s["lady_holder"],
+    )
 
 
 def main(argv: list[str]) -> None:
-    """`brawl avalon` 的极薄入口:剥掉 --config(它是"读哪个文件"的元参数,不是配置字段),
-    把剩余 argv 交给 AvalonSettings 自己的 CLI source。所有 --players/--seed 等 flag
-    都由 settings 字段自动派生,这里不枚举任何参数。"""
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", dest="config", type=Path, default=None, metavar="PATH", help="JSON 配置文件路径")
     args, rest = pre.parse_known_args(argv)

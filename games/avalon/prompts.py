@@ -31,7 +31,7 @@ from avalon import rules
 from avalon.state import Role, Side
 
 if TYPE_CHECKING:
-    from avalon.player import PlayerView
+    from avalon.view import PlayerView
 
 RULES = """\
 你正在玩桌游《阿瓦隆》，这是一场直播，有观众在看。

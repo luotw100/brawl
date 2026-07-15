@@ -12,11 +12,8 @@ from collections.abc import Callable
 
 from pydantic import ValidationError
 
-from avalon import replay as avalon_replay
 from avalon import run as avalon_run
-from avalon import tts as avalon_tts
 from avalon.settings import SettingsError as AvalonSettingsError
-from avalon.tts import SettingsError as AvalonTtsError
 from core.opencode_runtime import OpenCodeRuntimeError
 from llmview import show as llm_view
 from llmview.show import ViewError
@@ -24,15 +21,10 @@ from slim_audio import cli as slim_audio_cli
 from slim_audio.cli import SlimAudioError
 from voicelab import forge as voice_forge
 from voicelab.forge import SettingsError as VoicelabSettingsError
-from werewolf import run as werewolf_run
-from werewolf.settings import SettingsError as WerewolfSettingsError
 
 # 子命令名(含中文别名)→ 该玩法的 main(argv) 入口
 GAMES: dict[str, Callable[[list[str]], None]] = {
     "avalon": avalon_run.main,
-    "werewolf": werewolf_run.main,
-    "avalon-replay": avalon_replay.main,  # 回放一局 replay 快照（非生成，纯消费 events.jsonl）
-    "avalon-tts": avalon_tts.main,  # 把一局公开发言合成音频，落 replay/tts/（柔性续合）
     "voice-forge": voice_forge.main,  # 音色铸造：嗓音描述 → 阿里云 voice_id + 试听 wav（跨玩法）
     "chat-view": llm_view.main,  # 把 llm_calls.jsonl 第 N 行渲染成聊天记录（跨玩法）
     "slim-audio": slim_audio_cli.main,  # 危险维护工具：把 replay/tts/*.opus 覆盖为固定长度静音
@@ -58,8 +50,6 @@ def main() -> int:
         handler(rest)
     except (
         AvalonSettingsError,
-        WerewolfSettingsError,
-        AvalonTtsError,
         VoicelabSettingsError,
         ViewError,
         SlimAudioError,

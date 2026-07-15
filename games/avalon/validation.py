@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from avalon.registry import Registry
 from avalon.settings import AvalonSettings, SettingsError
 from avalon.state import Role
-from core import resume as resume_mod
 from core import setup as core_setup
 
 
@@ -122,22 +121,15 @@ def _resolve_roles(settings: AvalonSettings, rng: random.Random) -> list[Role]:
 
 
 def validate_resume(settings: AvalonSettings, registry: Registry) -> dict:
-    """续跑的边界校验（与 resolve_and_validate 对称，但不重摇开局——开局方案与对局状态都
-    从 checkpoint/meta 恢复，绝不再掷骰子）。查清：目录在、有 checkpoint 与可续跑水位、
-    meta 可读。返回解析好的 meta（含开局方案，供编排层取用）。
-
-    replay 已存在由 settings 形状校验保证（--resume 必带 --replay）；这里查"世界一致性"。"""
+    """续跑的边界校验：目录在、有句子日志、meta 可读。返回解析好的 meta。"""
     run_dir = settings.replay
     assert run_dir is not None  # settings._check 已保证 --resume 必带 --replay
     if not run_dir.exists():
         raise SettingsError(f"--resume 指向的对局目录不存在：{run_dir}")
-    if not resume_mod.has_checkpoint(run_dir):
-        raise SettingsError(f"{run_dir} 里没有 checkpoint 数据库，无法续跑（它可能不是续跑产出的对局）")
-    if resume_mod.last_watermark(run_dir) is None:
-        raise SettingsError(f"{run_dir} 还没跑出任何可续跑的完整检查点；请重开新局而非续跑")
+    sentences_path = run_dir / "sentences.jsonl"
+    if not sentences_path.exists():
+        raise SettingsError(f"{run_dir} 里没有 sentences.jsonl，无法续跑")
     meta_path = run_dir / "meta.json"
     if not meta_path.exists():
         raise SettingsError(f"{run_dir} 缺 meta.json，无法续跑")
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    # 开局已定，模型清单从 meta 取（不是从当前 settings——续跑要忠于原局）；只查它们的 key 在不在。
-    return meta
+    return json.loads(meta_path.read_text(encoding="utf-8"))

@@ -12,13 +12,10 @@ prompt 缓存命中的根基，也让模型能看到自己之前的想法。
 
 from __future__ import annotations
 
-import operator
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StringConstraints, model_validator
-
-from core.threads import SeatThread
+from pydantic import BaseModel, Field, StringConstraints
 
 # 公开发言与内心戏的字段类型：去掉首尾空白后必须非空。这是"字段内在/形状校验"——声明式收在
 # 模型里，AgentPlayer 解析 JSON 时直接完成；该有发言却空了 / 该有内心戏却空了会直接 parse 失败
@@ -117,45 +114,3 @@ class LadyChoice(BaseModel):
     monologue: NonEmptyStr
 
 
-class GameState(BaseModel):
-    """LangGraph 状态。history 用 add reducer 累积；threads 每节点整体覆盖；其余字段整体覆盖。"""
-
-    seats: list[Seat]
-    # 每席位一条私有消息线程（座位号 → 线程）。空 dict 时由 validator 按 seats 初始化，
-    # 测试/入口直接 GameState(seats=...) 即可拿到就绪线程。
-    threads: dict[int, SeatThread] = Field(default_factory=dict)
-    leader: int = 1  # 当前队长座位号；入图前由边界摇定首任，此后逐提案轮转
-    rejections: int = 0  # 当前任务连续否决次数（提案获批并出完任务后清零）
-    team: list[int] = Field(default_factory=list)  # 当前提案的队伍
-    votes: dict[int, bool] = Field(default_factory=dict)  # 当前提案的表决
-    # 湖中仙女（可选模块）：holder=当前令牌持有者座位（None=本局未启用——启用与否在边界
-    # 一次性定死，图里只看这一个值）；used=历任持有者（含当前），查验对象不得在其中。
-    lady_holder: int | None = None
-    lady_used: list[int] = Field(default_factory=list)
-    history: Annotated[list[ProposalRecord], operator.add] = Field(default_factory=list)
-    winner: str | None = None  # "good" | "evil"
-    win_reason: str | None = None  # "quests" | "rejections" | "assassination"
-    finished: bool = False
-
-    @model_validator(mode="after")
-    def _init_threads(self) -> GameState:
-        if not self.threads:
-            self.threads = {s.no: SeatThread() for s in self.seats}
-        return self
-
-    @property
-    def quest_no(self) -> int:
-        """当前（或刚结束的下一个）任务序号：已出结果的任务数 + 1。"""
-        return sum(1 for r in self.history if r.result is not None) + 1
-
-    @property
-    def attempt(self) -> int:
-        return self.rejections + 1
-
-    @property
-    def quests_succeeded(self) -> int:
-        return sum(1 for r in self.history if r.result == "success")
-
-    @property
-    def quests_failed(self) -> int:
-        return sum(1 for r in self.history if r.result == "fail")
