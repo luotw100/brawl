@@ -116,9 +116,9 @@ async def run(
 
         # 同时亮牌/扣牌：并发收齐所有座位的 raw（单席位即一次调用），每人 prompt 互不依赖。
         # 顺序不影响语义——下面按座位序确定性落日志/apply，与并发采集分离。
-        async def _ask(s: int) -> tuple[int, str, dict[str, Any] | None]:
-            v = rules.view(s, state, threads[s].inbox, first_speak=s not in spoken)
-            raw, audit = await _speak_with_retry(actors[s], s, v, exp.turn_id)
+        async def _ask(s: int, _state=state, _turn_id=exp.turn_id) -> tuple[int, str, dict[str, Any] | None]:
+            v = rules.view(s, _state, threads[s].inbox, first_speak=s not in spoken)
+            raw, audit = await _speak_with_retry(actors[s], s, v, _turn_id)
             return s, raw, audit
 
         gathered = await asyncio.gather(*(_ask(s) for s in seats))
