@@ -1,8 +1,11 @@
 """chat-view：把 llm_calls.jsonl 第 N 行那次模型调用，像普通 chatbot 一样渲染出来。
 
 跨玩法工具(与 voice-forge 同性质，不属于任何玩法)：输入 = 一个 llm_calls.jsonl + 行号，
-输出 = 这次调用的完整聊天过程(system/user 各色气泡 + 模型回复)。只认各玩法统一的通用字段
-(messages/output/usage/latency_ms/ok/error，见 recorder.py 落盘契约)，不碰任何玩法语义。
+输出 = 这次调用的完整聊天过程(system/user 各色气泡 + 模型回复)。只认旧格式的通用字段
+(messages/output/usage/latency_ms/ok/error)，不碰任何玩法语义。
+
+注意：本工具服务**旧格式 replay**。Sentence Runtime 之后本地不再落 llm_calls.jsonl——
+每次模型调用的完整审计保留在 OpenCode 会话库里（<replay>/_opencode/storage/opencode.db）。
 
 行号是 1-based(与编辑器/`sed -n` 一致)。文件缺失/行号越界/坏 JSON 都给干净提示、不甩 traceback。
 """
