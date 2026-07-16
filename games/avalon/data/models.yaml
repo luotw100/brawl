@@ -21,6 +21,10 @@ models:
   display: Kimi K2.6
   avatar: kimi
   opencode_model: opencode-go/kimi-k2.6
+- name: oc-kimi-for-coding-k2p7
+  display: Kimi for Coding K2.7
+  avatar: kimi
+  opencode_model: kimi-for-coding/k2p7
 - name: oc-glm-5.2
   display: GLM-5.2
   avatar: zhipu
