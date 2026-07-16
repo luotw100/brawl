@@ -5,12 +5,11 @@
     state = rules.initial_state(setup)
     while not rules.is_terminal(state):
         exp = rules.expected(state)                       # 该谁、turn_id；seats 长度>1 即同时
-        raws = await gather(*[actor.speak(s, rules.view(s, state, inbox[s], first_speak=…))
-                              for s in exp.seats])         # 并发收齐（同时亮牌/扣牌）
-        for s, raw in zip(exp.seats, raws):                 # 按座位序确定性落日志/路由/apply
-            pr   = rules.parse(s, raw, state)              # 唯一懂语义；不过 raise 重试
+        raws = await gather(*[_act_with_retry(rules, actors[s], s, view(s), state, exp.turn_id)
+                              for s in exp.seats])         # 并发收齐；speak+parse 同单元重试
+        for s, raw, pr in raws:                           # 按座位序确定性落日志/路由/apply
             sent = Sentence(seq, exp.turn_id, s, raw, pr.deliveries, pr.action)
-            journal.append_sentence(sent, audit)
+            journal.append_sentence(sent)
             inbox[s].clear(); deliver(pr.deliveries, threads)
             state = rules.apply(state, pr.action)
         flush(rules.pending(state))                        # 串场词（开票/reveal/收场）
@@ -121,17 +120,18 @@ async def run(
                 raise RuntimeError(f"no actor for seat={s!r}; host sentences must not go through actors")
 
         # 同时亮牌/扣牌：并发收齐所有座位的 raw（单席位即一次调用），每人 prompt 互不依赖。
-        # 顺序不影响语义——下面按座位序确定性落日志/apply，与并发采集分离。
-        async def _ask(s: int, _state=state, _turn_id=exp.turn_id) -> tuple[int, str, dict[str, Any] | None]:
+        # speak+parse 作为一个原子单元重试：parse 不过（ValueError）等价于这次调用失败，
+        # 重新调 actor 拿一份新产出（opencode 后端会先清理失败轮消息）。解析只读本轮回合
+        # 开始时的 state，并发座位互不影响；落日志/apply 仍按座位序确定性进行。
+        async def _ask(s: int, _state=state, _turn_id=exp.turn_id) -> tuple[int, str, dict[str, Any] | None, Any]:
             v = rules.view(s, _state, threads[s].inbox, first_speak=s not in spoken)
-            raw, audit = await _speak_with_retry(actors[s], s, v, _turn_id)
-            return s, raw, audit
+            raw, audit, pr = await _act_with_retry(rules, actors[s], s, v, _state, _turn_id)
+            return s, raw, audit, pr
 
         gathered = await asyncio.gather(*(_ask(s) for s in seats))
 
-        # 按座位序落日志 + 解析 + 路由 + apply（确定性顺序，与并发无关）。
-        for s, raw, _audit in gathered:
-            pr = rules.parse(s, raw, state)  # 不过 -> ValueError，重试语义见文档风险项 2
+        # 按座位序落日志 + 路由 + apply（确定性顺序，与并发无关）。
+        for s, raw, _audit, pr in gathered:
             seq = journal.next_seq()
             sent = Sentence(seq=seq, turn_id=exp.turn_id, speaker=s, raw=raw,
                             deliveries=pr.deliveries, action=pr.action)
@@ -190,16 +190,25 @@ async def resume(
     return state
 
 
-async def _speak_with_retry(
+async def _act_with_retry(
+    rules: Rules,
     actor: Actor,
     seat: int,
     view: Any,
+    state: Any,
     turn_id: str,
-) -> tuple[str, dict[str, Any] | None]:
-    """调 actor，带退避重试（沿用旧 AgentActor 的策略）。"""
+) -> tuple[str, dict[str, Any] | None, Any]:
+    """调 actor + rules.parse，作为一个单元带退避重试（沿用旧 AgentActor 的策略）。
+
+    actor 调用失败（网络/超时/agent error）与 parse 校验不过（ValueError：坏 JSON、
+    非法目标）同等对待——都是"这一轮没拿到合法产出"，重新调 actor 拿新的。重试上限
+    后抛出，中断本局（fail-fast 不兜底：绝不把非法产出静默写进日志）。
+    """
     for retry_no in range(1, _MAX_RETRIES + 1):
         try:
-            return await actor.speak(seat, view, turn_id)
+            raw, audit = await actor.speak(seat, view, turn_id)
+            pr = rules.parse(seat, raw, state)
+            return raw, audit, pr
         except Exception as e:
             if retry_no == _MAX_RETRIES:
                 raise
