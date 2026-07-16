@@ -2,7 +2,7 @@
 
 把现有 OpenCode 后端封装成 core.sr.loop.Actor 协议，规则层的 view 对象只负责
 拼出 .prompt 与可选的 .spec；actor 负责把 prompt 发进 opencode/session 并返回
-审计行。seq/turn_id 由 loop/journal 补，actor 不再关心 quest/attempt。
+审计行。seq/turn_id 由 loop/journal 补，actor 不再关心玩法回合编号。
 """
 
 from __future__ import annotations
@@ -11,9 +11,8 @@ from collections.abc import Callable
 from time import perf_counter
 from typing import Any, Protocol, runtime_checkable
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-
 from core.models import ModelSpec
+from core.sr.messages import ChatMessage
 from core.sr.opencode_backend import ModelBackend
 
 
@@ -52,7 +51,7 @@ class OpenCodeActor:
         if not isinstance(prompt, str):
             raise TypeError(f"view.prompt must be str, got {type(prompt)}")
 
-        messages: list[BaseMessage] = [HumanMessage(content=prompt)]
+        messages = [ChatMessage(role="human", content=prompt)]
         spec = getattr(view, "spec", None)
         if spec is not None and not isinstance(spec, ModelSpec):
             raise TypeError(f"view.spec must be ModelSpec or None, got {type(spec)}")
@@ -62,8 +61,8 @@ class OpenCodeActor:
         resp = await self._backend.call(turn_id, proxy, spec, messages)
         latency_ms = round((perf_counter() - t0) * 1000)
 
-        text = resp.content if isinstance(resp.content, str) else str(resp.content)
-        usage = dict(resp.usage_metadata) if getattr(resp, "usage_metadata", None) else {}
+        text = resp.content
+        usage = dict(resp.usage_metadata) if resp.usage_metadata else {}
         model_name = _model_name(spec)
 
         audit = {
@@ -71,7 +70,7 @@ class OpenCodeActor:
             "call_id": turn_id,
             "seat_no": seat,
             "model": model_name,
-            "messages": [{"role": _ROLE.get(type(m), "?"), "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
             "output": text,
             "usage": usage,
             "latency_ms": latency_ms,
@@ -119,7 +118,5 @@ def _now_iso() -> str:
 
     return datetime.now(UTC).isoformat(timespec="seconds")
 
-
-_ROLE = {HumanMessage: "human", AIMessage: "assistant"}
 
 __all__ = ["OpenCodeActor", "RandomActor", "PromptView"]

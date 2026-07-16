@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage
 
 from core.models import ModelSpec
 from core.sr.actor import OpenCodeActor, RandomActor
+from core.sr.messages import ChatMessage
 from core.sr.opencode_backend import ModelBackend
 
 
@@ -17,12 +17,12 @@ class FakeBackend(ModelBackend):
     """记录调用参数并返回固定文本。"""
 
     def __init__(self, text: str = "我同意。") -> None:
-        self.calls: list[tuple[int, Any, Any, list[BaseMessage]]] = []
+        self.calls: list[tuple[int, Any, Any, list[ChatMessage]]] = []
         self._text = text
 
-    async def call(self, phase: str, view: Any, spec: ModelSpec | None, messages: list[BaseMessage]) -> BaseMessage:
+    async def call(self, phase: str, view: Any, spec: ModelSpec | None, messages: list[ChatMessage]) -> ChatMessage:
         self.calls.append((view.seat_no, view, spec, messages))
-        return AIMessage(content=self._text, usage_metadata={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12})
+        return ChatMessage(role="assistant", content=self._text, usage_metadata={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12})
 
 
 @pytest.mark.asyncio

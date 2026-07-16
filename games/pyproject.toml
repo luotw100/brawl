@@ -1,11 +1,10 @@
 [project]
 name = "brawl-games"
 version = "0.1.0"
-description = "AI 直播对战的纯游戏逻辑层：玩法状态机 + 跨玩法运行时框架。当前：阿瓦隆。"
+description = "AI 直播对战的纯游戏逻辑层：玩法状态机 + 跨玩法运行时框架。当前：阿瓦隆、狼人杀。"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "langchain-core>=0.3.0",
     "pydantic>=2.7.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
@@ -51,6 +50,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # 测试随玩法自包含：一个文件夹一个玩法、各自带 tests/（不变量 #7）。加玩法在此追加其路径。
-testpaths = ["avalon/tests", "core/sr/tests", "slim_audio/tests"]
+testpaths = ["avalon/tests", "werewolf/tests", "core/tests", "core/sr/tests", "slim_audio/tests"]
 # 各玩法的测试文件同名（test_nodes.py 等）：importlib 导入模式按路径区分，无需 __init__.py
 addopts = ["--import-mode=importlib"]

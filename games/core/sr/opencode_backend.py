@@ -13,18 +13,16 @@ import time
 from typing import Any, Protocol
 
 import httpx
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from core.models import ModelSpec
 from core.opencode_runtime import OpenCodeConnection
-
-_ROLE = {SystemMessage: "system", HumanMessage: "human", AIMessage: "assistant"}
+from core.sr.messages import ChatMessage
 
 
 class ModelBackend(Protocol):
     """一次 agent 调用的抽象。"""
 
-    async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[BaseMessage]) -> BaseMessage: ...
+    async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[ChatMessage]) -> ChatMessage: ...
 
 
 class OpenCodeBackend:
@@ -68,21 +66,12 @@ class OpenCodeBackend:
         self._last_user: dict[int, str | None] = {}
 
     @staticmethod
-    def _messages_to_text(messages: list[BaseMessage]) -> str:
-        """把 LangChain 消息序列化成一段带角色标记的文本。"""
-        if len(messages) == 1 and isinstance(messages[0], HumanMessage):
-            return str(messages[0].content)
-        parts: list[str] = []
-        for m in messages:
-            if isinstance(m, SystemMessage):
-                parts.append(f"[system]\n{m.content}")
-            elif isinstance(m, HumanMessage):
-                parts.append(f"[user]\n{m.content}")
-            elif isinstance(m, AIMessage):
-                parts.append(f"[assistant]\n{m.content}")
-            else:
-                parts.append(f"[{m.type}]\n{str(m.content)}")
-        return "\n\n".join(parts)
+    def _messages_to_text(messages: list[ChatMessage]) -> str:
+        """把消息列表序列化成一段带角色标记的文本。"""
+        if len(messages) == 1 and messages[0].role == "human":
+            return messages[0].content
+        tag = {"system": "system", "human": "user", "assistant": "assistant"}
+        return "\n\n".join(f"[{tag.get(m.role, m.role)}]\n{m.content}" for m in messages)
 
     @staticmethod
     def _parse_ref(ref: str) -> dict[str, str]:
@@ -321,7 +310,7 @@ class OpenCodeBackend:
 
         raise TimeoutError(f"等待 OpenCode session {session_id} 响应超时")
 
-    async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[BaseMessage]) -> AIMessage:
+    async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[ChatMessage]) -> ChatMessage:
         seat_no = getattr(view, "seat_no", 0)
         session_id = await self._ensure_session(seat_no)
         text = self._messages_to_text(messages)
@@ -333,7 +322,7 @@ class OpenCodeBackend:
         try:
             assistant_id, response_text = await self._wait_for_response(session_id, seat_no, user_id)
             self._last_user[seat_no] = None
-            return AIMessage(content=response_text)
+            return ChatMessage(role="assistant", content=response_text)
         except Exception:
             # 保留 _last_user，下次 call 会清理失败轮
             raise

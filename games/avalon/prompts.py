@@ -461,7 +461,7 @@ _OPENCODE_JSON_DISCIPLINE = "最终只输出一个 JSON 对象，不要输出任
 
 
 def _private_transcript(view: PlayerView) -> str:
-    """把该席位自己的历史线程渲染成自然转述，不暴露 LangChain role 标签。"""
+    """把该席位自己的历史线程渲染成自然转述，不暴露消息 role 标签。"""
     if not view.messages:
         return "你此前还没有私人行动记录。"
     rows = []

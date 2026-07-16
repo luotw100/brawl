@@ -1,9 +1,8 @@
 """从模型自由文本里稳健地抽出一个 JSON 对象并用 pydantic 校验。
 
-为什么不用 langchain 的 with_structured_output：各厂商对 response_format(json_schema/
-json_object)/强制 tool_choice 的支持五花八门（思考型模型尤其挑），接一个新模型就可能
-踩 400。我们的 JSON 只有 2~3 个扁平字段，纯靠 prompt 约束 + 这里的解析校验最通用——
-只要模型能吐文本就能用。
+为什么不用厂商结构化输出能力（response_format/json_schema、强制 tool_choice 之类）：各家
+实现五花八门（思考型模型尤其挑），接一个新模型就可能踩 400。我们的 JSON 只有 2~3 个
+扁平字段，纯靠 prompt 约束 + 这里的解析校验最通用——只要模型能吐文本就能用。
 
 两道解析：先走严格路径（花括号配对扫描 + json.loads），合法输出原样通过、零改动；只有
 严格失败才回退到 json_repair 救一次。回退专治实测见过的模型脏输出——用全角引号 ”/“ 当
