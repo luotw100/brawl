@@ -137,17 +137,23 @@ class ConsoleRenderer:
         border = self._border_style(speaker, roles)
         self.typist.panel(self.console, body, title, border_style=border)
 
-    def _border_style(self, speaker: int | str, roles: dict[int, str]) -> str | None:
+    def _border_style(self, speaker: int | str, roles: dict[int, str]) -> str:
         if speaker == "host":
             return "cyan"
         if not isinstance(speaker, int):
-            return None
+            return ""
         role = roles.get(speaker, "")
-        if role in ("merlin", "percival", "servant"):
-            return "blue"
-        if role in ("assassin", "morgana", "mordred", "oberon", "minion"):
-            return "red"
-        return None
+        # 配色数据驱动：meta.setup.role_colors（玩法写入）优先；缺省回退到阿瓦隆旧 replay
+        # 的内建表（它们生成时还没有 role_colors 字段）。role 查不到就无色。
+        colors = ((self.meta or {}).get("setup") or {}).get("role_colors") or _LEGACY_ROLE_COLORS
+        return colors.get(role, "")
+
+
+# 旧阿瓦隆 replay 的角色配色（它们的 meta 没有 role_colors 字段，靠这张表自圆）。
+_LEGACY_ROLE_COLORS = {
+    "merlin": "blue", "percival": "blue", "servant": "blue",
+    "assassin": "red", "morgana": "red", "mordred": "red", "oberon": "red", "minion": "red",
+}
 
 
 def main(argv: list[str]) -> None:

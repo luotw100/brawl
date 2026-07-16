@@ -49,6 +49,11 @@ class WerewolfSettings(BaseSettings):
 
     concurrency: int = 10
     replay: Path | None = None
+
+    # 终端实时渲染：默认开，loop 每生成一条 sentence 就调用 ConsoleRenderer 输出到 stdout；
+    # 批量/CI 跑 opencode 可用 --no-render 关闭。
+    render: bool = True
+
     resume: bool = False
 
     @property

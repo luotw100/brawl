@@ -12,8 +12,21 @@ _SettingsError = type[Exception]
 _MODEL_REPEAT_DECAY = 0.5
 
 
-def resolve_unique_personas(raw: list[str] | None, *, players: int, registry: Registry, rng: random.Random, error: _SettingsError) -> list[str]:
-    """显式列表逐个校验；缺省从玩家人设池无放回抽样。"""
+def resolve_personas(
+    raw: list[str] | None,
+    *,
+    players: int,
+    registry: Registry,
+    rng: random.Random,
+    error: _SettingsError,
+    allow_repeat: bool = False,
+) -> list[str]:
+    """显式列表逐个校验；缺省从玩家人设池抽样。
+
+    allow_repeat=False（默认，阿瓦隆）：无放回抽样，各座位人设互异（免撞音色/网名）。
+    allow_repeat=True（狼人杀 12 人局）：人设池不足座位数时先无放回用满、再有放回补复用；
+    池子够大则与默认模式一样无放回。显式 --cast 不受此开关影响（用户给什么就是什么）。
+    """
     if raw is not None:
         for pid in raw:
             if pid not in registry.personas:
@@ -21,7 +34,13 @@ def resolve_unique_personas(raw: list[str] | None, *, players: int, registry: Re
         return raw
     ids = registry.persona_ids()
     if len(ids) < players:
-        raise error(f"玩家人设只有 {len(ids)} 个，不够 {players} 个座位；请用 --cast 指定或补充 cast.yaml")
+        if not allow_repeat:
+            raise error(f"玩家人设只有 {len(ids)} 个，不够 {players} 个座位；请用 --cast 指定或补充 cast.yaml")
+        if not ids:
+            raise error("玩家人设库为空；请补充 cast.yaml 或显式指定 --cast")
+        cast = rng.sample(ids, len(ids))
+        cast.extend(rng.choice(ids) for _ in range(players - len(ids)))
+        return cast
     return rng.sample(ids, players)
 
 

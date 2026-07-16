@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from avalon.registry import Registry
 from avalon.settings import AvalonSettings, SettingsError
-from avalon.state import Role
+from avalon.state import Role, Side
 from core import setup as core_setup
 
 
@@ -69,6 +69,8 @@ class GameSetup:
             "strategies": self.strategies,
             "models": self.models,
             "roles": [r.value for r in self.roles],
+            # 终端/回放渲染的席位配色（数据驱动，渲染层不硬编码玩法角色→颜色）。
+            "role_colors": {r.value: ("red" if r.side is Side.EVIL else "blue") for r in set(self.roles)},
             "first_leader": self.first_leader,
             "lady_holder": self.lady_holder,
         }
@@ -78,7 +80,7 @@ def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: rand
     """把 settings 解析成确定的 GameSetup（座位号即下标）：cast 缺省即用 registry 默认
     补齐，角色/首任队长用 rng 摇定。违规抛 SettingsError（被 cli 捕获、只打印消息
     不甩 traceback）。"""
-    cast = core_setup.resolve_unique_personas(settings.cast, players=settings.players, registry=registry, rng=rng, error=SettingsError)
+    cast = core_setup.resolve_personas(settings.cast, players=settings.players, registry=registry, rng=rng, error=SettingsError)
     host_cast = core_setup.resolve_host(settings.host_cast, registry=registry, default="herald", error=SettingsError)
     strategies = core_setup.resolve_strategies(settings.strategies, players=settings.players, registry=registry, rng=rng, error=SettingsError)
     models = core_setup.resolve_models(settings.models, players=settings.players, registry=registry, rng=rng, error=SettingsError)

@@ -24,14 +24,17 @@ from slim_audio import cli as slim_audio_cli
 from slim_audio.cli import SlimAudioError
 from voicelab import forge as voice_forge
 from voicelab.forge import SettingsError as VoicelabSettingsError
+from werewolf import run as werewolf_run
+from werewolf.settings import SettingsError as WerewolfSettingsError
 
 # 子命令名(含中文别名)→ 该玩法的 main(argv) 入口
 GAMES: dict[str, Callable[[list[str]], None]] = {
     "avalon": avalon_run.main,
+    "werewolf": werewolf_run.main,
     "console": sr_console.main,  # 终端回放：渲染 replay/sentences.jsonl
     "tts": sr_tts.main,  # 音频合成：消费 replay/sentences.jsonl + meta.json
     "voice-forge": voice_forge.main,  # 音色铸造：嗓音描述 → 阿里云 voice_id + 试听 wav（跨玩法）
-    "chat-view": llm_view.main,  # 把 llm_calls.jsonl 第 N 行渲染成聊天记录（跨玩法）
+    "chat-view": llm_view.main,  # 把 llm_calls.jsonl 第 N 行渲染成聊天记录（旧格式 replay 专用）
     "slim-audio": slim_audio_cli.main,  # 危险维护工具：把 replay/tts/*.opus 覆盖为固定长度静音
 }
 
@@ -55,6 +58,7 @@ def main() -> int:
         handler(rest)
     except (
         AvalonSettingsError,
+        WerewolfSettingsError,
         VoicelabSettingsError,
         ViewError,
         SlimAudioError,
