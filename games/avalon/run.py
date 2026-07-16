@@ -20,6 +20,7 @@ from core.opencode_runtime import (
     prepare_opencode_installation,
 )
 from core.sr.actor import OpenCodeActor, RandomActor
+from core.sr.console import ConsoleRenderer, InstantTypist
 from core.sr.journal import open_journal
 from core.sr.loop import resume, run, run_async_main
 from core.sr.opencode_backend import OpenCodeBackend
@@ -55,8 +56,10 @@ async def _fresh_game(settings: AvalonSettings, registry: Any) -> AvalonState:
     rng = random.Random(settings.seed)
     setup = resolve_and_validate(settings, registry, rng)
     installation = _prepare_runtime(settings)
+    meta = _build_meta(registry, setup)
     journal = open_journal(settings.replay, resume=False)
-    journal.write_meta(_build_meta(registry, setup))
+    journal.write_meta(meta)
+    renderer = _build_renderer(settings, meta)
     for seat in _build_seats(setup):
         src = registry.avatar_path(seat.model)
         if src is not None:
@@ -65,7 +68,7 @@ async def _fresh_game(settings: AvalonSettings, registry: Any) -> AvalonState:
     rules = AvalonRules(registry, settings)
     async with _open_actors(settings, registry, setup, installation, rules) as actors:
         threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-        return await run(rules, setup, actors, journal, threads)
+        return await run(rules, setup, actors, journal, threads, renderer=renderer)
 
 
 async def _resume_game(settings: AvalonSettings, registry: Any) -> AvalonState:
@@ -73,12 +76,13 @@ async def _resume_game(settings: AvalonSettings, registry: Any) -> AvalonState:
     setup = _setup_from_meta(meta)
     installation = _prepare_runtime(settings)
     journal = open_journal(settings.replay, resume=True)
+    renderer = _build_renderer(settings, meta)
     rules = AvalonRules(registry, settings)
     async with _open_actors(settings, registry, setup, installation, rules) as actors:
         threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
         restored = await resume(rules, actors={}, journal=journal, threads=threads, setup=setup)
         if not rules.is_terminal(restored):
-            return await run(rules, setup, actors, journal, threads, state=restored)
+            return await run(rules, setup, actors, journal, threads, renderer=renderer, state=restored)
         return restored
 
 
@@ -121,6 +125,12 @@ def _build_seat_models(registry: Any, setup: GameSetup) -> dict[int, str]:
         if spec is not None and spec.opencode_model:
             seat_models[i] = spec.opencode_model
     return seat_models
+
+
+def _build_renderer(settings: AvalonSettings, meta: dict[str, Any]) -> ConsoleRenderer | None:
+    if not settings.render:
+        return None
+    return ConsoleRenderer(typist=InstantTypist(), meta=meta)
 
 
 def _prepare_runtime(settings: AvalonSettings) -> OpenCodeInstallation | None:

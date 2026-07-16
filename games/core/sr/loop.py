@@ -29,7 +29,7 @@ from typing import Any, Protocol
 
 from core.sr.journal import Journal
 from core.sr.rules import Rules
-from core.sr.types import Delivery, Sentence
+from core.sr.types import Delivery, Renderer, Sentence
 from core.threads import SeatThread
 
 
@@ -79,6 +79,7 @@ async def run(
     journal: Journal,
     threads: dict[int, SeatThread],
     *,
+    renderer: Renderer | None = None,
     snapshot_every: int = 0,
     state: Any = None,
 ) -> Any:
@@ -104,6 +105,8 @@ async def run(
             hsent = Sentence(seq=seq, turn_id=emit.turn_id, speaker="host", raw="",
                              deliveries=emit.deliveries, action=emit.action)
             journal.append_sentence(hsent)
+            if renderer is not None:
+                renderer.render_sentence(hsent)
             deliver(emit.deliveries, threads)
 
     _flush_host()  # 开局串场（主持人开场、发牌揭示）：首句玩家行动之前先落
@@ -133,6 +136,8 @@ async def run(
             sent = Sentence(seq=seq, turn_id=exp.turn_id, speaker=s, raw=raw,
                             deliveries=pr.deliveries, action=pr.action)
             journal.append_sentence(sent)
+            if renderer is not None:
+                renderer.render_sentence(sent)
             threads[s].inbox.clear()  # 该席位已看到它的 prompt（等价旧 commit 清 inbox）
             spoken.add(s)
             deliver(pr.deliveries, threads)

@@ -101,6 +101,10 @@ class AvalonSettings(BaseSettings):
     # 会话 DB 与日志。random 不给=只渲染不落盘。目录已存在即报错(不覆盖、无 --force)。
     replay: Path | None = None
 
+    # 终端实时渲染：默认开，loop 每生成一条 sentence 就调用 ConsoleRenderer 输出到 stdout；
+    # 批量/CI 跑 opencode 可用 --no-render 关闭。
+    render: bool = True
+
     # 断点续生成:--resume 配合 --replay 指向一个**已存在**、中途崩掉的对局目录,从最后一个
     # 完整 super-step 接着往下跑(见 resume.py),不重摇开局、不从头重烧。新局不要给这个开关。
     resume: bool = False

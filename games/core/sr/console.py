@@ -10,14 +10,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-Channel = int | Literal["broadcast", "audience"]
+from core.sr.types import Channel, Sentence
 
 
 def _speaker_label(speaker: int | str, roles: dict[int, str] | None = None) -> str:
@@ -29,16 +29,17 @@ def _speaker_label(speaker: int | str, roles: dict[int, str] | None = None) -> s
     return label
 
 
-def _channel_icon(chs: list[Channel]) -> str:
-    return "".join(_icon_one(ch) for ch in chs)
+def _channel_label(chs: list[Channel]) -> str:
+    """把路由目标转成人类可读的“谁能听到”标签。"""
+    return " ".join(_label_one(ch) for ch in chs)
 
 
-def _icon_one(ch: Channel) -> str:
+def _label_one(ch: Channel) -> str:
     if ch == "broadcast":
-        return "📢"
+        return "📢公开"
     if ch == "audience":
-        return "👁"
-    return f"🔒{ch}"
+        return "👁上帝视角"
+    return f"🔒{ch}号私聊"
 
 
 class Typist(Protocol):
@@ -83,13 +84,22 @@ class ConsoleRenderer:
         typist: Typist | None = None,
         show_audience: bool = True,
         console: Console | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         self.console = console or Console()
         self.typist = typist or InstantTypist()
         self.show_audience = show_audience
+        self.meta = meta
+
+    def set_meta(self, meta: dict[str, Any] | None) -> None:
+        self.meta = meta
+
+    def render_sentence(self, sentence: Sentence) -> None:
+        self._render_one(sentence.model_dump(), self._roles_from_meta(self.meta))
 
     def render(self, sentences: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> None:
-        roles = self._roles_from_meta(meta)
+        self.set_meta(meta)
+        roles = self._roles_from_meta(self.meta)
         for sent in sentences:
             self._render_one(sent, roles)
 
@@ -115,7 +125,7 @@ class ConsoleRenderer:
             has_content = True
             if i > 0:
                 body.append("\n")
-            body.append(f"{_channel_icon(channels)} ", style="dim")
+            body.append(f"{_channel_label(channels)} ", style="dim")
             if "audience" in channels:
                 body.append(text, style="dim italic")
             else:

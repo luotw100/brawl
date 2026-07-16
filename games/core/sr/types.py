@@ -14,7 +14,7 @@ core 搜不到任何玩法名词。`action` 是字符串：序列化成什么由
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,17 @@ class Sentence(BaseModel):
     raw: str = ""
     deliveries: list[Delivery] = Field(default_factory=list)
     action: str = ""
+
+
+class Renderer(Protocol):
+    """框架级渲染器：loop 每生成一条 Sentence 就回调一次，让终端/舞台实时显示。
+
+    实现者可以是 ConsoleRenderer（终端面板）、TTS 驱动、OBS overlay 等。
+    玩法代码不应直接依赖具体实现；loop 只通过此协议调用。
+    """
+
+    def set_meta(self, meta: dict[str, Any] | None) -> None: ...
+    def render_sentence(self, sentence: Sentence) -> None: ...
 
 
 class Expectation(BaseModel):
