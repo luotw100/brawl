@@ -261,10 +261,14 @@ class TTSRenderer:
         return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
     def _voices(self, meta: dict[str, Any]) -> tuple[list[str], str]:
-        voices = meta.get("voices")
-        host_voice = meta.get("host_voice")
+        # 音色 id 按后端取：自托管后端用自托管 voice_id（meta.setup.self_hosted_voices），
+        # 云端/静音用云端 voice_id（meta.setup.voices）——两套 id 在生成时都已快照进 meta。
+        self_hosted = self._backend.name == "selfhosted"
+        voices = meta.get("self_hosted_voices") if self_hosted else meta.get("voices")
+        host_voice = meta.get("host_self_hosted_voice") if self_hosted else meta.get("host_voice")
         if voices is None or host_voice is None:
-            raise TTSError("meta.json setup 缺 voices / host_voice，无法配音")
+            which = "self_hosted_voices / host_self_hosted_voice" if self_hosted else "voices / host_voice"
+            raise TTSError(f"meta.json setup 缺 {which}，无法配音")
         return voices, host_voice
 
     def _utterances(self, sentences: list[dict[str, Any]], voices: list[str], host_voice: str) -> list[Utterance]:

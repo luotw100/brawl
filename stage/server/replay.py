@@ -30,7 +30,17 @@ def load_game_id(replay_dir: Path) -> str:
 
 
 def load_events(replay_dir: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in (replay_dir / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    """读一局的事件流。旧格式 replay 自带 events.jsonl 直接读；新格式（sentence runtime）
+    只有 sentences.jsonl，经 games/sentences.py 的桥翻译成同一套事件契约。"""
+    events_path = replay_dir / "events.jsonl"
+    if events_path.is_file():
+        return [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    sent_path = replay_dir / "sentences.jsonl"
+    if sent_path.is_file():
+        from server.games import sentences as sentences_bridge
+
+        return sentences_bridge.events_from_sentences(replay_dir, load_game_id(replay_dir))
+    raise FileNotFoundError(f"{replay_dir} 里既没有 events.jsonl 也没有 sentences.jsonl")
 
 
 def load_tts(replay_dir: Path) -> dict[str, dict[str, Any]]:
@@ -90,7 +100,7 @@ def _replay_dirs(root: Path):
     """Find replay roots without descending into managed OpenCode state."""
     for directory, dirnames, filenames in root.walk():
         dirnames[:] = [name for name in dirnames if name != "_opencode"]
-        if "events.jsonl" in filenames:
+        if "events.jsonl" in filenames or "sentences.jsonl" in filenames:
             yield directory
 
 

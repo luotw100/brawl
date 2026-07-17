@@ -11,7 +11,7 @@ uv sync
 ```
 
 TTS 推理不在本进程加载 Qwen3-TTS / PyTorch；需要自托管配音时，另起局域网 Qwen3-TTS API server，
-再用 `--backend qwen3-tts-self-hosted --self-hosted-url http://<host>:<port>` 调用。
+再用 `--backend selfhosted --self-hosted-url http://<host>:<port>` 调用（音色读 meta 里的自托管 voice_id）。
 
 ## 跑一局
 
@@ -25,7 +25,7 @@ uv run brawl werewolf --player random --replay /tmp/ww1
 uv run brawl console /tmp/avalon1
 uv run brawl tts /tmp/avalon1
 # 或走自托管 Qwen3-TTS
-uv run brawl tts /tmp/avalon1 --backend qwen3-tts-self-hosted --self-hosted-url http://192.168.232.31:7860
+uv run brawl tts /tmp/avalon1 --backend selfhosted --self-hosted-url http://192.168.232.31:7860
 ```
 
 ## 用 OpenCode 当玩家后端
