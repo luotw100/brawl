@@ -91,19 +91,29 @@ async def run(
         state = rules.initial_state(setup)
     seq = -1
     spoken: set[int] = set()  # 本进程内已发言过的席位——rules.view 据此决定首句是否 seed 全量上下文
+    # 已在日志里的 host 串场 turn_id（续跑时从日志重建）：同一串场词绝不重复落盘。
+    # host emit 的 turn_id 按玩法约定唯一标识一次播报实例（含天数/任务/尝试号定位）。
+    journaled_host_turns: set[str] = {
+        d["turn_id"] for d in journal.load_sentences() if d.get("speaker") == "host"
+    }
 
     def _flush_host() -> None:
         """落日志 + 路由当前 state 对应的 host/观众串场词（rules 纯函数模板产出，不调 actor）。
 
         这些句子的语义已在 apply/advance 里反映，不进 apply——core 只记 + 路由。
         rules.pending 必须是无状态纯查询：同一 state 反复调用返回同一批，否则会重发。
+        续跑恢复后，pending 条件可能仍对已播报过的串场词成立（崩溃点在播报之后、下一
+        玩家行动之前）——按 turn_id 去重，已落盘的串场词不再重记。
         """
         nonlocal seq
         for emit in rules.pending(state):
+            if emit.turn_id in journaled_host_turns:
+                continue
             seq = journal.next_seq()
             hsent = Sentence(seq=seq, turn_id=emit.turn_id, speaker="host", raw="",
                              deliveries=emit.deliveries, action=emit.action)
             journal.append_sentence(hsent)
+            journaled_host_turns.add(emit.turn_id)
             if renderer is not None:
                 renderer.render_sentence(hsent)
             deliver(emit.deliveries, threads)
@@ -182,11 +192,31 @@ async def resume(
         state = rules.unpack(snap[1])
         start_idx = snap[0] + 1  # snapshot 到 seq 为止（含），从下一条重放
 
+    # 与 run 同构的重放：apply 逐句、advance 按 expectation（turn_id 分组）一次。
+    # 同时行动阶段（组队表决/放逐投票）一个 turn_id 对应多条玩家句子；若逐句 advance
+    # 会用不完整账本结算（多数决/票型全错）——必须整组 apply 完再 advance。
+    # 同 turn_id 的玩家句子在日志里必然连续（host 串场只在整组之后 flush），按此分组。
+    group: list[str] = []
+    current_turn: str | None = None
+
+    def _flush_group() -> None:
+        nonlocal state
+        for action in group:
+            state = rules.apply(state, action)
+        state = rules.advance(state)
+
     for i in range(start_idx, len(recorded)):
         d = recorded[i]
         if d["speaker"] == "host":
             continue  # host 串场词不参与状态推进（语义已在玩家句子的 apply/advance 里反映）
-        state = rules.advance(rules.apply(state, d["action"]))
+        turn = d["turn_id"]
+        if current_turn is not None and turn != current_turn:
+            _flush_group()
+            group = []
+        current_turn = turn
+        group.append(d["action"])
+    if group:
+        _flush_group()
     return state
 
 
