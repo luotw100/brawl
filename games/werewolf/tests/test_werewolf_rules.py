@@ -18,7 +18,7 @@ from werewolf.registry import load_registry
 from werewolf.rules import Role, Side
 from werewolf.rules_engine import WerewolfRules, WerewolfState
 from werewolf.settings import WerewolfSettings
-from werewolf.state import Seat, SeerCheck
+from werewolf.state import SeerCheck
 from werewolf.validation import GameSetup, resolve_and_validate
 from werewolf.view import PlayerView
 
@@ -160,7 +160,7 @@ async def test_midgame_crash_resume_reproduces_identical_log(tmp_path) -> None:
     final = await _run(settings, registry, setup, rep)
     original = (rep / "sentences.jsonl").read_text(encoding="utf-8").splitlines()
 
-    turns = [json.loads(l)["turn_id"] for l in original]
+    turns = [json.loads(line)["turn_id"] for line in original]
     cut_turn = turns[len(turns) // 2]
     cut = turns.index(cut_turn)
     crashed = tmp_path / "crashed"
@@ -341,6 +341,17 @@ def test_poisoned_hunter_gets_no_shot() -> None:
     assert set(st.lw_queue) == {7, 9}
 
 
+def test_knifed_and_poisoned_hunter_still_shoots() -> None:
+    """同夜被刀又被毒：死因保留狼刀（先刀后毒），猎人仍可开枪。"""
+    r = _rules()
+    st = _state(phase="night_witch", wolf_target=7)
+    st = r.apply(st, json.dumps({"kind": "witch_action", "seat": 6, "save": False, "poison_target_no": 7}))
+    st = r.advance(st)
+    deaths = [d for d in st.round_deaths if d.seat_no == 7]
+    assert len(deaths) == 1 and deaths[0].reason == "wolf_kill"
+    assert st.pending_hunter == 7 and st.phase == "hunter_shot"
+
+
 def test_knifed_hunter_shoots_after_last_words() -> None:
     r = _rules()
     st = _state(phase="night_witch", wolf_target=7)
@@ -365,7 +376,12 @@ def test_idiot_first_exile_flips_and_survives() -> None:
     idiot = st.seat(8)
     assert idiot.alive and idiot.revealed and not idiot.can_vote
     assert st.phase == "night_wolf" and st.day == 2  # 无死亡直接入夜
-    assert any(json.loads(e.action)["kind"] == "idiot_revealed" for e in st.host_outbox) or True  # outbox 已被下一批覆盖
+    kinds = [json.loads(e.action)["kind"] for e in st.host_outbox]
+    assert kinds == ["vote_result", "idiot_revealed", "night_start"]
+    # 播报顺序与措辞：先票型（不宣"出局"）、再翻牌免死、再天黑——不得自相矛盾
+    texts = [e.deliveries[0].text for e in st.host_outbox]
+    assert "得票最高" in texts[0] and "被放逐出局" not in texts[0]
+    assert "白痴牌" in texts[1] and "免于放逐" in texts[1]
 
 
 def test_revealed_idiot_exile_is_immune() -> None:

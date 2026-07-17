@@ -224,6 +224,8 @@ class WerewolfRules(Rules):
             night_target=state.wolf_target if phase == "night_witch" else None,
             death_reason=death_reason,
             candidates=self._candidates(seat, state),
+            deaths=list(state.deaths),
+            votes_history=list(state.votes_history),
             tone=self._registry.personas[s.persona_id].tone,
             strategy=self._registry.strategies[s.strategy_id].system,
         )
@@ -247,7 +249,6 @@ class WerewolfRules(Rules):
 
     def _candidates(self, seat: int, state: WerewolfState) -> list[int]:
         phase = state.phase
-        s = state.seat(seat)
         if phase == "night_wolf":
             return [x.no for x in state.living() if x.role is not rules.Role.WEREWOLF]
         if phase in ("night_seer", "night_witch", "day_vote"):
@@ -452,7 +453,9 @@ class WerewolfRules(Rules):
         if state.witch_poison_target is not None:
             t = state.seat(state.witch_poison_target)
             deaths.append(DeathRecord(seat_no=t.no, role=t.role, reason="poison", day=state.day))
-        deaths = list({d.seat_no: d for d in deaths}.values())  # 同一人被刀又被毒只记一次（保留先入的狼刀）
+        # 同一人被刀又被毒只记一次，保留先入的狼刀（dict 去重会留后者 poison，猎人将因此开不了枪）
+        seen: set[int] = set()
+        deaths = [d for d in deaths if not (d.seat_no in seen or seen.add(d.seat_no))]
         seats = self._apply_deaths(state, deaths)
         # 死于狼刀的猎人可开枪，死于毒不可
         hunter = next((d.seat_no for d in deaths if d.role is rules.Role.HUNTER and d.reason != "poison"), None)
@@ -533,10 +536,12 @@ class WerewolfRules(Rules):
         exiled = None if tied else leaders[0]
         record = VoteRecord(day=state.day, votes=votes, exiled=exiled, tied=tied)
         base_update: dict[str, Any] = {"votes_history": [*state.votes_history, record]}
+        # 白痴翻牌免死的局，结果播报只说票型、不说"出局"（免死播报紧随其后，先报出局自相矛盾）。
+        exiled_role = state.seat(exiled).role if exiled is not None else None
         announces = [
             _emit(
                 f"day{state.day}.vote_result",
-                prompts.line_vote_detail(votes) + "\n" + prompts.line_host_vote_result(exiled, state.seat(exiled).role if exiled else None, tied),
+                prompts.line_vote_detail(votes) + "\n" + prompts.line_host_vote_result(exiled, exiled_role, tied),
                 ["broadcast", "audience"],
                 {"kind": "vote_result", "day": state.day, "votes": votes, "exiled": exiled, "tied": tied},
             ),

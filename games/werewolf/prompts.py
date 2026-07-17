@@ -90,10 +90,28 @@ def system_text(view: PlayerView) -> str:
 # ---------------------------------------------------------------- human 消息拼装
 
 def situation(view: PlayerView) -> str:
-    """当前公开局面：第几天、谁存活、谁出局。全是明牌。"""
+    """当前公开局面：第几天、谁存活、谁出局 + 公开账本（死亡翻牌、放逐票型）。
+
+    账本全是明牌，也是续跑失忆的保底：opencode 会话历史在续跑后重建，逐字发言虽不可考，
+    死亡与票型这两类决策硬事实经这里完整回填。"""
     living = "、".join(f"{no}号" for no in view.alive_nos)
     dead = "、".join(f"{no}号" for no in view.dead_nos) or "无"
-    return f"当前第 {view.day} 天。存活：{living}。已出局：{dead}。\n{_REASONING_BASELINE}"
+    parts = [f"当前第 {view.day} 天。存活：{living}。已出局：{dead}。"]
+    if view.deaths:
+        rows = "；".join(
+            f"第{d.day}天 {d.seat_no}号 出局（{role_name(d.role)}，{rules.DEATH_REASON_LABEL.get(d.reason, d.reason)}）"
+            for d in view.deaths
+        )
+        parts.append(f"死亡翻牌：{rows}。")
+    if view.votes_history:
+        rows = []
+        for v in view.votes_history:
+            marks = "，".join(f"{a}号→{b}号" for a, b in sorted(v.votes.items()))
+            outcome = "平票无人出局" if v.exiled is None else f"{v.exiled}号 得票最高"
+            rows.append(f"第{v.day}天 票型[{marks}]→{outcome}")
+        parts.append("放逐记录：\n" + "\n".join(rows))
+    parts.append(_REASONING_BASELINE)
+    return "\n".join(parts)
 
 
 def private_block(view: PlayerView) -> str:
@@ -307,6 +325,9 @@ def line_host_vote_result(exiled: int | None, role: Role | None, tied: bool) -> 
         return "投票结束，最高票平票，本轮无人被放逐。"
     if exiled is None or role is None:
         return "投票结束，本轮无人被放逐。"
+    if role is Role.IDIOT:
+        # 白痴翻牌免死的局：只说票型，"出局"与否由紧随其后的白痴播报交代。
+        return f"投票结束，{exiled}号 得票最高。"
     return f"投票结束，{exiled}号 被放逐出局，其身份是{role_name(role)}。"
 
 

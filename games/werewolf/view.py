@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from werewolf.rules import Role
-from werewolf.state import SeerCheck
+from werewolf.state import DeathRecord, SeerCheck, VoteRecord
 
 
 @dataclass
@@ -31,6 +31,8 @@ class PlayerView:
     night_target: int | None = None  # 仅女巫行动时非空：今夜刀口
     death_reason: str | None = None  # 仅遗言时非空：该席位的死因
     candidates: list[int] = field(default_factory=list)  # 当前行动的合法目标座位（刀/验/毒/投/枪）
+    deaths: list[DeathRecord] = field(default_factory=list)  # 公开账本：死亡翻牌记录
+    votes_history: list[VoteRecord] = field(default_factory=list)  # 公开账本：放逐票型记录
     model: Any = None
     tone: str = ""
     strategy: str = ""
