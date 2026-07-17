@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import time
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import httpx
 
 from core.models import ModelSpec
 from core.opencode_runtime import OpenCodeConnection
+from core.sr.errors import FatalActorError
 from core.sr.messages import ChatMessage
 
 
@@ -23,6 +24,19 @@ class ModelBackend(Protocol):
     """一次 agent 调用的抽象。"""
 
     async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[ChatMessage]) -> ChatMessage: ...
+
+
+class OpenCodeSessionPoisoned(FatalActorError):
+    """OpenCode session 无法证明已回滚到事务基线。"""
+
+
+@dataclass(frozen=True)
+class _PendingTurn:
+    """一次尚未由规则层验收的 OpenCode 回合。"""
+
+    session_id: str
+    baseline: tuple[str, ...]
+    user_id: str | None = None
 
 
 class OpenCodeBackend:
@@ -63,7 +77,8 @@ class OpenCodeBackend:
         self._max_poll_time = max_poll_time
         self._sessions: dict[int, str] = {}
         self._session_locks: dict[int, asyncio.Lock] = {}
-        self._last_user: dict[int, str | None] = {}
+        self._pending_turns: dict[int, _PendingTurn] = {}
+        self._poisoned_sessions: dict[int, str] = {}
 
     @staticmethod
     def _messages_to_text(messages: list[ChatMessage]) -> str:
@@ -139,12 +154,17 @@ class OpenCodeBackend:
                 self._sessions[seat_no] = await self._create_session(seat_no)
             return self._sessions[seat_no]
 
-    async def _send_prompt(self, session_id: str, seat_no: int, text: str, model_ref: str) -> str:
+    async def _send_prompt(
+        self,
+        session_id: str,
+        seat_no: int,
+        text: str,
+        model_ref: str,
+        baseline: tuple[str, ...],
+    ) -> str:
         """发送 prompt，返回新建 user message 的 id。"""
         directory = self._directory_for_seat(seat_no)
-        existing_users = self._user_ids(
-            await self._request("GET", f"/session/{session_id}/message", directory=directory)
-        )
+        baseline_ids = set(baseline)
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if model_ref:
             payload["model"] = self._parse_ref(model_ref)
@@ -159,11 +179,12 @@ class OpenCodeBackend:
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             data = await self._request("GET", f"/session/{session_id}/message", directory=directory)
+            self._message_ids(data)
             for msg in self._message_items(data):
                 info = self._message_info(msg)
                 if info.get("role") == "user":
                     msg_id = info.get("id")
-                    if msg_id is not None and str(msg_id) not in existing_users:
+                    if msg_id is not None and str(msg_id) not in baseline_ids:
                         # 确认文本匹配，避免拿到别人并发的消息
                         parts = msg.get("parts", [])
                         msg_text = " ".join(
@@ -176,48 +197,88 @@ class OpenCodeBackend:
         raise RuntimeError(f"在 OpenCode session {session_id} 中未找到新建的 user message")
 
     async def _cleanup_failed_turn(self, session_id: str, seat_no: int) -> None:
-        """清理上一轮失败的 user + assistant 消息，避免失败上下文累积。"""
-        user_id = self._last_user.get(seat_no)
-        if not user_id:
+        """事务性回滚失败轮；只有精确恢复 baseline 才摘除 pending marker。"""
+        self._raise_if_poisoned(seat_no)
+        pending = self._pending_turns.get(seat_no)
+        if pending is None:
             return
+        if pending.session_id != session_id:
+            raise self._poison(
+                seat_no,
+                session_id,
+                RuntimeError(
+                    f"pending turn 属于 session {pending.session_id}，当前却是 {session_id}"
+                ),
+            )
+
+        cleanup = asyncio.create_task(self._restore_baseline(seat_no, pending))
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError as exc:
+                    # 清理不能被调用方取消到一半；记住取消，确认事务结束后再传播。
+                    cancelled = exc
+        except BaseException as exc:
+            raise self._poison(seat_no, session_id, exc) from exc
 
         try:
-            directory = self._directory_for_seat(seat_no)
-            # 先终止可能还在跑的老请求
-            await self._request("POST", f"/session/{session_id}/abort", directory=directory)
-            data = await self._request("GET", f"/session/{session_id}/message", directory=directory)
-            for msg in self._message_items(data):
-                info = self._message_info(msg)
-                if info.get("role") == "assistant" and info.get("parentID") == user_id:
-                    try:
-                        await self._request(
-                            "DELETE",
-                            f"/session/{session_id}/message/{info['id']}",
-                            directory=directory,
-                        )
-                    except Exception as e:
-                        print(
-                            f"[warn] 删除 OpenCode assistant message {info['id']} 失败（忽略）：{e}",
-                            file=sys.stderr,
-                        )
-            try:
-                await self._request(
-                    "DELETE",
-                    f"/session/{session_id}/message/{user_id}",
-                    directory=directory,
-                )
-            except Exception as e:
-                print(
-                    f"[warn] 删除 OpenCode user message {user_id} 失败（忽略）：{e}",
-                    file=sys.stderr,
-                )
-        except Exception as e:
-            print(
-                f"[warn] 清理 OpenCode session {session_id} 失败轮失败（忽略）：{e}",
-                file=sys.stderr,
+            cleanup.result()
+        except BaseException as exc:
+            raise self._poison(seat_no, session_id, exc) from exc
+
+        # cleanup task 已精确确认远端只剩 baseline，至此才允许清 marker。
+        if self._pending_turns.get(seat_no) == pending:
+            del self._pending_turns[seat_no]
+        if cancelled is not None:
+            raise cancelled
+
+    async def _restore_baseline(self, seat_no: int, pending: _PendingTurn) -> None:
+        """终止生成、删除所有基线外消息，并精确确认消息 ID 序列。"""
+        session_id = pending.session_id
+        directory = self._directory_for_seat(seat_no)
+        await self._request("POST", f"/session/{session_id}/abort", directory=directory)
+
+        data = await self._request("GET", f"/session/{session_id}/message", directory=directory)
+        current = self._message_ids(data)
+        baseline_ids = set(pending.baseline)
+        if not baseline_ids.issubset(current):
+            missing = [msg_id for msg_id in pending.baseline if msg_id not in current]
+            raise RuntimeError(f"OpenCode session {session_id} 的基线消息已丢失: {missing}")
+
+        added = [msg_id for msg_id in current if msg_id not in baseline_ids]
+        for msg_id in reversed(added):
+            await self._request(
+                "DELETE",
+                f"/session/{session_id}/message/{msg_id}",
+                directory=directory,
             )
-        finally:
-            self._last_user[seat_no] = None
+
+        restored = self._message_ids(
+            await self._request("GET", f"/session/{session_id}/message", directory=directory)
+        )
+        if restored != pending.baseline:
+            raise RuntimeError(
+                f"OpenCode session {session_id} 回滚后仍未恢复事务基线："
+                f"期望 {pending.baseline}，实际 {restored}"
+            )
+
+    def _raise_if_poisoned(self, seat_no: int) -> None:
+        reason = self._poisoned_sessions.get(seat_no)
+        if reason is not None:
+            session_id = self._sessions.get(seat_no, "unknown")
+            raise OpenCodeSessionPoisoned(
+                f"OpenCode seat {seat_no} session {session_id} 已被毒化，禁止原地重试：{reason}"
+            )
+
+    def _poison(self, seat_no: int, session_id: str, cause: BaseException) -> OpenCodeSessionPoisoned:
+        reason = f"{type(cause).__name__}: {cause}"
+        self._poisoned_sessions[seat_no] = reason
+        return OpenCodeSessionPoisoned(
+            f"OpenCode seat {seat_no} session {session_id} 无法确认已恢复事务基线，"
+            f"禁止原地重试：{reason}"
+        )
 
     def _extract_text(self, msg: dict[str, Any]) -> str:
         """从 assistant message 中抽取文本内容。"""
@@ -270,16 +331,42 @@ class OpenCodeBackend:
         return info if isinstance(info, dict) else msg
 
     @staticmethod
-    def _user_ids(data: Any) -> set[str]:
-        """取当前消息列表中所有 user 消息的 id 集合。"""
-        ids: set[str] = set()
-        for msg in OpenCodeBackend._message_items(data):
-            info = OpenCodeBackend._message_info(msg)
-            if info.get("role") == "user":
-                msg_id = info.get("id")
-                if msg_id is not None:
-                    ids.add(str(msg_id))
-        return ids
+    def _message_ids(data: Any) -> tuple[str, ...]:
+        """严格读取完整消息 ID 序列，供事务基线及回滚确认使用。"""
+        if isinstance(data, list):
+            raw_items = data
+        elif isinstance(data, dict) and isinstance(data.get("data"), list):
+            raw_items = data["data"]
+        else:
+            raise RuntimeError(
+                "OpenCode message list 不是明确的 list 或 {data: list}，无法建立事务基线"
+            )
+
+        ids: list[str] = []
+        seen: set[str] = set()
+        for index, msg in enumerate(raw_items):
+            if not isinstance(msg, dict):
+                raise RuntimeError(
+                    f"OpenCode message list 第 {index} 项不是对象，无法建立事务基线"
+                )
+            if "info" in msg:
+                info = msg["info"]
+                if not isinstance(info, dict):
+                    raise RuntimeError(
+                        f"OpenCode message list 第 {index} 项的 info 不是对象"
+                    )
+            else:
+                info = msg
+            msg_id = info.get("id")
+            if not isinstance(msg_id, str) or not msg_id:
+                raise RuntimeError(
+                    f"OpenCode message list 第 {index} 项缺少非空字符串 id"
+                )
+            if msg_id in seen:
+                raise RuntimeError(f"OpenCode message id 重复，无法建立事务基线: {msg_id}")
+            seen.add(msg_id)
+            ids.append(msg_id)
+        return tuple(ids)
 
     async def _wait_for_response(self, session_id: str, seat_no: int, user_id: str) -> tuple[str, str]:
         """等待 user_id 对应的 assistant 回复，返回 (assistant_id, text)。"""
@@ -288,6 +375,7 @@ class OpenCodeBackend:
 
         while time.monotonic() < deadline:
             data = await self._request("GET", f"/session/{session_id}/message", directory=directory)
+            self._message_ids(data)
             messages = self._message_items(data)
             for msg in messages:
                 info = self._message_info(msg)
@@ -313,20 +401,38 @@ class OpenCodeBackend:
     async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[ChatMessage]) -> ChatMessage:
         seat_no = getattr(view, "seat_no", 0)
         session_id = await self._ensure_session(seat_no)
+        self._raise_if_poisoned(seat_no)
         text = self._messages_to_text(messages)
         model_ref = self._model_for_seat(seat_no)
-        # 清理上一轮标记的失败消息（parse 失败 rollback 过的 / 上次调用崩在中途的）
+        # 防御性清理上一轮未验收消息；正常 parse 失败会在 rollback 中立即完成。
         await self._cleanup_failed_turn(session_id, seat_no)
-        user_id = await self._send_prompt(session_id, seat_no, text, model_ref)
-        self._last_user[seat_no] = user_id
-        # 调用成功后 _last_user 保持标记：调用方（loop）parse 过才 commit_turn 摘除，
-        # parse 不过会 rollback 删掉这轮——失败轮绝不留在 session 里污染下次上下文。
-        assistant_id, response_text = await self._wait_for_response(session_id, seat_no, user_id)
+
+        directory = self._directory_for_seat(seat_no)
+        baseline = self._message_ids(
+            await self._request("GET", f"/session/{session_id}/message", directory=directory)
+        )
+        pending = _PendingTurn(session_id=session_id, baseline=baseline)
+        # 必须在 prompt_async 前落本地 marker：POST 超时也可能已被服务端接受。
+        self._pending_turns[seat_no] = pending
+        try:
+            user_id = await self._send_prompt(session_id, seat_no, text, model_ref, baseline)
+            pending = replace(pending, user_id=user_id)
+            self._pending_turns[seat_no] = pending
+            _assistant_id, response_text = await self._wait_for_response(
+                session_id, seat_no, user_id
+            )
+        except BaseException:
+            await self._cleanup_failed_turn(session_id, seat_no)
+            raise
+
+        # 调用成功后 pending 保持：调用方 parse 过才 commit_turn 摘除；parse 不过
+        # rollback 会恢复完整 baseline，失败轮绝不留在 session 里污染下次上下文。
         return ChatMessage(role="assistant", content=response_text)
 
     def commit_turn(self, seat_no: int) -> None:
         """本轮产出已被调用方验收（parse 通过）：摘除失败标记，session 保留这轮对话。"""
-        self._last_user[seat_no] = None
+        self._raise_if_poisoned(seat_no)
+        self._pending_turns.pop(seat_no, None)
 
     async def rollback(self, seat_no: int) -> None:
         """本轮产出让调用方拒收（parse 失败）：立即从 session 删掉这轮的 user+assistant 消息。"""
@@ -336,3 +442,10 @@ class OpenCodeBackend:
 
     async def close(self) -> None:
         await self._client.aclose()
+
+
+__all__ = [
+    "ModelBackend",
+    "OpenCodeBackend",
+    "OpenCodeSessionPoisoned",
+]
