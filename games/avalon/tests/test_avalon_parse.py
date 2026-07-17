@@ -105,11 +105,36 @@ def test_team_vote_never_reaches_seats_before_tally() -> None:
 
 # ---------------------------------------------------------------- 刺杀
 
-def test_assassin_cannot_target_evil() -> None:
+def test_assassin_cannot_target_known_teammate() -> None:
     st = _state(phase="assassinate")
     raw = json.dumps({"target_no": 5, "speech": "就是你了", "monologue": "m"}, ensure_ascii=False)
-    with pytest.raises(JsonParseError, match="蓝方"):
+    with pytest.raises(JsonParseError, match="非法目标"):
         _rules().parse(4, raw, st)
+
+
+def test_assassin_may_stab_oberon_by_mistake() -> None:
+    """奥伯伦不参与红方互认：刺客候选清单里有他，误刀合法（等于空刀，蓝方胜）。
+
+    回归：候选清单与校验必须同源——此前校验只收蓝方，奥伯伦在候选里却被拒收，
+    RandomActor 固定选中后连错 5 次、整局中断。
+    """
+    from avalon.state import Seat as _Seat
+
+    roles = [Role.MERLIN, Role.SERVANT, Role.SERVANT, Role.ASSASSIN, Role.OBERON, Role.MORDRED, Role.MINION]
+    seats = [
+        _Seat(no=i + 1, persona_id="fox", strategy_id="prudent", model="", role=r, intel=[])
+        for i, r in enumerate(roles)
+    ]
+    st = AvalonState(seats=seats, leader=1, phase="assassinate")
+    assassin_intel = {4: [6, 7]}  # 刺客夜里只认莫德雷德与爪牙，不认奥伯伦
+    st = st.model_copy(update={
+        "seats": [s.model_copy(update={"intel": assassin_intel.get(s.no, [])}) for s in st.seats]
+    })
+    raw = json.dumps({"target_no": 5, "speech": "就是你了", "monologue": "m"}, ensure_ascii=False)
+    pr = _rules().parse(4, raw, st)
+    st2 = _rules().apply(st, pr.action)
+    assert json.loads(pr.action)["hit"] is False
+    assert st2.winner == "good"  # 误刀奥伯伦=空刀，蓝方胜
 
 
 def test_assassin_hitting_merlin_flips_winner() -> None:

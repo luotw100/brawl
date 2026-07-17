@@ -313,9 +313,13 @@ class AvalonRules(Rules):
 
     def _parse_assassinate(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
         result = parse_json(raw, Assassination)
-        good_nos = {s.no for s in state.seats if s.role.side is Side.GOOD}
-        if result.target_no not in good_nos:
-            raise JsonParseError(f"刺客 {seat}号 刺向非法目标 {result.target_no}（只能指认蓝方）")
+        s = state._seat(seat)
+        # 合法目标 = 除自己与已知同伙外的任何人（候选清单与 view.good_suspects 同源）。
+        # 奥伯伦不参与红方互认，刺客认不出他——误刀奥伯伦是合法操作（等于空刀，蓝方胜），
+        # 绝不能在校验层拒绝：候选清单给得出、校验却拒收，会把对局卡死在重试上。
+        legal = {x.no for x in state.seats if x.no != seat} - set(s.intel)
+        if result.target_no not in legal:
+            raise JsonParseError(f"刺客 {seat}号 刺向非法目标 {result.target_no}（可选：{sorted(legal)}）")
         target = state._seat(result.target_no)
         hit = target.role is Role.MERLIN
         deliveries = [
@@ -421,12 +425,22 @@ class AvalonRules(Rules):
         if approved:
             return state.model_copy(deep=True, update={"phase": "quest", "cards": {}})
         rejections = state.rejections + 1
+        # 被否提案也进公开账本（旧引擎行为）：谁在几号第几次提队提了谁、票型如何，全场可见。
+        record = ProposalRecord(
+            quest=state.quest_no,
+            attempt=state.attempt,
+            leader_no=state.leader,
+            team=list(state.team),
+            votes=dict(state.votes),
+            approved=False,
+        )
         out: dict[str, Any] = {
             "phase": "propose",
             "rejections": rejections,
             "leader": state.next_leader,
             "team": [],
             "votes": {},
+            "history": [*state.history, record],
         }
         if rejections >= rules.MAX_REJECTIONS:
             out["winner"] = "evil"
@@ -534,7 +548,7 @@ class AvalonRules(Rules):
         total = state.players
         approved = approves * 2 > total
         next_leader = state.leader % state.players + 1
-        text = prompts.line_host_vote_result(
+        result_text = prompts.line_host_vote_result(
             approves,
             total,
             approved,
@@ -550,7 +564,11 @@ class AvalonRules(Rules):
         return [
             HostEmit(
                 turn_id=self.turn_id(state),
-                deliveries=[Delivery(text=text, channels=["broadcast", "audience"])],
+                deliveries=[
+                    # 票型明细是公开账本（谁投了什么全场可见），与主持结果同句上桌。
+                    Delivery(text=prompts.line_votes(state.votes), channels=["broadcast", "audience"]),
+                    Delivery(text=result_text, channels=["broadcast", "audience"]),
+                ],
                 action=json.dumps(action, ensure_ascii=False),
             )
         ]

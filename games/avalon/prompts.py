@@ -514,7 +514,7 @@ def _opencode_self_check(phase: str, view: PlayerView) -> str:
             "蓝方必须出成功；红方再权衡是否破坏、养身份或避免多红暴露。",
         ],
         "assassinate": [
-            f"target_no 必须从候选蓝方 {view.good_suspects()} 中选一个。",
+            f"target_no 必须从候选 {view.good_suspects()} 中选一个（除你和已知同伙外皆可；若有奥伯伦，你认不出他）。",
             "刺杀前回看长程轨迹，不要只看最后一轮谁跳得最明显。",
         ],
         "lady_choose": [
@@ -569,7 +569,7 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
     if phase == "assassinate":
         targets = "、".join(f"{no}号" for no in view.good_suspects())
         return (
-            f"当前阶段：刺杀（assassinate）。请从以下蓝方中指认梅林：{targets}。\n"
+            f"当前阶段：刺杀（assassinate）。请从以下玩家中指认梅林：{targets}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "assassinate", "monologue": "说给观众的一句短话", "speech": "你的指认宣言", "target_no": 座位号}}\n'
             f"{_opencode_self_check(phase, view)}"
