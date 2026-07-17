@@ -39,6 +39,10 @@ def test_rejected_proposal_rotates_leader() -> None:
     st = r.advance(_vote_all(r, st, approve=False))
     assert st.phase == "propose" and st.leader == 2 and st.rejections == 1
     assert st.team == [] and st.votes == {}
+    # 被否提案进公开账本（旧引擎行为）：队伍/票型可查、result 为空
+    assert len(st.history) == 1
+    rec = st.history[0]
+    assert rec.approved is False and rec.result is None and rec.team == [1, 2] and rec.leader_no == 1
 
 
 def test_five_rejections_evil_wins() -> None:
