@@ -39,9 +39,17 @@ class Actor(Protocol):
     opencode/session（或读它的结构化字段做本地模拟），拿回 (raw, audit)。audit 是可选
     调试元数据（OpenCodeActor 可带 usage/latency，RandomActor 可带随机标记），core 不
     强制落盘；本地审计已移除，审计源以 opencode server 自身为准。
+
+    commit_turn / rollback 是"产出验收"回执：loop 的 rules.parse 过才 commit（session
+    保留这轮），不过就 rollback（session 删掉这轮，避免坏产出污染下次上下文）。无会话
+    的 actor（RandomActor 等）两个都是空操作。
     """
 
     async def speak(self, seat: int, view: Any, turn_id: str) -> tuple[str, dict[str, Any] | None]: ...
+
+    def commit_turn(self, seat: int) -> None: ...
+
+    async def rollback(self, seat: int) -> None: ...
 
     async def close(self) -> None: ...
 
@@ -81,15 +89,21 @@ async def run(
     renderer: Renderer | None = None,
     snapshot_every: int = 0,
     state: Any = None,
+    max_concurrency: int = 0,
 ) -> Any:
     """跑一整局到终局，返回终局 state。
 
     `snapshot_every > 0` 时每 N 条 sentence 存一次 state 快照加速 resume；0 = 不存（靠重放）。
     若传入 `state`，则从该状态继续（用于 resume 后恢复）。
+    `max_concurrency > 0` 时限制同时行动的模型调用并发上限（撞限流时调小）；0 = 不限。
+
+    落盘按 expectation 原子批写：一个 turn 的玩家句子 + 其前后 host 串场词合批一次
+    write+fsync。崩溃只可能丢**整个** turn（半组在物理上不存在），resume 因此不需要
+    猜"日志尾部这组建不完整"。
     """
     if state is None:
         state = rules.initial_state(setup)
-    seq = -1
+    last_seq = -1
     spoken: set[int] = set()  # 本进程内已发言过的席位——rules.view 据此决定首句是否 seed 全量上下文
     # 已在日志里的 host 串场 turn_id（续跑时从日志重建）：同一串场词绝不重复落盘。
     # host emit 的 turn_id 按玩法约定唯一标识一次播报实例（含天数/任务/尝试号定位）。
@@ -97,28 +111,37 @@ async def run(
         d["turn_id"] for d in journal.load_sentences() if d.get("speaker") == "host"
     }
 
-    def _flush_host() -> None:
-        """落日志 + 路由当前 state 对应的 host/观众串场词（rules 纯函数模板产出，不调 actor）。
+    def _collect_host(buffer: list[Sentence]) -> None:
+        """把当前 state 的 host/观众串场词收进本 turn 的原子批（渲染+路由即时，落盘随批）。
 
         这些句子的语义已在 apply/advance 里反映，不进 apply——core 只记 + 路由。
         rules.pending 必须是无状态纯查询：同一 state 反复调用返回同一批，否则会重发。
         续跑恢复后，pending 条件可能仍对已播报过的串场词成立（崩溃点在播报之后、下一
         玩家行动之前）——按 turn_id 去重，已落盘的串场词不再重记。
         """
-        nonlocal seq
         for emit in rules.pending(state):
             if emit.turn_id in journaled_host_turns:
                 continue
-            seq = journal.next_seq()
-            hsent = Sentence(seq=seq, turn_id=emit.turn_id, speaker="host", raw="",
+            hsent = Sentence(seq=-1, turn_id=emit.turn_id, speaker="host", raw="",
                              deliveries=emit.deliveries, action=emit.action)
-            journal.append_sentence(hsent)
             journaled_host_turns.add(emit.turn_id)
             if renderer is not None:
                 renderer.render_sentence(hsent)
             deliver(emit.deliveries, threads)
+            buffer.append(hsent)
 
-    _flush_host()  # 开局串场（主持人开场、发牌揭示）：首句玩家行动之前先落
+    def _flush_batch(buffer: list[Sentence]) -> None:
+        nonlocal last_seq
+        if buffer:
+            last_seq = journal.append_batch(buffer)
+            buffer.clear()
+
+    batch: list[Sentence] = []
+    _collect_host(batch)  # 开局串场（主持人开场、发牌揭示）：首句玩家行动之前先收
+    _flush_batch(batch)
+
+    # 同时行动阶段的并发上限：None = 全并发（旧默认），否则信号量限流。
+    sem = asyncio.Semaphore(max_concurrency) if max_concurrency > 0 else None
 
     while not rules.is_terminal(state):
         exp = rules.expected(state)
@@ -131,21 +154,24 @@ async def run(
 
         # 同时亮牌/扣牌：并发收齐所有座位的 raw（单席位即一次调用），每人 prompt 互不依赖。
         # speak+parse 作为一个原子单元重试：parse 不过（ValueError）等价于这次调用失败，
-        # 重新调 actor 拿一份新产出（opencode 后端会先清理失败轮消息）。解析只读本轮回合
-        # 开始时的 state，并发座位互不影响；落日志/apply 仍按座位序确定性进行。
+        # 重新调 actor 拿一份新产出（opencode 后端会清掉失败轮消息）。解析只读本轮回合
+        # 开始时的 state，并发座位互不影响；落盘/apply 仍按座位序确定性进行。
         async def _ask(s: int, _state=state, _turn_id=exp.turn_id) -> tuple[int, str, dict[str, Any] | None, Any]:
             v = rules.view(s, _state, threads[s].inbox, first_speak=s not in spoken)
-            raw, audit, pr = await _act_with_retry(rules, actors[s], s, v, _state, _turn_id)
+            if sem is None:
+                raw, audit, pr = await _act_with_retry(rules, actors[s], s, v, _state, _turn_id)
+            else:
+                async with sem:
+                    raw, audit, pr = await _act_with_retry(rules, actors[s], s, v, _state, _turn_id)
             return s, raw, audit, pr
 
         gathered = await asyncio.gather(*(_ask(s) for s in seats))
 
-        # 按座位序落日志 + 路由 + apply（确定性顺序，与并发无关）。
+        # 按座位序收批 + 路由 + apply（确定性顺序，与并发无关；seq 落批时由 journal 赋）。
         for s, raw, _audit, pr in gathered:
-            seq = journal.next_seq()
-            sent = Sentence(seq=seq, turn_id=exp.turn_id, speaker=s, raw=raw,
+            sent = Sentence(seq=-1, turn_id=exp.turn_id, speaker=s, raw=raw,
                             deliveries=pr.deliveries, action=pr.action)
-            journal.append_sentence(sent)
+            batch.append(sent)
             if renderer is not None:
                 renderer.render_sentence(sent)
             threads[s].inbox.clear()  # 该席位已看到它的 prompt（等价旧 commit 清 inbox）
@@ -153,15 +179,16 @@ async def run(
             deliver(pr.deliveries, threads)
             state = rules.apply(state, pr.action)
 
-        _flush_host()  # 本轮玩家行动后的串场（开票公布、阶段提示、终局 reveal 等）
+        _collect_host(batch)  # 本轮玩家行动后的串场（开票公布、阶段提示、终局 reveal 等）
         state = rules.advance(state)
-        _flush_host()  # advance 后的串场（阶段交接、终局收场）
+        _collect_host(batch)  # advance 后的串场（阶段交接、终局收场）
+        _flush_batch(batch)   # 整轮（玩家句子 + 前后串场）一次原子落盘
 
-        if snapshot_every and seq % snapshot_every == 0:
-            journal.save_snapshot(seq, rules.pack(state))
+        if snapshot_every and last_seq % snapshot_every == 0:
+            journal.save_snapshot(last_seq, rules.pack(state))
 
-    # 终局存一份终态 snapshot，标记'全部 sentences 已 apply'（seq=-1 表示零句即终局）。
-    journal.save_snapshot(seq, rules.pack(state))
+    # 终局存一份终态 snapshot，标记'全部 sentences 已 apply 进这份 state'。
+    journal.save_snapshot(last_seq, rules.pack(state))
     return state
 
 
@@ -173,11 +200,15 @@ async def resume(
     *,
     setup: Any = None,
 ) -> Any:
-    """从崩溃点恢复，回到崩溃前 state，不调 actor。
+    """从崩溃点恢复，回到崩溃前 state + 各席位 inbox，不调 actor。
 
     优先用 snapshot（快）：unpack 后从 `seq+1` 重放剩余 sentences 到最新终态。无 snapshot
     时从 `setup` 造 initial_state 再重放全部 sentences（慢路径）——两种路径对 `apply` 的
     要求一致，故结果与实时跑等价（回放确定性不变量）。
+
+    重放同时恢复每席位 inbox（重放 deliveries、按发言人清 inbox，与 run 的逐句次序一致）：
+    续跑后 rules.view 拿到与崩溃前相同的"自上次发言以来的公开事件"，LLM 不失忆。
+    席位在 opencode 的私有会话历史无法恢复（新建 session），由 first_speak 全量设定补。
 
     `setup` 由玩法侧从 meta.json 重建后传入；冷续跑（无 snapshot）时必需。
     """
@@ -191,33 +222,83 @@ async def resume(
     else:
         state = rules.unpack(snap[1])
         start_idx = snap[0] + 1  # snapshot 到 seq 为止（含），从下一条重放
+        # 快照恢复时 inbox 已不可考（快照不含 threads），续跑后首句走 first_speak 全量设定补。
 
     # 与 run 同构的重放：apply 逐句、advance 按 expectation（turn_id 分组）一次。
     # 同时行动阶段（组队表决/放逐投票）一个 turn_id 对应多条玩家句子；若逐句 advance
     # 会用不完整账本结算（多数决/票型全错）——必须整组 apply 完再 advance。
     # 同 turn_id 的玩家句子在日志里必然连续（host 串场只在整组之后 flush），按此分组。
-    group: list[str] = []
+    # 逐句次序与 run 一致：发言人先清自己 inbox，再路由本句 deliveries，组末才 apply+advance。
+    # 尾部若留着不足一组的残尾（旧版逐席落盘的崩局才可能产生；现行原子批写不会产生），
+    # 按 expected 的座位数校验后整组丢弃（inbox 一并回滚）——这个 turn 由续跑重问，
+    # 绝不拿半组账本结算。
+    group: list[tuple[int, str]] = []  # (speaker, action)
+    group_deliveries: list[tuple[int, list[dict[str, Any]]]] = []  # (speaker, deliveries) 与 group 对齐
+    group_start_threads: dict[int, SeatThread] | None = None
     current_turn: str | None = None
 
-    def _flush_group() -> None:
-        nonlocal state
-        for action in group:
+    def _flush_group(*, tail: bool = False) -> None:
+        nonlocal state, group_start_threads
+        if not group:
+            return
+        exp = rules.expected(state)
+        if exp.turn_id != current_turn:
+            raise RuntimeError(
+                f"日志与规则机失步：state 期望 turn {exp.turn_id}，日志组是 {current_turn}"
+            )
+        if len(group) < len(exp.seats):
+            if not tail:
+                raise RuntimeError(f"日志中段出现不完整 turn 组：{current_turn}（{len(group)}/{len(exp.seats)}）")
+            # 尾部半组：state 与 inbox 一并回滚到本组之前，续跑重问这个 turn
+            if group_start_threads is not None:
+                for no, t in group_start_threads.items():
+                    threads[no].inbox[:] = t.inbox
+            group_start_threads = None
+            return
+        if len(group) > len(exp.seats):
+            raise RuntimeError(f"日志 turn 组超出预期座位数：{current_turn}（{len(group)} > {len(exp.seats)}）")
+        for speaker, deliveries in group_deliveries:
+            threads[speaker].inbox.clear()  # 与 run 同序：发言人先清自己的 inbox
+            _deliver_dicts(deliveries, threads)
+        for _speaker, action in group:
             state = rules.apply(state, action)
         state = rules.advance(state)
+        group_start_threads = None
 
     for i in range(start_idx, len(recorded)):
         d = recorded[i]
         if d["speaker"] == "host":
-            continue  # host 串场词不参与状态推进（语义已在玩家句子的 apply/advance 里反映）
+            # host 串场词不推进 state（语义已在玩家句子的 apply/advance 里反映），
+            # 但要重放 deliveries 恢复各席位 inbox（broadcast 的主持人播报是公开上下文）。
+            _deliver_dicts(d.get("deliveries") or [], threads)
+            continue
         turn = d["turn_id"]
         if current_turn is not None and turn != current_turn:
             _flush_group()
-            group = []
+            group, group_deliveries = [], []
+        if not group:
+            group_start_threads = {no: t.model_copy() for no, t in threads.items()}
         current_turn = turn
-        group.append(d["action"])
-    if group:
-        _flush_group()
+        group.append((int(d["speaker"]), d["action"]))
+        group_deliveries.append((int(d["speaker"]), d.get("deliveries") or []))
+    _flush_group(tail=True)
     return state
+
+
+def _deliver_dicts(deliveries: list[dict[str, Any]], threads: dict[int, SeatThread]) -> None:
+    """重放日志里的 deliveries（dict 形态）到席位 inbox——与 run 里 deliver 同语义。"""
+    for dd in deliveries:
+        text = dd.get("text") or ""
+        if not text:
+            continue
+        for ch in dd.get("channels") or []:
+            if ch == "broadcast":
+                for t in threads.values():
+                    t.inbox.append(text)
+            elif ch == "audience":
+                pass
+            else:
+                threads[int(ch)].inbox.append(text)
 
 
 async def _act_with_retry(
@@ -237,7 +318,12 @@ async def _act_with_retry(
     for retry_no in range(1, _MAX_RETRIES + 1):
         try:
             raw, audit = await actor.speak(seat, view, turn_id)
-            pr = rules.parse(seat, raw, state)
+            try:
+                pr = rules.parse(seat, raw, state)
+            except Exception:
+                await actor.rollback(seat)  # 坏产出：从 session 删掉这轮，别污染下次上下文
+                raise
+            actor.commit_turn(seat)  # 验收通过：session 保留这轮
             return raw, audit, pr
         except Exception as e:
             if retry_no == _MAX_RETRIES:

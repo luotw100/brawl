@@ -39,7 +39,7 @@ async def _fresh_game(settings: WerewolfSettings, registry: Any) -> WerewolfStat
     rng = random.Random(settings.seed)
     setup = resolve_and_validate(settings, registry, rng)
     installation = _prepare_runtime(settings)
-    meta = _build_meta(registry, setup)
+    meta = _build_meta(registry, setup, settings)
     journal = open_journal(settings.replay, resume=False)
     journal.write_meta(meta)
     renderer = _build_renderer(settings, meta)
@@ -51,7 +51,7 @@ async def _fresh_game(settings: WerewolfSettings, registry: Any) -> WerewolfStat
     rules = WerewolfRules(registry, settings)
     async with _open_actors(settings, registry, setup, installation, rules) as actors:
         threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-        return await run(rules, setup, actors, journal, threads, renderer=renderer)
+        return await run(rules, setup, actors, journal, threads, renderer=renderer, max_concurrency=settings.concurrency)
 
 
 async def _resume_game(settings: WerewolfSettings, registry: Any) -> WerewolfState:
@@ -65,7 +65,7 @@ async def _resume_game(settings: WerewolfSettings, registry: Any) -> WerewolfSta
         threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
         restored = await resume(rules, actors={}, journal=journal, threads=threads, setup=setup)
         if not rules.is_terminal(restored):
-            return await run(rules, setup, actors, journal, threads, renderer=renderer, state=restored)
+            return await run(rules, setup, actors, journal, threads, renderer=renderer, state=restored, max_concurrency=settings.concurrency)
         return restored
 
 
@@ -120,11 +120,12 @@ def _prepare_runtime(settings: WerewolfSettings) -> OpenCodeInstallation | None:
     return prepare_opencode_installation() if settings.player == "opencode" else None
 
 
-def _build_meta(registry: Any, setup: GameSetup) -> dict[str, Any]:
+def _build_meta(registry: Any, setup: GameSetup, settings: WerewolfSettings) -> dict[str, Any]:
     board = board_by_id(setup.board)
     return {
         "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "player": "werewolf",
+        "game": "werewolf",  # stage registry 按此派发 plugin
+        "player": settings.player,
         "setup": setup.to_meta(),
         "board_name": board.name,
         "model_labels": {

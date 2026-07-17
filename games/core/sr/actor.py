@@ -79,6 +79,16 @@ class OpenCodeActor:
         }
         return text, audit
 
+    def commit_turn(self, seat: int) -> None:
+        """本轮产出已被 loop 验收（parse 通过）：转告 backend 摘除失败标记。"""
+        if hasattr(self._backend, "commit_turn"):
+            self._backend.commit_turn(seat)  # type: ignore[no-any-return]
+
+    async def rollback(self, seat: int) -> None:
+        """本轮产出被 loop 拒收（parse 失败）：转告 backend 从 session 删掉这轮消息。"""
+        if hasattr(self._backend, "rollback"):
+            await self._backend.rollback(seat)  # type: ignore[no-any-return]
+
     async def close(self) -> None:
         if hasattr(self._backend, "close"):
             await self._backend.close()  # type: ignore[no-any-return]
@@ -103,6 +113,10 @@ class RandomActor:
             "output": raw,
             "ok": True,
         }
+
+    def commit_turn(self, seat: int) -> None: ...  # 无会话可清理，空操作
+
+    async def rollback(self, seat: int) -> None: ...
 
     async def close(self) -> None: ...
 

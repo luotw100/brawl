@@ -1,8 +1,8 @@
 """句子日志 = 一局的真相与 checkpoint。
 
-一行 Sentence，写盘（fsync）即推进，就是一次原子 checkpoint。没有旧引擎那套
-sidecar / watermark / "custom 事件严格先于 checkpoint chunk"的两路流对齐——只有
-一路 sentences，torn 超步不存在（fsync 后才递进 seq）。
+一个 expectation（turn）的玩家句子与其前后 host 串场合批一次 write+fsync 落盘——
+崩溃只可能丢整个 turn，torn 超步不存在。没有旧引擎那套 sidecar / watermark /
+"custom 事件严格先于 checkpoint chunk"的两路流对齐——只有一路 sentences。
 
 `--replay` 给了就落盘；不给时走 NullJournal（空对象），调用方零分叉。
 """
@@ -10,6 +10,7 @@ sidecar / watermark / "custom 事件严格先于 checkpoint chunk"的两路流�
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,7 +25,7 @@ class Journal(Protocol):
 
     def write_meta(self, meta: dict[str, Any]) -> None: ...
     def write_avatar(self, seat_no: int, src: Path) -> None: ...
-    def append_sentence(self, sent: Any) -> None: ...
+    def append_batch(self, sents: list[Any]) -> int: ...
     def save_snapshot(self, seq: int, state_bytes: bytes) -> None: ...
     def latest_snapshot(self) -> tuple[int, bytes] | None: ...
     def load_sentences(self) -> list[dict[str, Any]]: ...
@@ -33,7 +34,7 @@ class Journal(Protocol):
 
 
 class DirJournal:
-    """一局 = 一个目录：sentences.jsonl + llm_calls.jsonl + 可选快照。
+    """一局 = 一个目录：sentences.jsonl + 可选快照。
 
     resume=True 时按既有行数水位续接（不重建、不清空）；新局（resume=False）目录不存在
     由玩法 validation 在边界保证，这里 exist_ok=False 只作纵深防御。
@@ -70,13 +71,23 @@ class DirJournal:
         self._next_seq += 1
         return s
 
-    def append_sentence(self, sent: Any) -> None:
-        """原子记录一条 Sentence。写盘并 fsync 后才算完成一次超推进。"""
-        self._sent_fp.write(json.dumps(sent.model_dump(), ensure_ascii=False) + "\n")
-        self._sent_fp.flush()
-        import os
+    def append_batch(self, sents: list[Any]) -> int:
+        """原子记录一批 Sentence（一个 turn 的玩家句子 + 其前后 host 串场）。
 
+        seq 由本方法按水位顺次赋给（写入 sent.seq）；整批一次 write + 一次 fsync——
+        要么全落要么全不落（进程死在中途最多留个半行，load 时按 torn 尾行丢弃）。
+        返回本批最后一条的 seq；空批不调用（调用方保证）。
+        """
+        lines = []
+        last = -1
+        for sent in sents:
+            sent.seq = self.next_seq()
+            last = sent.seq
+            lines.append(json.dumps(sent.model_dump(), ensure_ascii=False))
+        self._sent_fp.write("\n".join(lines) + "\n")
+        self._sent_fp.flush()
         os.fsync(self._sent_fp.fileno())
+        return last
 
     def save_snapshot(self, seq: int, state_bytes: bytes) -> None:
         """语意：'seq 及之前所有 sentences 已 apply 进这份 state'。加速 resume 用。
@@ -95,14 +106,27 @@ class DirJournal:
         path = self.run_dir / _SNAPSHOT
         if not path.exists():
             return None
-        d = json.loads(path.read_text(encoding="utf-8"))
-        return d["seq"], base64.b64decode(d["state"])
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+            return d["seq"], base64.b64decode(d["state"])
+        except (json.JSONDecodeError, KeyError, ValueError):
+            return None  # 快照写到一半崩了：按无快照处理，全量重放兜底（正确性不靠它）
 
     def load_sentences(self) -> list[dict[str, Any]]:
+        """读出全部句子。崩溃可能留半行的 torn 尾行——只容忍丢弃最后一行；
+        中段坏行是真损坏，照样抛 JSONDecodeError（fail-fast 不吞数据）。"""
         if not self._sent_path.exists():
             return []
-        lines = self._sent_path.read_text(encoding="utf-8").splitlines()
-        return [json.loads(ln) for ln in lines if ln.strip()]
+        lines = [ln for ln in self._sent_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        rows: list[dict[str, Any]] = []
+        for i, ln in enumerate(lines):
+            try:
+                rows.append(json.loads(ln))
+            except json.JSONDecodeError:
+                if i == len(lines) - 1:
+                    break  # torn 尾行：丢弃，这个 turn 由续跑重问
+                raise
+        return rows
 
     def close(self) -> None:
         self._sent_fp.close()
@@ -116,7 +140,9 @@ class NullJournal:
     def next_seq(self) -> int:
         return 0
 
-    def append_sentence(self, sent: Any) -> None: ...
+    def append_batch(self, sents: list[Any]) -> int:
+        return -1
+
     def save_snapshot(self, seq: int, state_bytes: bytes) -> None: ...
     def latest_snapshot(self) -> tuple[int, bytes] | None:
         return None

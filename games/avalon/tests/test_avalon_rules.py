@@ -110,7 +110,7 @@ async def test_midgame_crash_resume_reproduces_identical_log(tmp_path) -> None:
     final = await _run(settings, registry, setup, rep)
     original = (rep / "sentences.jsonl").read_text(encoding="utf-8").splitlines()
 
-    turns = [json.loads(l)["turn_id"] for l in original]
+    turns = [json.loads(line)["turn_id"] for line in original]
     cut_turn = turns[len(turns) // 2]
     cut = turns.index(cut_turn)  # cut_turn 首次出现的行号=崩溃点（该 turn 从未开始）
     crashed = tmp_path / "crashed"

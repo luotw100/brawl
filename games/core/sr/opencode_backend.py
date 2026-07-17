@@ -315,17 +315,24 @@ class OpenCodeBackend:
         session_id = await self._ensure_session(seat_no)
         text = self._messages_to_text(messages)
         model_ref = self._model_for_seat(seat_no)
-        # 清理上一轮失败的残留消息，避免失败上下文累积
+        # 清理上一轮标记的失败消息（parse 失败 rollback 过的 / 上次调用崩在中途的）
         await self._cleanup_failed_turn(session_id, seat_no)
         user_id = await self._send_prompt(session_id, seat_no, text, model_ref)
         self._last_user[seat_no] = user_id
-        try:
-            assistant_id, response_text = await self._wait_for_response(session_id, seat_no, user_id)
-            self._last_user[seat_no] = None
-            return ChatMessage(role="assistant", content=response_text)
-        except Exception:
-            # 保留 _last_user，下次 call 会清理失败轮
-            raise
+        # 调用成功后 _last_user 保持标记：调用方（loop）parse 过才 commit_turn 摘除，
+        # parse 不过会 rollback 删掉这轮——失败轮绝不留在 session 里污染下次上下文。
+        assistant_id, response_text = await self._wait_for_response(session_id, seat_no, user_id)
+        return ChatMessage(role="assistant", content=response_text)
+
+    def commit_turn(self, seat_no: int) -> None:
+        """本轮产出已被调用方验收（parse 通过）：摘除失败标记，session 保留这轮对话。"""
+        self._last_user[seat_no] = None
+
+    async def rollback(self, seat_no: int) -> None:
+        """本轮产出让调用方拒收（parse 失败）：立即从 session 删掉这轮的 user+assistant 消息。"""
+        session_id = self._sessions.get(seat_no)
+        if session_id is not None:
+            await self._cleanup_failed_turn(session_id, seat_no)
 
     async def close(self) -> None:
         await self._client.aclose()
