@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core.sr.loop import deliver
 from core.sr.types import Delivery
 from core.threads import SeatThread
@@ -53,3 +55,17 @@ def test_empty_text_is_dropped():
     deliver([Delivery(text="", channels=["broadcast"])], threads)
     for t in threads.values():
         assert t.inbox == []
+
+
+def test_unknown_private_seat_fails_before_any_delivery():
+    """整组路由先预检；后面的坏 seat 不能让前面的广播产生半批副作用。"""
+    threads = _threads()
+    deliveries = [
+        Delivery(text="不应投递", channels=["broadcast"]),
+        Delivery(text="坏路由", channels=[99]),
+    ]
+
+    with pytest.raises(RuntimeError, match="unknown seats"):
+        deliver(deliveries, threads)
+
+    assert all(thread.inbox == [] for thread in threads.values())

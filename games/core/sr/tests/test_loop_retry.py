@@ -7,14 +7,17 @@ actor 调用失败（网络/超时）与 rules.parse 校验不过（坏 JSON、�
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 import core.sr.loop as loop_mod
 from core.sr.dummy import SEATS, DummyRules
+from core.sr.errors import FatalActorError
 from core.sr.journal import NullJournal
 from core.sr.loop import run
+from core.sr.types import Expectation
 from core.threads import SeatThread
 
 
@@ -138,3 +141,62 @@ async def test_parse_exhaustion_fails_fast(tmp_path):
     with pytest.raises(ValueError, match="空产出非法"):
         await run(StrictDummyRules(), setup=None, actors=actors, journal=NullJournal(), threads=_threads())
     assert actor.calls == loop_mod._MAX_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_concurrent_actor_failure_cancels_and_awaits_siblings():
+    class TwoActorRules(DummyRules):
+        def expected(self, state: dict) -> Expectation:
+            return Expectation(seats=[1, 2], turn_id="concurrent.0")
+
+        def pending(self, state: dict):
+            return []
+
+    class BlockingActor:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+            self.rollbacks = 0
+
+        async def speak(self, seat: int, view: Any, turn_id: str):
+            self.started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+        def commit_turn(self, seat: int) -> None: ...
+
+        async def rollback(self, seat: int) -> None:
+            self.rollbacks += 1
+
+        async def close(self) -> None: ...
+
+    class FatalActor:
+        def __init__(self, sibling_started: asyncio.Event) -> None:
+            self.sibling_started = sibling_started
+
+        async def speak(self, seat: int, view: Any, turn_id: str):
+            await self.sibling_started.wait()
+            raise FatalActorError("session poisoned")
+
+        def commit_turn(self, seat: int) -> None: ...
+        async def rollback(self, seat: int) -> None: ...
+        async def close(self) -> None: ...
+
+    blocker = BlockingActor()
+    actors = {1: FatalActor(blocker.started), 2: blocker}
+    threads = {1: SeatThread(), 2: SeatThread()}
+
+    with pytest.raises(FatalActorError, match="poisoned"):
+        await run(
+            TwoActorRules(),
+            setup=None,
+            actors=actors,
+            journal=NullJournal(),
+            threads=threads,
+        )
+
+    assert blocker.cancelled.is_set()
+    assert blocker.rollbacks == 1

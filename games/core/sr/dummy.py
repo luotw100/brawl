@@ -29,10 +29,11 @@ class DummyRules:
         seat = SEATS[state["step"]]
         return Expectation(seats=[seat], turn_id=f"dummy.{state['step']}.say")
 
-    def view(self, seat: int, state: dict, inbox: list[str], *, first_speak: bool = False) -> Any:
+    def view(self, seat: int, state: dict, thread: Any, *, first_speak: bool = False) -> Any:
         # 返回一个带 .prompt 的 opaque 视图对象；core 原样递给 actor，不读字段。
-        # Dummy 不用 first_speak/inbox（真玩法据此拼 seed 与 human 消息），这里只给固定串。
-        return SimpleNamespace(prompt=f"你是 {seat} 号，请说一句话。")
+        # Dummy 不用 first_speak/thread（真玩法据此拼 seed 与私有历史）。
+        prompt = f"你是 {seat} 号，请说一句话。"
+        return SimpleNamespace(prompt=prompt, turn_prompt=prompt)
 
     def parse(self, seat: int, raw: str, state: dict) -> ParseResult:
         # 玩家发言广播给全员（broadcast 含自己）。唯一懂语义的地方。

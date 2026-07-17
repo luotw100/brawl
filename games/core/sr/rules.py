@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from core.sr.types import Expectation, HostEmit, ParseResult
+from core.threads import SeatThread
 
 State_contra = TypeVar("State_contra", contravariant=True)  # noqa: F841 — 仅用于 Protocol 类型示意
 
@@ -45,14 +46,20 @@ class Rules(Protocol):
         终局时不应被调用。"""
         ...
 
-    def view(self, seat: int, state: Any, inbox: list[str], *, first_speak: bool = False) -> Any:
-        """给某席位拼一个 opaque 视图对象，其 `.prompt` 是最终发给该 seat 的 prompt 文本。
+    def view(self, seat: int, state: Any, thread: SeatThread, *, first_speak: bool = False) -> Any:
+        """给某席位拼一个 opaque 视图对象。
 
-        `inbox` 是该席位自上次发言以来累积的公开事件（core 维护的 threads[seat].inbox），
-        rules 据此拼 human 消息；`first_speak` 为 True 表示该席位在本进程内首次发言（冷续跑后
-        也为 True）——rules 据此决定是否在 `.prompt` 里 seed 全量上下文（身份/规则/阵容）。
-        私密信息隔离（只取该席位有权看到的状态子集）全在这里。返回值对 core 是 opaque，
-        core 原样递给 actor，不读字段。
+        `thread.inbox` 是该席位自上次发言以来累积的可见事件；
+        `thread.messages` 是已提交的私有 human/assistant 历史。`first_speak=True`
+        表示 actor 在本进程的新 session 里首次发言（冷续跑后也为 True），rules
+        必须把固定设定和这份私有历史 seed 进 `.prompt`。
+
+        view 是信息隔离的 fail-closed 边界：只接受当前 `expected(state).seats`
+        中的 seat；非行动席位必须拒绝，而不是构造一个可能携带私密字段的视图。
+
+        返回 view 的 `.prompt` 是实际发给 actor 的文本；`.turn_prompt` 是本轮增量
+        human prompt，由 Sentence 持久化后写入 thread，不得包含首轮全量 wrapper。
+        私密信息隔离（只取该席位有权看到的状态子集）全在这里。
         """
         ...
 
