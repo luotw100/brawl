@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from werewolf.rules import Role, Side
 
@@ -67,42 +67,54 @@ class SeerCheck(BaseModel):
 
 # ---------------------------------------------------------------- 玩家结构化产出（rules.parse 的 JSON schema）
 
-class WolfKill(BaseModel):
+class Action(BaseModel):
+    """LLM 动作的统一严格边界；业务字段不得矫正类型，也不得夹带未声明字段。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+
+class WolfKill(Action):
     """狼人夜间提刀：刀口 + 一句狼队内夜聊（只在狼频道可见）+ 内心戏（只给观众）。"""
 
+    phase: Literal["wolf_kill"]
     target_no: int
     speech: NonEmptyStr
     monologue: NonEmptyStr
 
 
-class SeerAction(BaseModel):
+class SeerAction(Action):
+    phase: Literal["seer_check"]
     target_no: int
     monologue: NonEmptyStr
 
 
-class WitchAction(BaseModel):
+class WitchAction(Action):
     """女巫用药：是否用解药救今晚刀口 + 是否用毒（毒谁）。两瓶药状态由 rules 校验。"""
 
-    save: bool = False
-    poison_target_no: int | None = None
+    phase: Literal["witch_action"]
+    save: bool
+    poison_target_no: int | None
     monologue: NonEmptyStr
 
 
-class Statement(BaseModel):
+class Statement(Action):
     """白天发言 / 遗言 / 赛后复盘的结构化产出。"""
 
+    phase: Literal["last_words", "discuss", "banter"]
     speech: NonEmptyStr
     monologue: NonEmptyStr
 
 
-class VoteAction(BaseModel):
+class VoteAction(Action):
+    phase: Literal["vote"]
     target_no: int
     monologue: NonEmptyStr
 
 
-class HunterShot(BaseModel):
+class HunterShot(Action):
     """猎人开枪：可带走一人，也可不开枪（target_no=None）。"""
 
-    target_no: int | None = None
+    phase: Literal["hunter_shot"]
+    target_no: int | None
     speech: NonEmptyStr
     monologue: NonEmptyStr

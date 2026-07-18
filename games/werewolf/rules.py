@@ -1,11 +1,9 @@
 """狼人杀规则表。
 
 第一版只开放 12 人预女猎白板子。BoardSpec 只装**真正被消费**的东西：角色池与它的纯
-派生（人数、神民狼计数）。本板子的玩法规则——夜里狼刀→预言家→女巫的顺序、死亡翻牌、
-留遗言、屠边判负——是「预女猎白」这一类游戏的固定规则，写在图（graph.py）与判负
-（nodes._win）里，不塞进 BoardSpec 假装数据驱动：没有第二个板子要它们变，就不为不存在
-的需求留旋钮。真要加狼王/魔术师/奇迹商人时，再按那时的差异决定哪些上升成 BoardSpec 字段
-+ 新技能节点。
+派生（人数、神民狼计数）。本板子的玩法选择集中冻结在 RULE_CONTRACT，rules_engine 直接
+实现这一份契约，不把它们伪装成可切换配置。真要加狼王/魔术师/奇迹商人时，再按那时的
+真实差异设计新的规则边界。
 """
 
 from __future__ import annotations
@@ -64,6 +62,28 @@ class BoardSpec:
     @property
     def villagers(self) -> int:
         return sum(1 for r in self.roles if r is Role.VILLAGER)
+
+
+@dataclass(frozen=True)
+class RuleContract:
+    """当前玩法唯一规则契约；字段是已冻结的事实，不是运行时开关。"""
+
+    witch_may_use_both_potions_on_different_targets: bool
+    witch_may_self_save: bool
+    hunter_may_shoot_when_knifed_and_poisoned: bool
+    hunter_may_shoot_when_only_poisoned: bool
+    deaths_reveal_roles: bool
+    tied_vote_exiles_nobody: bool
+
+
+RULE_CONTRACT = RuleContract(
+    witch_may_use_both_potions_on_different_targets=True,
+    witch_may_self_save=True,
+    hunter_may_shoot_when_knifed_and_poisoned=True,
+    hunter_may_shoot_when_only_poisoned=False,
+    deaths_reveal_roles=True,
+    tied_vote_exiles_nobody=True,
+)
 
 
 PRE_WITCH_HUNTER_IDIOT_12 = BoardSpec(

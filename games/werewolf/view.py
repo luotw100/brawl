@@ -9,8 +9,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.threads import ThreadMessage
 from werewolf.rules import Role
-from werewolf.state import DeathRecord, SeerCheck, VoteRecord
+from werewolf.state import SeerCheck, VoteRecord
+
+
+@dataclass(frozen=True)
+class PublicDeath:
+    """玩家有权看到的死亡账本条目：死者、翻牌与发生天数。
+
+    内部 ``DeathRecord`` 还带有狼刀/毒杀等裁判结算信息；它不能越过 view
+    边界，否则普通席位会从 prompt 反推出夜间行动。
+    """
+
+    seat_no: int
+    role: Role
+    day: int
 
 
 @dataclass
@@ -29,11 +43,12 @@ class PlayerView:
     witch_has_antidote: bool = True
     witch_has_poison: bool = True
     night_target: int | None = None  # 仅女巫行动时非空：今夜刀口
-    death_reason: str | None = None  # 仅遗言时非空：该席位的死因
     candidates: list[int] = field(default_factory=list)  # 当前行动的合法目标座位（刀/验/毒/投/枪）
-    deaths: list[DeathRecord] = field(default_factory=list)  # 公开账本：死亡翻牌记录
+    deaths: list[PublicDeath] = field(default_factory=list)  # 公开账本：死者与翻牌，不含裁判死因
     votes_history: list[VoteRecord] = field(default_factory=list)  # 公开账本：放逐票型记录
     model: Any = None
     tone: str = ""
     strategy: str = ""
+    messages: list[ThreadMessage] = field(default_factory=list)
+    turn_prompt: str = ""
     prompt: str = ""

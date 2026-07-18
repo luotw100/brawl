@@ -13,12 +13,14 @@ from core.parsing import JsonParseError
 from core.sr.actor import RandomActor
 from core.sr.journal import DirJournal
 from core.sr.loop import resume, run
-from core.threads import SeatThread
+from core.sr.tts import SilenceTTSBackend, TTSRenderer
+from core.threads import SeatThread, ThreadMessage
+from werewolf import prompts
 from werewolf.registry import load_registry
-from werewolf.rules import Role, Side
+from werewolf.rules import RULE_CONTRACT, Role, Side
 from werewolf.rules_engine import WerewolfRules, WerewolfState
 from werewolf.settings import WerewolfSettings
-from werewolf.state import SeerCheck
+from werewolf.state import DeathRecord, SeerCheck
 from werewolf.validation import GameSetup, resolve_and_validate
 from werewolf.view import PlayerView
 
@@ -104,8 +106,28 @@ async def test_random_game_finishes(tmp_path) -> None:
     journal.close()
     kinds = [json.loads(s["action"]).get("kind") for s in sentences if s["action"]]
     # 完整一局必经：开局、夜晚行动、白天发言、放逐票、终局揭示、收场
-    for kind in ("game_start", "night_start", "wolf_kill", "dawn", "discuss", "vote", "vote_result", "reveal", "closing"):
+    for kind in (
+        "game_start",
+        "night_start",
+        "wolf_kill",
+        "wolf_kill_result",
+        "witch_result",
+        "dawn",
+        "discuss",
+        "vote",
+        "vote_result",
+        "reveal",
+        "closing",
+    ):
         assert kind in kinds, f"缺少句子类型 {kind}"
+
+    # 查验反馈是裁判私密回话：日志 speaker=host，TTS 必须用主持人声线，不能冒充预言家说话。
+    seer_results = [s for s in sentences if s["action"] and json.loads(s["action"]).get("kind") == "seer_result"]
+    assert seer_results and all(s["speaker"] == "host" for s in seer_results)
+    utterances = TTSRenderer(SilenceTTSBackend(), tmp_path / "rep")._utterances(
+        seer_results, [f"player-{no}" for no in range(1, 13)], "host-voice"
+    )
+    assert utterances and all(u.voice_id == "host-voice" and u.speaker == "主持人" for u in utterances)
 
 
 @pytest.mark.asyncio
@@ -160,12 +182,13 @@ async def test_midgame_crash_resume_reproduces_identical_log(tmp_path) -> None:
     final = await _run(settings, registry, setup, rep)
     original = (rep / "sentences.jsonl").read_text(encoding="utf-8").splitlines()
 
-    turns = [json.loads(line)["turn_id"] for line in original]
-    cut_turn = turns[len(turns) // 2]
-    cut = turns.index(cut_turn)
+    rows = [json.loads(line) for line in original]
+    cut_commit = rows[len(rows) // 2]["commit_id"]
+    cut = next(index for index, row in enumerate(rows) if row["commit_id"] == cut_commit)
     crashed = tmp_path / "crashed"
     crashed.mkdir()
-    (crashed / "sentences.jsonl").write_text("\n".join(original[:cut]) + "\n", encoding="utf-8")
+    prefix = "\n".join(original[:cut])
+    (crashed / "sentences.jsonl").write_text(f"{prefix}\n" if prefix else "", encoding="utf-8")
 
     rules2 = WerewolfRules(registry, settings)
     journal = DirJournal(crashed, resume=True)
@@ -199,65 +222,125 @@ async def test_random_actor_produces_valid_json() -> None:
 
 # ---------------------------------------------------------------- parse 校验（非法输出一律 JsonParseError，交给 loop 重试）
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"target_no": 9, "speech": "刀9号", "monologue": "m"},
+        {"phase": "vote", "target_no": 9, "speech": "刀9号", "monologue": "m"},
+        {"phase": "wolf_kill", "target_no": True, "speech": "刀1号", "monologue": "m"},
+        {"phase": "wolf_kill", "target_no": 9, "speech": "刀9号", "monologue": "m", "extra": 1},
+    ],
+)
+def test_wolf_schema_rejects_missing_wrong_or_coerced_fields(payload: dict) -> None:
+    with pytest.raises(JsonParseError):
+        _rules().parse(1, json.dumps(payload, ensure_ascii=False), _state(phase="night_wolf"))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"phase": "witch_action", "monologue": "m"},
+        {"phase": "witch_action", "save": False, "monologue": "m"},
+        {"phase": "witch_action", "poison_target_no": None, "monologue": "m"},
+        {"phase": "witch_action", "save": "false", "poison_target_no": None, "monologue": "m"},
+    ],
+)
+def test_witch_schema_requires_explicit_strict_decisions(payload: dict) -> None:
+    with pytest.raises(JsonParseError):
+        _rules().parse(6, json.dumps(payload, ensure_ascii=False), _state(phase="night_witch", wolf_target=9))
+
+
+def test_hunter_schema_requires_explicit_target_even_for_no_shot() -> None:
+    raw = json.dumps(
+        {"phase": "hunter_shot", "speech": "不开枪", "monologue": "m"},
+        ensure_ascii=False,
+    )
+    with pytest.raises(JsonParseError):
+        _rules().parse(7, raw, _state(phase="hunter_shot", pending_hunter=7))
+
+
+def test_shared_statement_phase_must_match_runtime_phase() -> None:
+    raw = json.dumps(
+        {"phase": "banter", "speech": "这不是白天发言", "monologue": "m"},
+        ensure_ascii=False,
+    )
+    with pytest.raises(JsonParseError, match="应为 discuss"):
+        _rules().parse(9, raw, _state(phase="day_discuss", discuss_index=8))
+
 def test_parse_wolf_rejects_wolf_target() -> None:
     st = _state(phase="night_wolf")
-    raw = json.dumps({"target_no": 2, "speech": "刀自己人", "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps(
+        {"phase": "wolf_kill", "target_no": 2, "speech": "刀自己人", "monologue": "m"},
+        ensure_ascii=False,
+    )
     with pytest.raises(JsonParseError):
         _rules().parse(1, raw, st)
 
 
 def test_parse_seer_rejects_self() -> None:
     st = _state(phase="night_seer")
-    raw = json.dumps({"target_no": 5, "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps({"phase": "seer_check", "target_no": 5, "monologue": "m"}, ensure_ascii=False)
     with pytest.raises(JsonParseError):
         _rules().parse(5, raw, st)
 
 
 def test_parse_witch_rejects_save_without_knife() -> None:
     st = _state(phase="night_witch", wolf_target=None)
-    raw = json.dumps({"save": True, "poison_target_no": None, "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps(
+        {"phase": "witch_action", "save": True, "poison_target_no": None, "monologue": "m"},
+        ensure_ascii=False,
+    )
     with pytest.raises(JsonParseError):
         _rules().parse(6, raw, st)
 
 
 def test_parse_witch_rejects_second_antidote() -> None:
     st = _state(phase="night_witch", wolf_target=9, witch_has_antidote=False)
-    raw = json.dumps({"save": True, "poison_target_no": None, "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps(
+        {"phase": "witch_action", "save": True, "poison_target_no": None, "monologue": "m"},
+        ensure_ascii=False,
+    )
     with pytest.raises(JsonParseError):
         _rules().parse(6, raw, st)
 
 
 def test_parse_witch_rejects_save_and_poison_same_target() -> None:
     st = _state(phase="night_witch", wolf_target=9)
-    raw = json.dumps({"save": True, "poison_target_no": 9, "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps(
+        {"phase": "witch_action", "save": True, "poison_target_no": 9, "monologue": "m"},
+        ensure_ascii=False,
+    )
     with pytest.raises(JsonParseError):
         _rules().parse(6, raw, st)
 
 
 def test_parse_vote_rejects_self() -> None:
     st = _state(phase="day_vote")
-    raw = json.dumps({"target_no": 9, "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps({"phase": "vote", "target_no": 9, "monologue": "m"}, ensure_ascii=False)
     with pytest.raises(JsonParseError):
         _rules().parse(9, raw, st)
 
 
 def test_parse_vote_rejects_dead() -> None:
     st = _kill_all(_state(phase="day_vote"), [10])
-    raw = json.dumps({"target_no": 10, "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps({"phase": "vote", "target_no": 10, "monologue": "m"}, ensure_ascii=False)
     with pytest.raises(JsonParseError):
         _rules().parse(9, raw, st)
 
 
 def test_parse_hunter_allows_no_shot() -> None:
     st = _state(phase="hunter_shot", pending_hunter=7)
-    raw = json.dumps({"target_no": None, "speech": "不开枪", "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps(
+        {"phase": "hunter_shot", "target_no": None, "speech": "不开枪", "monologue": "m"},
+        ensure_ascii=False,
+    )
     pr = _rules().parse(7, raw, st)
     assert json.loads(pr.action)["target_no"] is None
 
 
 def test_parse_statement_rejects_empty_speech() -> None:
     st = _state(phase="day_discuss")
-    raw = json.dumps({"speech": "  ", "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps({"phase": "discuss", "speech": "  ", "monologue": "m"}, ensure_ascii=False)
     with pytest.raises(JsonParseError):
         _rules().parse(9, raw, st)
 
@@ -266,7 +349,10 @@ def test_parse_statement_rejects_empty_speech() -> None:
 
 def test_wolf_chat_never_reaches_good_inbox_channels() -> None:
     st = _state(phase="night_wolf")
-    raw = json.dumps({"target_no": 9, "speech": "刀9号", "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps(
+        {"phase": "wolf_kill", "target_no": 9, "speech": "刀9号", "monologue": "m"},
+        ensure_ascii=False,
+    )
     pr = _rules().parse(1, raw, st)
     for d in pr.deliveries:
         for ch in d.channels:
@@ -276,40 +362,256 @@ def test_wolf_chat_never_reaches_good_inbox_channels() -> None:
 
 def test_seer_result_only_to_seer_and_audience() -> None:
     st = _state(phase="night_seer")
-    raw = json.dumps({"target_no": 1, "monologue": "m"}, ensure_ascii=False)
-    pr = _rules().parse(5, raw, st)
-    channels = {ch for d in pr.deliveries for ch in d.channels}
-    assert channels == {5, "audience"}
+    raw = json.dumps({"phase": "seer_check", "target_no": 1, "monologue": "m"}, ensure_ascii=False)
+    r = _rules()
+    pr = r.parse(5, raw, st)
+    # 玩家自己的 sentence 不冒充裁判说出结果，只保留 audience-only 内心戏。
+    assert {ch for d in pr.deliveries for ch in d.channels} == {"audience"}
+    assert all("查验结果" not in d.text for d in pr.deliveries)
+
+    # apply 后裁判以 HostEmit 回送；拓扑仍严格限制为预言家本人 + 上帝视角。
+    checked = r.apply(st, pr.action)
+    feedback = r.pending(checked)
+    assert len(feedback) == 1
+    assert json.loads(feedback[0].action)["kind"] == "seer_result"
+    assert {ch for d in feedback[0].deliveries for ch in d.channels} == {5, "audience"}
+    assert "1号是狼人" in feedback[0].deliveries[0].text
 
 
 def test_witch_action_is_silent_to_seats() -> None:
     st = _state(phase="night_witch", wolf_target=9)
-    raw = json.dumps({"save": True, "poison_target_no": None, "monologue": "m"}, ensure_ascii=False)
+    raw = json.dumps(
+        {"phase": "witch_action", "save": True, "poison_target_no": None, "monologue": "m"},
+        ensure_ascii=False,
+    )
     pr = _rules().parse(6, raw, st)
     channels = {ch for d in pr.deliveries for ch in d.channels}
     assert channels == {"audience"}
+
+
+def test_speech_visibility_rules_are_phase_specific() -> None:
+    view = PlayerView(
+        seat_no=1,
+        role=Role.WEREWOLF,
+        players=12,
+        day=1,
+        phase="night_wolf",
+        candidates=[9, 10],
+    )
+
+    night = prompts.opencode_ask("night_wolf", view)
+    day = prompts.opencode_ask("day_discuss", view)
+    last_words = prompts.opencode_ask("last_words", view)
+
+    assert "只在狼队内部传递" in night and "真实判断" in night
+    assert "全场公开" in day and "策略性跳身份" in day and "报查验" in day
+    assert "全场公开遗言" in last_words and "报情报" in last_words
+    assert "speech 会被一字不差地公布上桌，全场可见" not in prompts.RULES
+    assert "night_wolf 的 speech 只在狼队内部传递" in prompts.RULES
 
 
 def test_view_never_shows_others_private_intel() -> None:
     r = _rules()
     checks = [SeerCheck(target_no=1, side=Side.WEREWOLF, day=1)]
     # 白天发言：平民视角没有狼同伴名单、没有查验史，prompt 不含狼队频道信息
-    st = _state(phase="day_discuss", seer_checks=checks)
-    v = r.view(9, st, [], first_speak=True)
+    st = _state(phase="day_discuss", discuss_index=8, seer_checks=checks)
+    v = r.view(9, st, SeatThread(), first_speak=True)
     assert v.wolf_allies == [] and v.seer_checks == []
+    assert v.witch_has_antidote is False and v.witch_has_poison is False
+    assert v.night_target is None
     assert "狼队友" not in v.prompt and "查验记录" not in v.prompt
     # 夜晚狼刀：狼视角看到全部同伴（含自己以外的 3 狼），但看不到预言家查验史
     st_wolf = _state(phase="night_wolf", seer_checks=checks)
-    v1 = r.view(1, st_wolf, [], first_speak=True)
+    v1 = r.view(1, st_wolf, SeatThread(), first_speak=True)
     assert sorted(v1.wolf_allies) == [2, 3, 4]
     assert v1.seer_checks == [] and "查验记录" not in v1.prompt
     # 夜晚验人：预言家视角看得到自己的查验史
     st_seer = _state(phase="night_seer", seer_checks=checks)
-    v5 = r.view(5, st_seer, [], first_speak=True)
+    v5 = r.view(5, st_seer, SeatThread(), first_speak=True)
     assert len(v5.seer_checks) == 1 and "查验记录" in v5.prompt
 
 
+def test_public_situation_excludes_night_death_causes() -> None:
+    """公开账本只投影死者/翻牌，不把狼刀与毒杀的裁判结算信息交给普通席位。"""
+    r = _rules()
+    deaths = [
+        DeathRecord(seat_no=9, role=Role.VILLAGER, reason="wolf_kill", day=1),
+        DeathRecord(seat_no=10, role=Role.VILLAGER, reason="poison", day=1),
+    ]
+    st = _kill_all(_state(phase="day_discuss", discuss_index=8, deaths=deaths), [9, 10])
+    view = r.view(11, st, SeatThread(), first_speak=False)
+    public = prompts.situation(view)
+
+    assert [(d.seat_no, d.role, d.day) for d in view.deaths] == [
+        (9, Role.VILLAGER, 1),
+        (10, Role.VILLAGER, 1),
+    ]
+    assert all(not hasattr(d, "reason") for d in view.deaths)
+    assert "9号" in public and "10号" in public and "翻牌：平民" in public
+    assert all(secret not in public for secret in ("狼刀", "毒杀", "wolf_kill", "poison"))
+
+
+def test_last_words_prompt_does_not_reveal_night_death_cause() -> None:
+    death = DeathRecord(seat_no=9, role=Role.VILLAGER, reason="wolf_kill", day=1)
+    st = _kill_all(_state(phase="last_words", deaths=[death], round_deaths=[death], lw_queue=[9]), [9])
+    view = _rules().view(9, st, SeatThread(), first_speak=False)
+    ask = prompts.opencode_ask("last_words", view)
+    assert "你已经出局，现在是你的遗言时间" in ask
+    assert "狼刀" not in ask and "毒杀" not in ask
+
+
+def test_first_speak_restores_private_thread_without_polluting_turn_prompt() -> None:
+    thread = SeatThread(
+        inbox=["新的公开事件"],
+        messages=[
+            ThreadMessage(role="human", content="旧增量提问"),
+            ThreadMessage(role="assistant", content="旧原始回答"),
+        ],
+    )
+    view = _rules().view(9, _state(phase="day_discuss", discuss_index=8), thread, first_speak=True)
+
+    assert "旧增量提问" in view.prompt and "旧原始回答" in view.prompt
+    assert "新的公开事件" in view.turn_prompt
+    assert "旧增量提问" not in view.turn_prompt and "旧原始回答" not in view.turn_prompt
+
+
+def test_witch_secrets_are_fail_closed_at_view_boundary() -> None:
+    r = _rules()
+    st = _state(
+        phase="night_witch",
+        wolf_target=9,
+        witch_has_antidote=False,
+        witch_has_poison=True,
+    )
+
+    witch = r.view(6, st, SeatThread(), first_speak=True)
+    assert witch.night_target == 9
+    assert witch.witch_has_antidote is False and witch.witch_has_poison is True
+    with pytest.raises(ValueError, match="无权读取"):
+        r.view(11, st, SeatThread(), first_speak=True)
+
+
 # ---------------------------------------------------------------- 规则推进
+
+def test_rule_contract_freezes_current_house_rules() -> None:
+    assert RULE_CONTRACT.witch_may_use_both_potions_on_different_targets is True
+    assert RULE_CONTRACT.witch_may_self_save is True
+    assert RULE_CONTRACT.hunter_may_shoot_when_knifed_and_poisoned is True
+    assert RULE_CONTRACT.hunter_may_shoot_when_only_poisoned is False
+    assert RULE_CONTRACT.deaths_reveal_roles is True
+    assert RULE_CONTRACT.tied_vote_exiles_nobody is True
+
+
+def test_wolf_majority_emits_canonical_audience_only_result() -> None:
+    r = _rules()
+    st = _state(phase="night_wolf", wolf_index=0)
+    for seat, target in ((1, 9), (2, 10), (3, 9), (4, 10)):
+        st = r.apply(st, json.dumps({"kind": "wolf_kill", "seat": seat, "target_no": target}))
+        st = r.advance(st)
+
+    events = r.pending(st)
+    assert [event.turn_id for event in events] == ["day1.wolf_kill_result"]
+    event = events[0]
+    assert [delivery.channels for delivery in event.deliveries] == [["audience"]]
+    assert all(delivery.spoken is False for delivery in event.deliveries)
+    assert json.loads(event.action) == {
+        "kind": "wolf_kill_result",
+        "day": 1,
+        "proposals": [
+            {"seat": 1, "target_no": 9},
+            {"seat": 2, "target_no": 10},
+            {"seat": 3, "target_no": 9},
+            {"seat": 4, "target_no": 10},
+        ],
+        "target_no": 9,
+        "resolution": "majority_then_lowest_seat",
+    }
+    assert r.pending(st) == events
+    assert r.pending(r.unpack(r.pack(st))) == events
+
+
+def test_witch_double_use_emits_canonical_result_and_resolves_both_potions() -> None:
+    r = _rules()
+    st = _state(phase="night_witch", wolf_target=9)
+    raw = json.dumps(
+        {
+            "phase": "witch_action",
+            "save": True,
+            "poison_target_no": 10,
+            "monologue": "救9毒10",
+        },
+        ensure_ascii=False,
+    )
+    parsed = r.parse(6, raw, st)
+    acted = r.apply(st, parsed.action)
+
+    events = r.pending(acted)
+    assert [event.turn_id for event in events] == ["day1.witch_result"]
+    event = events[0]
+    assert [delivery.channels for delivery in event.deliveries] == [["audience"]]
+    assert all(delivery.spoken is False for delivery in event.deliveries)
+    assert json.loads(event.action) == {
+        "kind": "witch_result",
+        "day": 1,
+        "seat": 6,
+        "wolf_target_no": 9,
+        "save": True,
+        "saved_target_no": 9,
+        "poison_target_no": 10,
+        "antidote_remaining": False,
+        "poison_remaining": False,
+    }
+    assert acted.witch_has_antidote is False and acted.witch_has_poison is False
+    assert r.pending(r.unpack(r.pack(acted))) == events
+
+    resolved = r.advance(acted)
+    assert [event.turn_id for event in r.pending(resolved)] == ["day1.dawn"]
+    assert resolved.seat(9).alive and not resolved.seat(10).alive
+    assert resolved.seat(10).revealed
+
+
+def test_witch_may_self_save() -> None:
+    r = _rules()
+    st = _state(phase="night_witch", wolf_target=6)
+    parsed = r.parse(
+        6,
+        json.dumps(
+            {
+                "phase": "witch_action",
+                "save": True,
+                "poison_target_no": None,
+                "monologue": "先救自己",
+            },
+            ensure_ascii=False,
+        ),
+        st,
+    )
+    resolved = r.advance(r.apply(st, parsed.action))
+
+    assert resolved.seat(6).alive
+    assert all(death.seat_no != 6 for death in resolved.round_deaths)
+    assert resolved.witch_has_antidote is False
+
+
+def test_night_death_reveals_role() -> None:
+    r = _rules()
+    st = _state(phase="night_witch", wolf_target=9)
+    resolved = r.advance(
+        r.apply(
+            st,
+            json.dumps(
+                {
+                    "kind": "witch_action",
+                    "seat": 6,
+                    "save": False,
+                    "poison_target_no": None,
+                }
+            ),
+        )
+    )
+
+    assert not resolved.seat(9).alive and resolved.seat(9).revealed
+    assert resolved.round_deaths[0].role is Role.VILLAGER
 
 def test_wolf_majority_tie_goes_to_min_seat() -> None:
     r = _rules()
@@ -379,9 +681,10 @@ def test_idiot_first_exile_flips_and_survives() -> None:
     kinds = [json.loads(e.action)["kind"] for e in st.host_outbox]
     assert kinds == ["vote_result", "idiot_revealed", "night_start"]
     # 播报顺序与措辞：先票型（不宣"出局"）、再翻牌免死、再天黑——不得自相矛盾
-    texts = [e.deliveries[0].text for e in st.host_outbox]
-    assert "得票最高" in texts[0] and "被放逐出局" not in texts[0]
-    assert "白痴牌" in texts[1] and "免于放逐" in texts[1]
+    vote_ledger, vote_result = st.host_outbox[0].deliveries
+    assert vote_ledger.text.startswith("【放逐票型】") and vote_ledger.spoken is False
+    assert "得票最高" in vote_result.text and "被放逐出局" not in vote_result.text
+    assert "白痴牌" in st.host_outbox[1].deliveries[0].text and "免于放逐" in st.host_outbox[1].deliveries[0].text
 
 
 def test_revealed_idiot_exile_is_immune() -> None:
@@ -478,10 +781,20 @@ def test_pending_is_pure_query_and_consumed_once() -> None:
     for seat, target in ((2, 9), (3, 9), (4, 10)):
         st3 = r.advance(r.apply(st3, json.dumps({"kind": "wolf_kill", "seat": seat, "target_no": target})))
     assert st3.phase == "night_seer"
-    assert r.pending(st3) == []
-    # 预言家→女巫→结算夜：dawn 播报恰好一批
-    st3 = r.advance(r.apply(st3, json.dumps({"kind": "seer_check", "seat": 5, "target_no": 1, "result": "werewolf"})))
-    st3 = r.advance(r.apply(st3, json.dumps({"kind": "witch_action", "seat": 6, "save": False, "poison_target_no": None})))
+    assert [event.turn_id for event in r.pending(st3)] == ["day1.wolf_kill_result"]
+    # 预言家/女巫的 apply 分别产出一次裁判事件，advance 后由下一阶段 outbox 替换，绝不重发。
+    checked = r.apply(
+        st3,
+        json.dumps({"kind": "seer_check", "seat": 5, "target_no": 1, "result": "werewolf"}),
+    )
+    assert [event.turn_id for event in r.pending(checked)] == ["day1.seer_result"]
+    st3 = r.advance(checked)
+    medicated = r.apply(
+        st3,
+        json.dumps({"kind": "witch_action", "seat": 6, "save": False, "poison_target_no": None}),
+    )
+    assert [event.turn_id for event in r.pending(medicated)] == ["day1.witch_result"]
+    st3 = r.advance(medicated)
     dawn = r.pending(st3)
     assert [e.turn_id for e in dawn] == ["day1.dawn"]
     assert json.loads(dawn[0].action)["deaths"][0]["seat_no"] == 9

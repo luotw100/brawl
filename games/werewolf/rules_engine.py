@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from core.parsing import JsonParseError, parse_json
 from core.sr.rules import Rules
 from core.sr.types import Delivery, Expectation, HostEmit, ParseResult
+from core.threads import SeatThread
 from werewolf import prompts, rules
 from werewolf.state import (
     DeathRecord,
@@ -40,7 +41,7 @@ from werewolf.state import (
     WolfKill,
 )
 from werewolf.validation import GameSetup
-from werewolf.view import PlayerView
+from werewolf.view import PlayerView, PublicDeath
 
 _PHASES = (
     "night_wolf", "night_seer", "night_witch",
@@ -54,6 +55,15 @@ def _emit(turn_id: str, text: str, channels: list, action: dict) -> HostEmit:
     return HostEmit(
         turn_id=turn_id,
         deliveries=[Delivery(text=text, channels=channels)],
+        action=json.dumps(action, ensure_ascii=False),
+    )
+
+
+def _audience_event(turn_id: str, text: str, action: dict[str, Any]) -> HostEmit:
+    """只写上帝视角账本的确定性裁判事件，不进入任何玩家 inbox，也不交给 TTS。"""
+    return HostEmit(
+        turn_id=turn_id,
+        deliveries=[Delivery(text=text, channels=["audience"], spoken=False)],
         action=json.dumps(action, ensure_ascii=False),
     )
 
@@ -202,13 +212,15 @@ class WerewolfRules(Rules):
 
     # ---------------------------------------------------------------- view（私密信息隔离的唯一闸口）
 
-    def view(self, seat: int, state: WerewolfState, inbox: list[str], *, first_speak: bool = False) -> Any:
+    def view(self, seat: int, state: WerewolfState, thread: SeatThread, *, first_speak: bool = False) -> Any:
+        expected = self.expected(state)
+        if seat not in expected.seats:
+            raise ValueError(
+                f"seat {seat} 无权读取 turn {expected.turn_id} 的行动视图；"
+                f"当前行动席位是 {expected.seats}"
+            )
         s = state.seat(seat)
         phase = state.phase
-        death_reason = None
-        if phase == "last_words" or (phase == "hunter_shot"):
-            rec = next((d for d in state.round_deaths if d.seat_no == seat), None)
-            death_reason = rec.reason if rec else None
         view = PlayerView(
             seat_no=seat,
             role=s.role,
@@ -219,15 +231,15 @@ class WerewolfRules(Rules):
             dead_nos=[x.no for x in state.seats if not x.alive],
             wolf_allies=self._wolf_allies(state, s),
             seer_checks=list(state.seer_checks) if s.role is rules.Role.SEER else [],
-            witch_has_antidote=state.witch_has_antidote,
-            witch_has_poison=state.witch_has_poison,
-            night_target=state.wolf_target if phase == "night_witch" else None,
-            death_reason=death_reason,
+            witch_has_antidote=state.witch_has_antidote if s.role is rules.Role.WITCH else False,
+            witch_has_poison=state.witch_has_poison if s.role is rules.Role.WITCH else False,
+            night_target=state.wolf_target if phase == "night_witch" and s.role is rules.Role.WITCH else None,
             candidates=self._candidates(seat, state),
-            deaths=list(state.deaths),
+            deaths=[PublicDeath(seat_no=d.seat_no, role=d.role, day=d.day) for d in state.deaths],
             votes_history=list(state.votes_history),
             tone=self._registry.personas[s.persona_id].tone,
             strategy=self._registry.strategies[s.strategy_id].system,
+            messages=list(thread.messages),
         )
         with_situation = phase != "banter"
         mimicry_guard = phase != "banter"
@@ -236,7 +248,10 @@ class WerewolfRules(Rules):
         private = prompts.private_block(view)
         if private:
             context = f"{context}\n{private}" if context else private
-        view.prompt = prompts.human_message(inbox, context, ask, view.tone, mimicry_guard=mimicry_guard)
+        view.turn_prompt = prompts.human_message(
+            thread.inbox, context, ask, view.tone, mimicry_guard=mimicry_guard
+        )
+        view.prompt = view.turn_prompt
         view.prompt = prompts.opencode_prompt(view, include_context=first_speak)
         return view
 
@@ -297,15 +312,11 @@ class WerewolfRules(Rules):
         candidates = self._candidates(seat, state)
         if result.target_no not in candidates:
             raise JsonParseError(f"预言家 {seat}号 查验了非法对象 {result.target_no}（可选：{candidates}）")
-        target = state.seat(result.target_no)
         deliveries = [
-            # 查验结果只进预言家自己的 inbox；观众上帝视角可见。其他席位永不可见。
-            Delivery(
-                text=f"（查验结果）{target.no}号是{rules.SIDE_LABEL[target.side]}。",
-                channels=[seat, "audience"],
-            ),
+            # 玩家句子只承载预言家的内心戏；裁判反馈在 apply 后由 host 私密投递。
             Delivery(text=result.monologue, channels=["audience"]),
         ]
+        target = state.seat(result.target_no)
         action = json.dumps({
             "kind": "seer_check", "seat": seat, "target_no": result.target_no,
             "result": target.side.value, "monologue": result.monologue,
@@ -331,6 +342,8 @@ class WerewolfRules(Rules):
     def _parse_statement(self, phase: str, seat: int, raw: str, state: WerewolfState) -> ParseResult:
         result = parse_json(raw, Statement)
         kind = {"last_words": "last_words", "day_discuss": "discuss", "banter": "banter"}[phase]
+        if result.phase != kind:
+            raise JsonParseError(f"动作 phase 应为 {kind}，实际为 {result.phase}")
         deliveries = [
             Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
             Delivery(text=result.monologue, channels=["audience"]),
@@ -378,11 +391,49 @@ class WerewolfRules(Rules):
             out["wolf_proposals"] = [*state.wolf_proposals, {"seat": a["seat"], "target": a["target_no"]}]
         elif kind == "seer_check":
             out["seer_checks"] = [*state.seer_checks, SeerCheck(target_no=a["target_no"], side=rules.Side(a["result"]), day=state.day)]
+            out["host_outbox"] = [
+                _emit(
+                    f"day{state.day}.seer_result",
+                    f"（查验结果）{a['target_no']}号是{rules.SIDE_LABEL[rules.Side(a['result'])]}。",
+                    [a["seat"], "audience"],
+                    {
+                        "kind": "seer_result",
+                        "day": state.day,
+                        "seat": a["seat"],
+                        "target_no": a["target_no"],
+                        "result": a["result"],
+                    },
+                )
+            ]
         elif kind == "witch_action":
             out["witch_saved"] = a["save"]
             out["witch_poison_target"] = a["poison_target_no"]
             out["witch_has_antidote"] = state.witch_has_antidote and not a["save"]
             out["witch_has_poison"] = state.witch_has_poison and a["poison_target_no"] is None
+            saved_target = state.wolf_target if a["save"] else None
+            save_text = f"救{saved_target}号" if saved_target is not None else "不用解药"
+            poison_text = (
+                f"毒{a['poison_target_no']}号"
+                if a["poison_target_no"] is not None
+                else "不用毒药"
+            )
+            out["host_outbox"] = [
+                _audience_event(
+                    f"day{state.day}.witch_result",
+                    f"【女巫裁决】{save_text}，{poison_text}。",
+                    {
+                        "kind": "witch_result",
+                        "day": state.day,
+                        "seat": a["seat"],
+                        "wolf_target_no": state.wolf_target,
+                        "save": a["save"],
+                        "saved_target_no": saved_target,
+                        "poison_target_no": a["poison_target_no"],
+                        "antidote_remaining": out["witch_has_antidote"],
+                        "poison_remaining": out["witch_has_poison"],
+                    },
+                )
+            ]
         elif kind == "vote":
             out["vote_round"] = {**state.vote_round, a["seat"]: a["target_no"]}
         elif kind == "hunter_shot":
@@ -429,22 +480,55 @@ class WerewolfRules(Rules):
         # 全体存活狼已提议：刀口取多数，平票取最小座位号。
         counts = Counter(p["target"] for p in state.wolf_proposals)
         target = min((-n, no) for no, n in counts.items())[1]
-        return self._after_night_actor(state.model_copy(deep=True, update={"wolf_target": target}))
+        proposals = [
+            {"seat": proposal["seat"], "target_no": proposal["target"]}
+            for proposal in state.wolf_proposals
+        ]
+        marks = "，".join(
+            f"{proposal['seat']}号→{proposal['target_no']}号" for proposal in proposals
+        )
+        result = _audience_event(
+            f"day{state.day}.wolf_kill_result",
+            f"【狼刀裁决】提议[{marks}]，最终刀口为{target}号。",
+            {
+                "kind": "wolf_kill_result",
+                "day": state.day,
+                "proposals": proposals,
+                "target_no": target,
+                "resolution": "majority_then_lowest_seat",
+            },
+        )
+        targeted = state.model_copy(deep=True, update={"wolf_target": target})
+        return self._after_night_actor(targeted, (result,))
 
     def _after_seer(self, state: WerewolfState) -> WerewolfState:
         return self._after_night_actor(state)
 
-    def _after_night_actor(self, state: WerewolfState) -> WerewolfState:
+    def _after_night_actor(
+        self,
+        state: WerewolfState,
+        announces: tuple[HostEmit, ...] = (),
+    ) -> WerewolfState:
         """狼刀/预言家之后：还有夜间行动者就去下一个，否则直接结算夜晚。"""
         witch_alive = any(s.role is rules.Role.WITCH for s in state.living())
         seer_alive = any(s.role is rules.Role.SEER for s in state.living())
         if state.phase == "night_wolf" and seer_alive:
-            return state.model_copy(deep=True, update={"phase": "night_seer", "host_outbox": []})
+            return state.model_copy(
+                deep=True,
+                update={"phase": "night_seer", "host_outbox": list(announces)},
+            )
         if state.phase in ("night_wolf", "night_seer") and witch_alive:
-            return state.model_copy(deep=True, update={"phase": "night_witch", "host_outbox": []})
-        return self._resolve_night(state)
+            return state.model_copy(
+                deep=True,
+                update={"phase": "night_witch", "host_outbox": list(announces)},
+            )
+        return self._resolve_night(state, announces)
 
-    def _resolve_night(self, state: WerewolfState) -> WerewolfState:
+    def _resolve_night(
+        self,
+        state: WerewolfState,
+        announces: tuple[HostEmit, ...] = (),
+    ) -> WerewolfState:
         """夜晚结算（纯计算）：算出今夜死者、定下待开枪的猎人，天亮播报交给 pending。"""
         deaths: list[DeathRecord] = []
         if state.wolf_target is not None and not state.witch_saved:
@@ -453,7 +537,7 @@ class WerewolfRules(Rules):
         if state.witch_poison_target is not None:
             t = state.seat(state.witch_poison_target)
             deaths.append(DeathRecord(seat_no=t.no, role=t.role, reason="poison", day=state.day))
-        # 同一人被刀又被毒只记一次，保留先入的狼刀（dict 去重会留后者 poison，猎人将因此开不了枪）
+        # 同一人被刀又被毒只记一次，并保留先入的狼刀死因；这是猎人仍可开枪的规则依据。
         seen: set[int] = set()
         deaths = [d for d in deaths if not (d.seat_no in seen or seen.add(d.seat_no))]
         seats = self._apply_deaths(state, deaths)
@@ -479,7 +563,7 @@ class WerewolfRules(Rules):
             "witch_poison_target": None,
             "wolf_proposals": [],
             "wolf_index": 0,
-            "host_outbox": [dawn],
+            "host_outbox": [*announces, dawn],
         })
         return self._after_deaths(resolved, origin="night")
 
@@ -539,11 +623,23 @@ class WerewolfRules(Rules):
         # 白痴翻牌免死的局，结果播报只说票型、不说"出局"（免死播报紧随其后，先报出局自相矛盾）。
         exiled_role = state.seat(exiled).role if exiled is not None else None
         announces = [
-            _emit(
-                f"day{state.day}.vote_result",
-                prompts.line_vote_detail(votes) + "\n" + prompts.line_host_vote_result(exiled, exiled_role, tied),
-                ["broadcast", "audience"],
-                {"kind": "vote_result", "day": state.day, "votes": votes, "exiled": exiled, "tied": tied},
+            HostEmit(
+                turn_id=f"day{state.day}.vote_result",
+                deliveries=[
+                    Delivery(
+                        text=prompts.line_vote_detail(votes),
+                        channels=["broadcast", "audience"],
+                        spoken=False,
+                    ),
+                    Delivery(
+                        text=prompts.line_host_vote_result(exiled, exiled_role, tied),
+                        channels=["broadcast", "audience"],
+                    ),
+                ],
+                action=json.dumps(
+                    {"kind": "vote_result", "day": state.day, "votes": votes, "exiled": exiled, "tied": tied},
+                    ensure_ascii=False,
+                ),
             ),
         ]
         if exiled is None:
@@ -685,12 +781,17 @@ class WerewolfRules(Rules):
         if phase == "night_wolf":
             target = r.choice(view.candidates)
             return WolfKill(
+                phase="wolf_kill",
                 target_no=target,
                 speech=f"（随机）我建议刀{target}号，没意见就定了。",
                 monologue="（随机）闭眼点刀。",
             ).model_dump_json()
         if phase == "night_seer":
-            return SeerAction(target_no=r.choice(view.candidates), monologue="（随机）随便验一个。").model_dump_json()
+            return SeerAction(
+                phase="seer_check",
+                target_no=r.choice(view.candidates),
+                monologue="（随机）随便验一个。",
+            ).model_dump_json()
         if phase == "night_witch":
             save = view.witch_has_antidote and view.night_target is not None and r.random() < 0.3
             poison = None
@@ -698,25 +799,42 @@ class WerewolfRules(Rules):
                 poison = r.choice(view.candidates)
                 if save and poison == view.night_target:
                     poison = None  # 不同时又救又毒
-            return WitchAction(save=save, poison_target_no=poison, monologue="（随机）药瓶在手，心里不慌。").model_dump_json()
+            return WitchAction(
+                phase="witch_action",
+                save=save,
+                poison_target_no=poison,
+                monologue="（随机）药瓶在手，心里不慌。",
+            ).model_dump_json()
         if phase == "last_words":
             return Statement(
+                phase="last_words",
                 speech="（随机）我走了，好人自己看着办吧。",
                 monologue="（随机）下班了。",
             ).model_dump_json()
         if phase == "day_discuss":
             return Statement(
+                phase="discuss",
                 speech="（随机）我暂时看不出谁像狼，先听听后面的。",
                 monologue="（随机）水一句，别看我。",
             ).model_dump_json()
         if phase == "day_vote":
-            return VoteAction(target_no=r.choice(view.candidates), monologue="（随机）抛硬币定的。").model_dump_json()
+            return VoteAction(
+                phase="vote",
+                target_no=r.choice(view.candidates),
+                monologue="（随机）抛硬币定的。",
+            ).model_dump_json()
         if phase == "hunter_shot":
             target = r.choice(view.candidates) if r.random() < 0.7 else None
             line = f"（随机）我带走{target}号。" if target is not None else "（随机）我不开枪，体面离场。"
-            return HunterShot(target_no=target, speech=line, monologue="（随机）枪随缘。").model_dump_json()
+            return HunterShot(
+                phase="hunter_shot",
+                target_no=target,
+                speech=line,
+                monologue="（随机）枪随缘。",
+            ).model_dump_json()
         if phase == "banter":
             return Statement(
+                phase="banter",
                 speech="（随机）这局打完了，各位辛苦，下把再战。",
                 monologue="（随机）复盘就免了，输赢全靠脸。",
             ).model_dump_json()

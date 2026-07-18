@@ -29,7 +29,7 @@ RULES = """\
 
 阵营与角色：
 - 狼人阵营：4 个狼人。好人阵营：4 个神职（预言家、女巫、猎人、白痴）+ 4 个平民。
-- 狼人夜里睁眼互认、共同决定刀一个人；预言家每夜查验一名玩家的真实阵营（只有自己知道）；女巫有一瓶解药（救当晚被刀的人）和一瓶毒药（毒死一人），各只能用一次；猎人被狼刀或被投票放逐出局时可以开枪带走一名玩家（但被女巫毒死则不能开枪）；白痴被投票放逐时翻牌免死、留在场上但从此失去投票权；平民没有任何技能。
+- 狼人夜里睁眼互认、共同决定刀一个人；预言家每夜查验一名玩家的真实阵营（只有自己知道）；女巫有一瓶解药（可自救）和一瓶毒药，各只能用一次，同夜可对不同目标同时用两瓶药；猎人被狼刀或被投票放逐出局时可以开枪，纯粹被女巫毒死则不能开枪，同夜既中狼刀又中毒仍按狼刀触发；白痴被投票放逐时翻牌免死、留在场上但从此失去投票权；平民没有任何技能。
 
 流程：
 - 每天分黑夜与白天。黑夜：狼人共商刀口 → 预言家验人 → 女巫决定救/毒。天亮后公布昨夜死讯并翻开死者身份，死者留遗言。
@@ -38,8 +38,8 @@ RULES = """\
 
 对局方式：
 - 我会持续把桌面上公开发生的事播报给你，并在轮到你行动时向你提问。
-- 你的每次作答都是一个 JSON 对象：monologue 是给观众的一句内心短话（场上玩家看不到），speech 是你的公开发言或对应动作说明，其余字段按提问要求给出。
-- speech 会被一字不差地公布上桌，全场可见，所以你的真实身份、查验结果、刀口计划绝不要写进 speech（除非你故意跳身份）；monologue 只给观众看，场上玩家永远看不到。
+- 你的每次作答必须恰好是一个 JSON 对象，首尾空白外不能有推理文字、代码围栏或第二个对象：monologue 是给观众的一句内心短话（场上玩家看不到），speech 是当前阶段要求的发言，其余字段按提问要求给出。
+- speech 的可见范围由阶段决定：night_wolf 的 speech 只在狼队内部传递，可以真实讨论刀口；day_discuss、last_words、hunter_shot 的 speech 会一字不差公布上桌，可以按阵营利益策略性跳身份、报情报或伪装；banter 是赛后公开复盘。monologue 始终只给观众看，场上玩家看不到。
 
 发言要求（观众在看，桌上交锋是节目的全部看点）：
 - speech 要言之有物：口语化的 2~4 句，摆出具体论据——点名座位号、引用谁的发言或票型、结合昨夜死讯，别只丢一句「我是好人」「跟上一个走」。
@@ -92,14 +92,13 @@ def system_text(view: PlayerView) -> str:
 def situation(view: PlayerView) -> str:
     """当前公开局面：第几天、谁存活、谁出局 + 公开账本（死亡翻牌、放逐票型）。
 
-    账本全是明牌，也是续跑失忆的保底：opencode 会话历史在续跑后重建，逐字发言虽不可考，
-    死亡与票型这两类决策硬事实经这里完整回填。"""
+    账本全是明牌；冷续跑还会从 sentence journal 重建该席位完整的私有对话历史。"""
     living = "、".join(f"{no}号" for no in view.alive_nos)
     dead = "、".join(f"{no}号" for no in view.dead_nos) or "无"
     parts = [f"当前第 {view.day} 天。存活：{living}。已出局：{dead}。"]
     if view.deaths:
         rows = "；".join(
-            f"第{d.day}天 {d.seat_no}号 出局（{role_name(d.role)}，{rules.DEATH_REASON_LABEL.get(d.reason, d.reason)}）"
+            f"第{d.day}天 {d.seat_no}号 出局（翻牌：{role_name(d.role)}）"
             for d in view.deaths
         )
         parts.append(f"死亡翻牌：{rows}。")
@@ -146,20 +145,20 @@ def human_message(events: list[str], context: str, ask: str, tone: str = "", mim
 
 # ---------------------------------------------------------------- OpenCode agent 专用提问（JSON schema）
 
-_OPENCODE_JSON_DISCIPLINE = "最终只输出一个 JSON 对象，不要输出任何其他文字（不要 markdown 代码块、不要解释，不要写出自检过程）。"
+_OPENCODE_JSON_DISCIPLINE = "最终恰好输出一个 JSON 对象，首尾空白外不要有任何其他文字（不要 markdown 代码块、不要解释、不要第二个 JSON、不要写出自检过程）。"
 
 
 def _opencode_self_check(phase: str, view: PlayerView) -> str:
     common = [
-        "先检查公开 speech 有没有泄露你的身份、夜晚情报或真实计划；monologue 可以更真实，但也要简短。",
-        "自己检查行动合法性、泄密风险和 JSON 格式。",
+        "按当前阶段说明确认 speech 的可见范围；monologue 只给观众看，也要简短。",
+        "自己检查行动合法性、阵营收益和 JSON 格式。",
         "检查通过后只给最终 JSON，不要写出思考或自检过程。",
     ]
     cands = "、".join(f"{no}号" for no in view.candidates)
     checks = {
         "night_wolf": [
             f"target_no 必须从可选刀口 {cands} 中选一个。",
-            "speech 只说给狼队友听，可以直说真实判断；它不会上桌。",
+            "speech 只在狼队内部传递，不会上桌；请直说真实判断、回应队友并协作定刀。",
         ],
         "night_seer": [
             f"target_no 必须从可查验对象 {cands} 中选一个（不能查自己）。",
@@ -170,9 +169,10 @@ def _opencode_self_check(phase: str, view: PlayerView) -> str:
             "同一晚不要对同一个人又救又毒；没有刀口时不能救。",
         ],
         "last_words": [
-            "遗言可以报身份、报情报、指认狼，也可以继续伪装——想清楚哪样对己方更有利。",
+            "speech 是全场公开遗言；可以策略性跳身份、报情报、指认狼或继续伪装，以阵营收益为准。",
         ],
         "day_discuss": [
+            "speech 全场公开；可以策略性跳身份、报查验或夜间判断，也可以为阵营利益伪装。",
             "speech 要亮明立场：怀疑谁、相信谁、今天想投谁，并点出至少一个公开证据。",
         ],
         "day_vote": [
@@ -181,9 +181,10 @@ def _opencode_self_check(phase: str, view: PlayerView) -> str:
         ],
         "hunter_shot": [
             f"target_no 只能是 {cands} 之一或 null（不开枪）。",
-            "speech 是你的临终发言，会一字不差公布上桌。",
+            "speech 是全场公开的临终发言，会一字不差公布上桌；可以报出你的真实判断或策略性遗言。",
         ],
         "banter": [
+            "speech 是底牌已公开后的全场复盘，不再需要隐藏身份与夜间计划。",
             "复盘可以接梗、回怼、甩锅，但仍保持 2~3 句，不要长篇总结。",
         ],
     }[phase]
@@ -219,9 +220,8 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"{_opencode_self_check(phase, view)}"
         )
     if phase == "last_words":
-        reason = rules.DEATH_REASON_LABEL.get(view.death_reason or "", "出局")
         return (
-            f"当前阶段：遗言（last_words）。你已经出局（{reason}），现在是你的遗言时间，全场会听到。\n"
+            f"当前阶段：遗言（last_words）。你已经出局，现在是你的遗言时间，全场会听到。\n"
             f"输出 JSON：\n"
             f'{{"phase": "last_words", "monologue": "说给观众的一句短话", "speech": "你的遗言，会一字不差公布上桌"}}\n'
             f"{_opencode_self_check(phase, view)}"
@@ -269,8 +269,20 @@ def opencode_prompt(view: PlayerView, *, include_context: bool = True) -> str:
         f"我是这局《狼人杀》的主持人，现在通过你的私人频道给你传话。你只代表自己这个座位行动，"
         f"其他玩家看不到这条私信，也看不到你的 monologue。\n\n"
         f"【你的固定设定】\n{system_text(view)}\n\n"
+        f"【你的私人历史】\n{_private_transcript(view)}\n\n"
         f"【现在轮到你】\n{view.prompt}"
     )
+
+
+def _private_transcript(view: PlayerView) -> str:
+    """把该席位已提交的历史线程转成自然转述，不暴露内部 role 标签。"""
+    if not view.messages:
+        return "你此前还没有私人行动记录。"
+    rows = []
+    for message in view.messages:
+        prefix = "主持人此前对你说" if message.role == "human" else "你此前回复"
+        rows.append(f"{prefix}：\n{message.content}")
+    return "你的私人行动记录：\n" + "\n\n".join(rows)
 
 
 # ---------------------------------------------------------------- 公开事件行
