@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import soundfile as sf
@@ -106,31 +107,78 @@ class DashScopeTTSBackend:
     name = "dashscope"
     _URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     _MODEL = "qwen3-tts-vd-2026-01-26"
+    _AUDIO_HOST = "dashscope-result-bj.oss-cn-beijing.aliyuncs.com"
 
-    def __init__(self, api_key: str, attempts: int = 3) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        attempts: int = 3,
+        *,
+        api_transport: httpx.AsyncBaseTransport | None = None,
+        audio_transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._api_key = api_key
         self._attempts = attempts
+        self._api_transport = api_transport
+        self._audio_transport = audio_transport
 
     async def synthesize(self, text: str, voice_id: str) -> bytes:
-        async with httpx.AsyncClient(
-            headers={"Authorization": f"Bearer {self._api_key}"}, timeout=60
-        ) as client:
+        # API 与 OSS 下载必须是两个凭证边界：Authorization 只在提交请求这一跳显式携带，
+        # 下载 client 从构造起就没有默认鉴权头，避免任何绝对 URL 继承 API key。
+        async with (
+            httpx.AsyncClient(timeout=60, transport=self._api_transport) as api_client,
+            httpx.AsyncClient(
+                timeout=60,
+                follow_redirects=False,
+                transport=self._audio_transport,
+            ) as audio_client,
+        ):
             for i in range(self._attempts):
                 try:
-                    resp = await client.post(
+                    resp = await api_client.post(
                         self._URL,
+                        headers={"Authorization": f"Bearer {self._api_key}"},
                         json={"model": self._MODEL, "input": {"text": text, "voice": voice_id}},
                     )
-                    body = resp.json()
-                    if resp.status_code != 200:
-                        raise TTSError(f"DashScope 合成失败（{resp.status_code}）：{body.get('code')} {body.get('message')}")
-                    audio = await client.get(body["output"]["audio"]["url"])
+                    resp.raise_for_status()
+                    try:
+                        body = resp.json()
+                    except ValueError as exc:
+                        raise TTSError("DashScope 合成结果不是合法 JSON") from exc
+                    try:
+                        audio_url = self._audio_url(body["output"]["audio"]["url"])
+                    except (KeyError, TypeError) as exc:
+                        raise TTSError("DashScope 合成结果缺少有效音频地址") from exc
+                    audio = await audio_client.get(audio_url)
+                    audio.raise_for_status()
                     return audio.content
-                except (httpx.HTTPError, TTSError):
+                except (httpx.HTTPError, TTSError) as exc:
                     if i == self._attempts - 1:
-                        raise
+                        if isinstance(exc, TTSError):
+                            raise
+                        raise TTSError(f"DashScope 请求失败：{exc}") from exc
                     await asyncio.sleep(2**i)
         raise AssertionError("unreachable")
+
+    @classmethod
+    def _audio_url(cls, raw: object) -> str:
+        """把官方 OSS 的 http 结果升级为 https，并拒绝一切非官方下载目标。"""
+        if not isinstance(raw, str):
+            raise TTSError("DashScope 音频下载地址不是字符串")
+        try:
+            parsed = urlsplit(raw)
+            port = parsed.port
+        except ValueError as exc:
+            raise TTSError("DashScope 音频下载地址格式非法") from exc
+        if parsed.scheme not in {"http", "https"}:
+            raise TTSError(f"DashScope 音频下载地址协议不受信任：{parsed.scheme or 'missing'}")
+        if parsed.hostname != cls._AUDIO_HOST:
+            raise TTSError(f"DashScope 音频下载地址域名不受信任：{parsed.hostname or 'missing'}")
+        if parsed.username is not None or parsed.password is not None or port is not None:
+            raise TTSError("DashScope 音频下载地址不得包含用户信息或自定义端口")
+        if not parsed.path.startswith("/"):
+            raise TTSError("DashScope 音频下载地址缺少绝对路径")
+        return urlunsplit(("https", cls._AUDIO_HOST, parsed.path, parsed.query, ""))
 
 
 class SelfHostedTTSBackend:
@@ -276,6 +324,8 @@ class TTSRenderer:
         for sent in sentences:
             speaker = sent.get("speaker")
             for d in sent.get("deliveries", []):
+                if not d.get("spoken", True):
+                    continue
                 chs = d.get("channels") or []
                 # 只给公开广播或 seat-specific 的文本配音；audience（内心戏/上帝视角）不出声
                 if "audience" in chs and "broadcast" not in chs and not any(isinstance(c, int) for c in chs):

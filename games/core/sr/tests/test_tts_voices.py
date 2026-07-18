@@ -29,3 +29,21 @@ def test_cloud_backends_use_cloud_voice_ids(tmp_path: Path) -> None:
     r = TTSRenderer(SilenceTTSBackend(), tmp_path)
     voices, host = r._voices(_meta())
     assert voices == ["cloud-v1", "cloud-v2"] and host == "cloud-host"
+
+
+def test_nonspoken_delivery_stays_in_log_but_is_skipped_by_tts(tmp_path: Path) -> None:
+    r = TTSRenderer(SilenceTTSBackend(), tmp_path)
+    utterances = r._utterances(
+        [{
+            "seq": 3,
+            "speaker": "host",
+            "deliveries": [
+                {"text": "【符号账本】1号✔", "channels": ["broadcast"], "spoken": False},
+                {"text": "口语播报结果", "channels": ["broadcast"], "spoken": True},
+            ],
+        }],
+        ["player"],
+        "host",
+    )
+    assert len(utterances) == 1
+    assert utterances[0].text == "口语播报结果"
