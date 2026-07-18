@@ -30,6 +30,7 @@ from avalon.view import PlayerView
 from core.parsing import JsonParseError, parse_json
 from core.sr.rules import Rules
 from core.sr.types import Delivery, Expectation, HostEmit, ParseResult
+from core.threads import SeatThread
 
 
 class AvalonState(BaseModel):
@@ -179,7 +180,13 @@ class AvalonRules(Rules):
             return Expectation(seats=[order[state.banter_index]], turn_id=self.turn_id(state))
         raise RuntimeError(f"unexpected phase for expected(): {state.phase}")
 
-    def view(self, seat: int, state: AvalonState, inbox: list[str], *, first_speak: bool = False) -> Any:
+    def view(self, seat: int, state: AvalonState, thread: SeatThread, *, first_speak: bool = False) -> Any:
+        expected = self.expected(state)
+        if seat not in expected.seats:
+            raise ValueError(
+                f"seat {seat} 无权读取 turn {expected.turn_id} 的行动视图；"
+                f"当前行动席位是 {expected.seats}"
+            )
         s = state._seat(seat)
         q = min(state.quest_no, rules.QUESTS)
         view = PlayerView(
@@ -199,18 +206,21 @@ class AvalonRules(Rules):
             team=list(state.team),
             lady_used=list(state.lady_used),
             lady_target=state.lady_target,
-            lady_seen=state.lady_seen,
+            lady_seen=state.lady_seen if seat == state.lady_holder else None,
             tone=self._registry.personas[s.persona_id].tone,
             strategy=self._registry.strategies[s.strategy_id].system,
             history=list(state.history),
-            messages=[],
+            messages=list(thread.messages),
             phase=state.phase,
         )
         with_situation = state.phase not in ("assassinate", "lady_announce", "banter")
         mimicry_guard = state.phase != "banter"
         ask = prompts.opencode_ask(state.phase, view)
         context = prompts.situation(view) if with_situation else ""
-        view.prompt = prompts.human_message(inbox, context, ask, view.tone, mimicry_guard=mimicry_guard)
+        view.turn_prompt = prompts.human_message(
+            thread.inbox, context, ask, view.tone, mimicry_guard=mimicry_guard
+        )
+        view.prompt = view.turn_prompt
         view.prompt = prompts.opencode_prompt(view, include_context=first_speak)
         return view
 
@@ -244,7 +254,7 @@ class AvalonRules(Rules):
             raise JsonParseError(f"{seat}号 提出非法队伍 {team}（需 {size} 个互不相同的在场座位）")
         deliveries = [
             Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
-            Delivery(text=prompts.line_team_record(seat, team), channels=["broadcast"]),
+            Delivery(text=prompts.line_team_record(seat, team), channels=["broadcast"], spoken=False),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps({
@@ -255,6 +265,8 @@ class AvalonRules(Rules):
 
     def _parse_discuss(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
         result = parse_json(raw, Statement)
+        if result.phase != "discuss":
+            raise JsonParseError(f"动作 phase 应为 discuss，实际为 {result.phase}")
         deliveries = [
             Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
             Delivery(text=result.monologue, channels=["audience"]),
@@ -300,6 +312,8 @@ class AvalonRules(Rules):
 
     def _parse_lady_announce(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
         result = parse_json(raw, Statement)
+        if result.phase != "lady_announce":
+            raise JsonParseError(f"动作 phase 应为 lady_announce，实际为 {result.phase}")
         deliveries = [
             Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
             Delivery(text=result.monologue, channels=["audience"]),
@@ -335,6 +349,8 @@ class AvalonRules(Rules):
 
     def _parse_banter(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
         result = parse_json(raw, Statement)
+        if result.phase != "banter":
+            raise JsonParseError(f"动作 phase 应为 banter，实际为 {result.phase}")
         deliveries = [
             Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
             Delivery(text=result.monologue, channels=["audience"]),
@@ -565,8 +581,12 @@ class AvalonRules(Rules):
             HostEmit(
                 turn_id=self.turn_id(state),
                 deliveries=[
-                    # 票型明细是公开账本（谁投了什么全场可见），与主持结果同句上桌。
-                    Delivery(text=prompts.line_votes(state.votes), channels=["broadcast", "audience"]),
+                    # 票型是全员可见的文字账本，但符号串不适合配音；口语结果由主持人念出。
+                    Delivery(
+                        text=prompts.line_votes(state.votes),
+                        channels=["broadcast", "audience"],
+                        spoken=False,
+                    ),
                     Delivery(text=result_text, channels=["broadcast", "audience"]),
                 ],
                 action=json.dumps(action, ensure_ascii=False),
@@ -660,38 +680,55 @@ class AvalonRules(Rules):
         if base == "propose":
             team = sorted(r.sample(range(1, view.players + 1), view.team_size))
             return Proposal(
+                phase="propose",
                 team=team,
                 speech=f"（随机）我看 {'、'.join(f'{no}号' for no in team)} 就挺合适，出发。",
                 monologue="（随机）闭眼点的将。",
             ).model_dump_json()
         if base == "discuss":
             return Statement(
+                phase="discuss",
                 speech="（随机）这队我说不上好坏，先看看大家的票。",
                 monologue="（随机）水一句，别看我。",
             ).model_dump_json()
         if base == "team_vote":
-            return TeamVote(approve=r.random() < 0.5, monologue="（随机）抛硬币定的。").model_dump_json()
+            return TeamVote(
+                phase="team_vote",
+                approve=r.random() < 0.5,
+                monologue="（随机）抛硬币定的。",
+            ).model_dump_json()
         if base == "quest":
             success = True if view.role.side is Side.GOOD else r.random() < 0.5
-            return QuestCard(success=success, monologue="（随机）牌已扣下，面无表情。").model_dump_json()
+            return QuestCard(
+                phase="quest",
+                success=success,
+                monologue="（随机）牌已扣下，面无表情。",
+            ).model_dump_json()
         if base == "assassinate":
             target = r.choice(view.good_suspects())
             return Assassination(
+                phase="assassinate",
                 target_no=target,
                 speech=f"（随机）直觉告诉我，{target}号就是梅林。",
                 monologue="（随机）蒙的，但要蒙得自信。",
             ).model_dump_json()
         if base == "lady_choose":
-            return LadyChoice(target_no=r.choice(view.lady_candidates()), monologue="（随机）就查你了。").model_dump_json()
+            return LadyChoice(
+                phase="lady_choose",
+                target_no=r.choice(view.lady_candidates()),
+                monologue="（随机）就查你了。",
+            ).model_dump_json()
         if base == "lady_announce":
             claim = view.lady_seen if r.random() < 0.5 else ("evil" if view.lady_seen == "good" else "good")
             side = "蓝方" if claim == "good" else "红方"
             return Statement(
+                phase="lady_announce",
                 speech=f"（随机）我查验了{view.lady_target}号——{side}。",
                 monologue="（随机）信不信由你们。",
             ).model_dump_json()
         if base == "banter":
             return Statement(
+                phase="banter",
                 speech="（随机）这局打完了，各位辛苦，下把再战。",
                 monologue="（随机）复盘就免了，赢牌全靠脸。",
             ).model_dump_json()

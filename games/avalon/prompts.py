@@ -6,9 +6,9 @@
 消息结构：普通后端用 system 装"发牌时刻就固定的全部"（规则、阵容、人数座次、自己座号、角色+夜晚
 情报），此后每次行动是一条 human（自上次行动以来的公开事件 + 当前局面 + 提问）；OpenCode 后端每座位
 session 首次用自然主持人私信 seed 全量上下文，后续只发当前增量。
-模型按阶段输出 JSON（参见下方 opencode_ask），自由思考可写在 JSON 外但不会被解析。
-公开/私密边界靠 JSON 键：speech 键的内容会一字不差公布上桌；monologue 键与 JSON 外的自由发挥
-只在自己线程与观众侧，绝不上桌。结构化解析由 player.AgentPlayer 直接对 JSON 完成。
+模型按阶段输出恰好一个 JSON 对象（参见下方 opencode_ask），首尾空白之外不能有推理文字、
+代码围栏或第二个对象。公开/私密边界靠 JSON 键：speech 键的内容会一字不差公布上桌；
+monologue 键只在自己线程与观众侧，绝不上桌。结构化解析由 player.AgentPlayer 直接对 JSON 完成。
 
 人设(persona)与流派(strategy)都已接线，分管两件事：
 - 腔调 tone（cast.yaml 的 tone，玩家各写各的，当前全员同一句中性）：只管"怎么说话"，作为
@@ -457,7 +457,7 @@ def human_message(events: list[str], context: str, ask: str, tone: str = "", mim
 #
 # OpenCode agent 直接返回 JSON，不走 extractor 的标签行。每个阶段给出对应的 JSON schema。
 
-_OPENCODE_JSON_DISCIPLINE = "最终只输出一个 JSON 对象，不要输出任何其他文字（不要 markdown 代码块、不要解释，不要写出自检过程）。"
+_OPENCODE_JSON_DISCIPLINE = "最终恰好输出一个 JSON 对象，首尾空白外不要有任何其他文字（不要 markdown 代码块、不要解释、不要第二个 JSON、不要写出自检过程）。"
 
 
 def _private_transcript(view: PlayerView) -> str:

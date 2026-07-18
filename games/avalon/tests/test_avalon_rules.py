@@ -101,8 +101,8 @@ async def test_cold_resume_without_snapshot_matches_runtime(tmp_path) -> None:
 async def test_midgame_crash_resume_reproduces_identical_log(tmp_path) -> None:
     """中段崩溃后续跑：确定性重放整局，日志逐行一致、串场词零重复。
 
-    崩局形状：某个 turn 及之后全部丢失（并发行动的 turn 要么整组落盘要么整组丢失，
-    不存在半组）。续跑重问该 turn，RandomActor 按 (seat,quest,attempt,phase) 定 seed，
+    崩局形状：某个 commit 及之后全部丢失（并发行动与随后的 host 串场要么整批落盘
+    要么整批丢失，不存在半批）。续跑重问该 turn，RandomActor 按 (seat,quest,attempt,phase) 定 seed，
     产出逐字节一致；host 串场按 turn_id 去重，已播报过的开场/开票不重记。
     """
     settings, registry, setup = _setup()
@@ -110,12 +110,13 @@ async def test_midgame_crash_resume_reproduces_identical_log(tmp_path) -> None:
     final = await _run(settings, registry, setup, rep)
     original = (rep / "sentences.jsonl").read_text(encoding="utf-8").splitlines()
 
-    turns = [json.loads(line)["turn_id"] for line in original]
-    cut_turn = turns[len(turns) // 2]
-    cut = turns.index(cut_turn)  # cut_turn 首次出现的行号=崩溃点（该 turn 从未开始）
+    rows = [json.loads(line) for line in original]
+    cut_commit = rows[len(rows) // 2]["commit_id"]
+    cut = next(index for index, row in enumerate(rows) if row["commit_id"] == cut_commit)
     crashed = tmp_path / "crashed"
     crashed.mkdir()
-    (crashed / "sentences.jsonl").write_text("\n".join(original[:cut]) + "\n", encoding="utf-8")
+    prefix = "\n".join(original[:cut])
+    (crashed / "sentences.jsonl").write_text(f"{prefix}\n" if prefix else "", encoding="utf-8")
 
     rules2 = AvalonRules(registry, settings)
     journal = DirJournal(crashed, resume=True)

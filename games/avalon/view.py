@@ -38,6 +38,7 @@ class PlayerView:
     strategy: str = ""
     history: list[ProposalRecord] = field(default_factory=list)
     messages: list[ThreadMessage] = field(default_factory=list)
+    turn_prompt: str = ""
     prompt: str = ""
     phase: str = ""
 

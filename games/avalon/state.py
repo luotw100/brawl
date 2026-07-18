@@ -15,7 +15,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 # 公开发言与内心戏的字段类型：去掉首尾空白后必须非空。这是"字段内在/形状校验"——声明式收在
 # 模型里，AgentPlayer 解析 JSON 时直接完成；该有发言却空了 / 该有内心戏却空了会直接 parse 失败
@@ -70,47 +70,58 @@ class ProposalRecord(BaseModel):
     result: Literal["success", "fail"] | None = None  # 仅 approved 后有值
 
 
-class Proposal(BaseModel):
+class Action(BaseModel):
+    """LLM 动作的统一严格边界；业务字段不得矫正类型，也不得夹带未声明字段。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+
+class Proposal(Action):
     """组队阶段队长的结构化产出（AgentPlayer 直接解析后端返回的 JSON）。"""
 
+    phase: Literal["propose"]
     team: list[int]  # 公开：带谁上任务（座位号，人数须等于本任务队伍人数）
     speech: NonEmptyStr  # 公开：组队宣言
     monologue: NonEmptyStr  # 仅观众可见：内心独白
 
 
-class Statement(BaseModel):
+class Statement(Action):
     """讨论轮的结构化产出。"""
 
+    phase: Literal["discuss", "lady_announce", "banter"]
     speech: NonEmptyStr  # 公开：一句桌面发言
     monologue: NonEmptyStr  # 仅观众可见：内心独白
 
 
-class TeamVote(BaseModel):
+class TeamVote(Action):
     """组队表决的结构化产出。同时亮票：表态本身开牌后公开，独白只给观众。"""
 
+    phase: Literal["team_vote"]
     approve: bool
     monologue: NonEmptyStr
 
 
-class QuestCard(BaseModel):
+class QuestCard(Action):
     """任务出牌的结构化产出。蓝方只能出成功（违者抛错）；谁出了什么永远保密。"""
 
+    phase: Literal["quest"]
     success: bool
     monologue: NonEmptyStr
 
 
-class Assassination(BaseModel):
+class Assassination(Action):
     """刺杀阶段刺客的结构化产出。"""
 
+    phase: Literal["assassinate"]
     target_no: int  # 公开：刺谁
     speech: NonEmptyStr  # 公开：指认宣言
     monologue: NonEmptyStr
 
 
-class LadyChoice(BaseModel):
+class LadyChoice(Action):
     """湖中仙女持有者的查验选择。选谁是公开的；查验到的真实阵营只有持有者知道。"""
 
+    phase: Literal["lady_choose"]
     target_no: int
     monologue: NonEmptyStr
-
 

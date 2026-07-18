@@ -8,6 +8,9 @@ from avalon import rules as av_rules
 from avalon.registry import load_registry
 from avalon.rules_engine import AvalonRules, AvalonState
 from avalon.state import Role, Seat
+from core.sr.loop import deliver
+from core.sr.tts import SilenceTTSBackend, TTSRenderer
+from core.threads import SeatThread
 
 _ROLES = [Role.MERLIN, Role.PERCIVAL, Role.SERVANT, Role.ASSASSIN, Role.MORGANA]
 
@@ -118,6 +121,35 @@ def test_pending_single_emission_discipline() -> None:
     st = r.apply(st, json.dumps({"kind": "quest", "seat": 2, "success": True}))
     batch = r.pending(st)
     assert len(batch) == 1 and json.loads(batch[0].action)["kind"] == "quest_result"
+
+
+def test_vote_result_tts_reads_summary_while_all_inboxes_receive_vote_ledger(tmp_path) -> None:
+    r = _rules()
+    st = _state(phase="team_vote", team=[1, 2], pregame_done=True)
+    emit = r.pending(_vote_all(r, st, approve=True))[0]
+
+    assert len(emit.deliveries) == 2
+    ledger, spoken = emit.deliveries
+    assert ledger.text.startswith("【开票】")
+    assert ledger.spoken is False
+    assert "提案通过" in spoken.text and not spoken.text.startswith("【开票】")
+    assert spoken.spoken is True
+
+    threads = {no: SeatThread() for no in range(1, 6)}
+    deliver(emit.deliveries, threads)
+    assert all(ledger.text in threads[no].inbox for no in threads)
+
+    utterances = TTSRenderer(SilenceTTSBackend(), tmp_path)._utterances(
+        [{
+            "seq": 7,
+            "speaker": "host",
+            "deliveries": [d.model_dump(mode="json") for d in emit.deliveries],
+        }],
+        [f"player-{no}" for no in range(1, 6)],
+        "host-voice",
+    )
+    assert len(utterances) == 1
+    assert utterances[0].text == spoken.text and utterances[0].voice_id == "host-voice"
 
 
 def test_pregame_opening_emitted_once() -> None:
