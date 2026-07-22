@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-brawl = "brawl_games.cli:main"
+brawl = "brawl.cli:main"
 
 [dependency-groups]
 dev = [
@@ -32,7 +32,7 @@ build-backend = "hatchling.build"
 exclude = ["**/tests", "**/tests/**", "**/docs", "**/docs/**"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["brawl_games", "core", "avalon", "werewolf", "voicelab"]
+packages = ["brawl", "core", "avalon", "werewolf", "voicelab"]
 
 # 阿里云 PyPI 镜像加速安装
 [[tool.uv.index]]
@@ -50,6 +50,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # 测试随玩法自包含：一个文件夹一个玩法、各自带 tests/（不变量 #7）。加玩法在此追加其路径。
-testpaths = ["avalon/tests", "werewolf/tests", "core/tests", "core/sr/tests", "voicelab/tests"]
+testpaths = ["brawl/tests", "avalon/tests", "werewolf/tests", "core/tests", "core/sr/tests", "voicelab/tests"]
 # 各玩法的测试文件同名（test_nodes.py 等）：importlib 导入模式按路径区分，无需 __init__.py
 addopts = ["--import-mode=importlib"]

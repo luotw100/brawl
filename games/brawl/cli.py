@@ -31,11 +31,7 @@ COMMANDS: dict[str, Callable[[list[str]], None]] = {
 
 
 def _usage() -> str:
-    return (
-        "用法: brawl <命令> [参数...]\n"
-        f"可用命令: {', '.join(sorted(COMMANDS))}\n"
-        "各命令参数见: brawl <命令> --help"
-    )
+    return f"用法: brawl <命令> [参数...]\n可用命令: {', '.join(sorted(COMMANDS))}\n各命令参数见: brawl <命令> --help"
 
 
 def main() -> int:

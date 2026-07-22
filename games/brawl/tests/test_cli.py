@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from brawl_games import cli
+from brawl import cli
 from core.sr.files import UnsafePathError
 from core.sr.journal import JournalCorruptionError, JournalInUseError
 
