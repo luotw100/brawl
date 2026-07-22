@@ -1,21 +1,15 @@
-"""`brawl voice-forge`:音色铸造——把一段嗓音描述(VD prompt)铸成可复用音色句柄。
-
-跨玩法通用,完全不认识 cast.yaml:输入嗓音描述,输出 voice_id 和一组试听 wav。
-
-cloud:阿里云百炼 Qwen3-TTS 声音设计(qwen-voice-design 创建 → qwen3-tts-vd 合成)。
-self-hosted:局域网 Qwen3-TTS API(VoiceDesign 铸音色 → Base prompt → voice_id)。
-"""
+"""`brawl voice-forge`：用阿里云 Qwen3-TTS 铸造音色并生成试听。"""
 
 from __future__ import annotations
 
 import base64
+import binascii
 import datetime
 import json
 import os
 import tempfile
 from pathlib import Path
-from typing import ClassVar, Literal
-from urllib.parse import urljoin
+from typing import ClassVar
 
 import httpx
 from dotenv import dotenv_values
@@ -28,6 +22,9 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 from rich.console import Console
+
+from core.sr.files import UnsafePathError, atomic_write
+from core.sr.tts import TTSError, dashscope_audio_url
 
 # 北京地域。创建音色与合成是两个 endpoint;target_model 必须与合成 model 一致。
 _API_BASE = "https://dashscope.aliyuncs.com"
@@ -60,12 +57,10 @@ class ForgeSettings(BaseSettings):
     _cli_args: ClassVar[list[str] | None] = None
 
     voice_prompt: CliPositionalArg[str]  # 嗓音描述(VD prompt),≤2048 字符
-    backend: Literal["qwen3-tts-cloud", "qwen3-tts-self-hosted"] = "qwen3-tts-cloud"
     name: str = "voice"  # 一两个单词的短描述,拼上日期做云端 preferred_name(便于辨认/清理)
     preview_text: str = "我跳梅林？哥们，我要是梅林这局早就赢了好吧。"  # 用 cast 将来真会说的话来听
     emotion_samples: bool = True  # 铸完追加合成两个语气样本(急了/阴阳),验收 instructions 响应度
     out_dir: Path | None = None  # 试听产物目录;None = /tmp 下自动建临时目录
-    self_hosted_url: str = "http://127.0.0.1:8010"
 
     @model_validator(mode="after")
     def _check(self) -> ForgeSettings:
@@ -107,19 +102,36 @@ class ForgeSettings(BaseSettings):
 
 def _api_key() -> str:
     """边界校验:开工前确认凭证就绪。真实环境变量优先,其次 games/.env(对齐各玩法惯例)。"""
-    key = os.environ.get("DASHSCOPE_API_KEY") or dotenv_values(Path(__file__).resolve().parents[1] / ".env").get(
-        "DASHSCOPE_API_KEY"
-    )
-    if not key:
+    env = os.environ.get("DASHSCOPE_API_KEY")
+    if env is not None:
+        if not env.strip():
+            raise SettingsError("环境变量 DASHSCOPE_API_KEY 不得为空")
+        return env
+    key = dotenv_values(Path(__file__).resolve().parents[1] / ".env").get("DASHSCOPE_API_KEY")
+    if not key or not key.strip():
         raise SettingsError("games/.env 缺 DASHSCOPE_API_KEY(阿里云百炼 API key)")
     return key
 
 
 def _post(client: httpx.Client, url: str, payload: dict) -> dict:
-    resp = client.post(url, json=payload)
-    body = resp.json()
-    if resp.status_code != 200:
-        raise SettingsError(f"API 调用失败({resp.status_code}):{body.get('code')} {body.get('message')}")
+    try:
+        resp = client.post(url, json=payload)
+    except httpx.HTTPError as exc:
+        raise SettingsError(f"DashScope API 请求失败：{exc}") from exc
+    if not resp.is_success:
+        try:
+            error = resp.json()
+        except ValueError:
+            detail = resp.text.strip()[:200] or "非 JSON 响应"
+        else:
+            detail = f"{error.get('code')} {error.get('message')}" if isinstance(error, dict) else repr(error)
+        raise SettingsError(f"DashScope API 调用失败({resp.status_code})：{detail}")
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise SettingsError("DashScope API 成功响应不是合法 JSON") from exc
+    if not isinstance(body, dict):
+        raise SettingsError("DashScope API 成功响应顶层不是对象")
     return body
 
 
@@ -142,124 +154,97 @@ def _create_voice(client: httpx.Client, s: ForgeSettings) -> tuple[str, bytes]:
             "parameters": {"sample_rate": 24000, "response_format": "wav"},
         },
     )
-    out = body["output"]
-    return out["voice"], base64.b64decode(out["preview_audio"]["data"])
+    try:
+        out = body["output"]
+        voice_id = out["voice"]
+        preview_data = out["preview_audio"]["data"]
+    except (KeyError, TypeError) as exc:
+        raise SettingsError("DashScope 创建音色响应缺少 voice 或 preview_audio.data") from exc
+    if not isinstance(voice_id, str) or not voice_id.strip():
+        raise SettingsError("DashScope 创建音色响应里的 voice 无效")
+    try:
+        preview = base64.b64decode(preview_data, validate=True)
+    except (binascii.Error, TypeError, ValueError) as exc:
+        raise SettingsError("DashScope 创建音色响应里的 preview_audio.data 不是合法 base64") from exc
+    if not preview:
+        raise SettingsError("DashScope 创建音色响应里的 preview_audio.data 为空")
+    return voice_id, preview
 
 
-def _synthesize(client: httpx.Client, voice_id: str, text: str, instructions: str) -> bytes:
+def _synthesize(
+    api_client: httpx.Client,
+    audio_client: httpx.Client,
+    voice_id: str,
+    text: str,
+    instructions: str,
+) -> bytes:
     """用 voice_id + 语气指令合成一句,当场下载(返回的 OSS URL 有有效期)。"""
     body = _post(
-        client,
+        api_client,
         _SYNTH_URL,
         {"model": _VD_MODEL, "input": {"text": text, "voice": voice_id, "instructions": instructions}},
     )
-    return client.get(body["output"]["audio"]["url"]).content
+    try:
+        raw_url = body["output"]["audio"]["url"]
+        audio_url = dashscope_audio_url(raw_url)
+    except (KeyError, TypeError, TTSError) as exc:
+        raise SettingsError(f"DashScope 合成响应缺少可信音频地址：{exc}") from exc
+    try:
+        response = audio_client.get(audio_url)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise SettingsError(f"DashScope 音频下载失败：{exc}") from exc
+    if not response.content:
+        raise SettingsError("DashScope 音频下载结果为空")
+    return response.content
 
 
-def _forge_cloud(s: ForgeSettings, console: Console) -> None:
+def _write_output(path: Path, data: bytes) -> None:
+    try:
+        atomic_write(path, data)
+    except (OSError, UnsafePathError) as exc:
+        raise SettingsError(f"无法安全写入试听产物 {path}：{exc}") from exc
+
+
+def forge(s: ForgeSettings, console: Console) -> None:
+    api_key = _api_key()
     out_dir = s.out_dir or Path(tempfile.mkdtemp(prefix=f"voice-forge-{s.name}-"))
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if out_dir.is_symlink():
+        raise SettingsError(f"out_dir 不得是符号链接：{out_dir}")
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SettingsError(f"无法创建 out_dir {out_dir}：{exc}") from exc
+    if not out_dir.is_dir():
+        raise SettingsError(f"out_dir 不是目录：{out_dir}")
 
-    with httpx.Client(headers={"Authorization": f"Bearer {_api_key()}"}, timeout=60) as client:
-        voice_id, preview = _create_voice(client, s)
-        (out_dir / "preview.wav").write_bytes(preview)
+    with (
+        httpx.Client(headers={"Authorization": f"Bearer {api_key}"}, timeout=60) as api_client,
+        httpx.Client(timeout=60, follow_redirects=False) as audio_client,
+    ):
+        voice_id, preview = _create_voice(api_client, s)
+        _write_output(out_dir / "preview.wav", preview)
         console.print(f"音色已创建:[bold]{voice_id}[/bold]")
         console.print(f"预览:{out_dir / 'preview.wav'}")
 
         if s.emotion_samples:
             for label, instructions in _SAMPLES.items():
                 path = out_dir / f"sample_{label}.wav"
-                path.write_bytes(_synthesize(client, voice_id, _SAMPLE_TEXT, instructions))
+                _write_output(path, _synthesize(api_client, audio_client, voice_id, _SAMPLE_TEXT, instructions))
                 console.print(f"语气样本[{label}]:{path}")
 
     # 留一份导线:听完隔了几天也能对上"这堆 wav 是哪段描述铸的"。
-    (out_dir / "forge.json").write_text(
-        json.dumps({"voice_id": voice_id, "voice_prompt": s.voice_prompt, "preview_text": s.preview_text},
-                   ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    _write_output(
+        out_dir / "forge.json",
+        json.dumps(
+            {"voice_id": voice_id, "voice_prompt": s.voice_prompt, "preview_text": s.preview_text},
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8"),
     )
 
     console.print("\n听满意后,把下面片段拷进玩法的 cast.yaml 对应 persona:\n")
     console.print(f'    voice_id: {voice_id}\n    voice_design: "{s.voice_prompt}"')
-
-
-def _create_self_hosted_voice(client: httpx.Client, s: ForgeSettings) -> dict:
-    resp = client.post(
-        f"{s.self_hosted_url.rstrip('/')}/v1/voices",
-        json={
-            "name": s.name,
-            "voice_prompt": s.voice_prompt,
-            "preview_text": s.preview_text,
-            "language": "Chinese",
-            "overwrite": False,
-        },
-    )
-    if resp.status_code != 200:
-        raise SettingsError(f"自托管音色创建失败({resp.status_code}):{_response_text(resp)}")
-    return resp.json()
-
-
-def _self_hosted_synthesize(client: httpx.Client, s: ForgeSettings, voice_id: str, text: str) -> bytes:
-    resp = client.post(
-        f"{s.self_hosted_url.rstrip('/')}/v1/audio/speech",
-        json={"voice": voice_id, "text": text, "language": "Chinese", "format": "wav"},
-    )
-    if resp.status_code != 200:
-        raise SettingsError(f"自托管合成失败({resp.status_code}):{_response_text(resp)}")
-    return resp.content
-
-
-def _forge_self_hosted(s: ForgeSettings, console: Console) -> None:
-    out_dir = s.out_dir or Path(tempfile.mkdtemp(prefix=f"voice-forge-{s.name}-"))
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    with httpx.Client(timeout=300) as client:
-        voice = _create_self_hosted_voice(client, s)
-        voice_id = voice["voice_id"]
-        preview_url = urljoin(s.self_hosted_url.rstrip("/") + "/", voice["preview_audio_url"])
-        preview = client.get(preview_url)
-        if preview.status_code != 200:
-            raise SettingsError(f"自托管预览下载失败({preview.status_code}):{_response_text(preview)}")
-        (out_dir / "preview.wav").write_bytes(preview.content)
-        console.print(f"自托管音色已创建:[bold]{voice_id}[/bold]")
-        console.print(f"预览:{out_dir / 'preview.wav'}")
-
-        if s.emotion_samples:
-            sample = out_dir / "sample.wav"
-            sample.write_bytes(_self_hosted_synthesize(client, s, voice_id, _SAMPLE_TEXT))
-            console.print(f"合成样本:{sample}")
-
-    (out_dir / "forge.json").write_text(
-        json.dumps(
-            {
-                "backend": s.backend,
-                "voice_id": voice_id,
-                "voice_prompt": s.voice_prompt,
-                "preview_text": s.preview_text,
-                "self_hosted_url": s.self_hosted_url,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    console.print("\n听满意后,把下面片段拷进玩法的 cast.yaml 对应 persona:\n")
-    console.print(f'    self_hosted_voice_id: {voice_id}\n    voice_design: "{s.voice_prompt}"')
-
-
-def _response_text(resp: httpx.Response) -> str:
-    try:
-        return str(resp.json())
-    except ValueError:
-        return resp.text[:500]
-
-
-def forge(s: ForgeSettings, console: Console) -> None:
-    if s.backend == "qwen3-tts-cloud":
-        _forge_cloud(s, console)
-    elif s.backend == "qwen3-tts-self-hosted":
-        _forge_self_hosted(s, console)
 
 
 def main(argv: list[str]) -> None:

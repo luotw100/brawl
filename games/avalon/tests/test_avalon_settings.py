@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from avalon.settings import AvalonSettings
+from avalon.settings import AvalonSettings, SettingsError
+from avalon.validation import ResumeRequest
 
 
 def test_players_out_of_range_rejected() -> None:
@@ -43,9 +44,26 @@ def test_opencode_player_requires_replay() -> None:
         AvalonSettings(player="opencode")
 
 
-def test_resume_requires_replay() -> None:
-    with pytest.raises(ValidationError, match="--resume 需配合 --replay"):
+def test_resume_is_not_a_fresh_game_setting() -> None:
+    assert "resume" not in AvalonSettings.model_fields
+    with pytest.raises(ValidationError):
         AvalonSettings(resume=True)
+
+
+def test_resume_cli_accepts_only_replay() -> None:
+    request = ResumeRequest.from_cli(["--resume", "--replay", "/tmp/game"])
+    assert str(request.replay) == "/tmp/game"
+
+    invalid = [
+        ["--resume"],
+        ["--resume", "--replay", "--config"],
+        ["--resume", "--replay", "/tmp/game", "--players", "10"],
+        ["--config", "game.json", "--resume", "--replay", "/tmp/game"],
+        ["--resume", "--replay", "/tmp/game", "--no-render"],
+    ]
+    for argv in invalid:
+        with pytest.raises(SettingsError, match="只允许"):
+            ResumeRequest.from_cli(argv)
 
 
 def test_concurrency_must_be_positive() -> None:

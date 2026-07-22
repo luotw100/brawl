@@ -11,9 +11,6 @@
     view / parse
   状态推进（纯 fold）：
     apply
-  持久化与定位：
-    turn_id / pack / unpack
-
 `expected` 返回"该谁、要什么"；core 把 `view` 发给该 seat 的 actor 拿回 raw；rules
 `parse(raw)` 得到 (deliveries, action)；core 路由 deliveries、记一条 Sentence、过
 `apply` + `advance` 推进 state。core 全程不碰 action 的字段。
@@ -66,8 +63,8 @@ class Rules(Protocol):
     def parse(self, seat: int, raw: str, state: Any) -> ParseResult:
         """解析 + 校验该席位产出的 raw。唯一懂语义的地方。
 
-        校验不过抛 ValueError，core 会按重试策略重新对该 expectation 调 actor（呼应旧
-        引擎 LangGraph 超步重试 + "清理失败轮消息"的语义）。
+        模型产出不合规必须抛 core.parsing.JsonParseError，core 才会重新请求；
+        其他异常视为规则实现错误并立即 fail-stop。
         """
         ...
 
@@ -87,19 +84,6 @@ class Rules(Protocol):
         路由、但不 apply（这些句子的语义已由 apply/advance 在 state 里反映）。
         无则返回 []。终局前的 reveal 等也走这里。"""
         ...
-
-    def turn_id(self, state: Any) -> str:
-        """回合定位串（玩法自定义格式）。core 只当字符串用。"""
-        ...
-
-    def pack(self, state: Any) -> bytes:
-        """state 序列化，resume 快照用。必须可被 unpack 还原且重放 apply 结果一致。"""
-        ...
-
-    def unpack(self, raw: bytes) -> Any:
-        """pack 的逆。"""
-        ...
-
 
 # rules 即玩法：每个玩法提供一个 Rules 实现，core 持有一个实例驱动。
 __all__ = ["Rules", "Expectation", "HostEmit", "ParseResult"]

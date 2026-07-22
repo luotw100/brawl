@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -17,7 +18,13 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from core.sr.files import UnsafePathError, read_regular_bytes
+from core.sr.journal import JournalCorruptionError, load_replay_sentences
 from core.sr.types import Channel, Sentence
+
+
+class ConsoleError(Exception):
+    """终端回放输入不是一份可安全读取的新 replay。"""
 
 
 def _speaker_label(speaker: int | str, roles: dict[int, str] | None = None) -> str:
@@ -59,8 +66,8 @@ class PacedTypist:
     """打字机：逐字长出面板。仅回放层注入。"""
 
     def __init__(self, char_delay: float) -> None:
-        if char_delay <= 0:
-            raise ValueError(f"char_delay 必须 >0，收到 {char_delay}")
+        if not math.isfinite(char_delay) or char_delay <= 0:
+            raise ValueError(f"char_delay 必须是有限正数，收到 {char_delay}")
         self._char_delay = char_delay
 
     def panel(self, console: Console, body: Text, title: str, border_style: str | None = None) -> None:
@@ -82,22 +89,20 @@ class ConsoleRenderer:
         self,
         *,
         typist: Typist | None = None,
-        show_audience: bool = True,
         console: Console | None = None,
         meta: dict[str, Any] | None = None,
     ) -> None:
         self.console = console or Console()
         self.typist = typist or InstantTypist()
-        self.show_audience = show_audience
         self.meta = meta
 
     def set_meta(self, meta: dict[str, Any] | None) -> None:
         self.meta = meta
 
     def render_sentence(self, sentence: Sentence) -> None:
-        self._render_one(sentence.model_dump(), self._roles_from_meta(self.meta))
+        self._render_one(sentence, self._roles_from_meta(self.meta))
 
-    def render(self, sentences: list[dict[str, Any]], meta: dict[str, Any] | None = None) -> None:
+    def render(self, sentences: list[Sentence], meta: dict[str, Any] | None = None) -> None:
         self.set_meta(meta)
         roles = self._roles_from_meta(self.meta)
         for sent in sentences:
@@ -110,23 +115,20 @@ class ConsoleRenderer:
         roles = setup.get("roles") or []
         return {i + 1: r for i, r in enumerate(roles)}
 
-    def _render_one(self, sent: dict[str, Any], roles: dict[int, str]) -> None:
-        speaker = sent.get("speaker", "?")
-        deliveries = sent.get("deliveries") or []
+    def _render_one(self, sent: Sentence, roles: dict[int, str]) -> None:
+        speaker = sent.speaker
         body = Text()
         has_content = False
-        for i, d in enumerate(deliveries):
-            text = d.get("text", "")
+        for delivery in sent.deliveries:
+            text = delivery.text
             if not text:
                 continue
-            channels = d.get("channels") or []
-            if "audience" in channels and not self.show_audience:
-                continue
-            has_content = True
-            if i > 0:
+            channels = delivery.channels
+            if has_content:
                 body.append("\n")
+            has_content = True
             body.append(f"{_channel_label(channels)} ", style="dim")
-            if "audience" in channels:
+            if "audience" in channels and "broadcast" not in channels:
                 body.append(text, style="dim italic")
             else:
                 body.append(text, style="bold")
@@ -134,52 +136,58 @@ class ConsoleRenderer:
             return
 
         title = _speaker_label(speaker, roles)
-        border = self._border_style(speaker, roles)
+        border = "cyan" if speaker == "host" else ""
         self.typist.panel(self.console, body, title, border_style=border)
-
-    def _border_style(self, speaker: int | str, roles: dict[int, str]) -> str:
-        if speaker == "host":
-            return "cyan"
-        if not isinstance(speaker, int):
-            return ""
-        role = roles.get(speaker, "")
-        # 配色数据驱动：meta.setup.role_colors（玩法写入）优先；缺省回退到阿瓦隆旧 replay
-        # 的内建表（它们生成时还没有 role_colors 字段）。role 查不到就无色。
-        colors = ((self.meta or {}).get("setup") or {}).get("role_colors") or _LEGACY_ROLE_COLORS
-        return colors.get(role, "")
-
-
-# 旧阿瓦隆 replay 的角色配色（它们的 meta 没有 role_colors 字段，靠这张表自圆）。
-_LEGACY_ROLE_COLORS = {
-    "merlin": "blue", "percival": "blue", "servant": "blue",
-    "assassin": "red", "morgana": "red", "mordred": "red", "oberon": "red", "minion": "red",
-}
 
 
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="brawl console", description="渲染 replay 的 sentences.jsonl 到终端")
     parser.add_argument("replay_dir", type=Path, help="replay 目录（含 sentences.jsonl）")
-    parser.add_argument("--pace", type=float, default=None, metavar="SEC", help="打字机每字延迟秒数")
-    parser.add_argument("--no-audience", action="store_true", help="隐藏 audience 上帝视角内容")
+    parser.add_argument("--pace", type=_positive_float, default=None, metavar="SEC", help="打字机每字延迟秒数")
     args = parser.parse_args(argv)
 
     replay_dir = Path(args.replay_dir)
-    sent_path = replay_dir / "sentences.jsonl"
-    meta_path = replay_dir / "meta.json"
-    if not sent_path.exists():
-        raise ValueError(f"不是 replay 目录，缺少 sentences.jsonl：{replay_dir}")
-
-    sentences = [
-        json.loads(ln)
-        for ln in sent_path.read_text(encoding="utf-8").splitlines()
-        if ln.strip()
-    ]
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else None
+    try:
+        sentences = load_replay_sentences(replay_dir)
+    except (OSError, UnsafePathError, JournalCorruptionError) as exc:
+        raise ConsoleError(f"无法读取 replay 的 Sentence Runtime 日志：{exc}") from exc
+    meta = _load_optional_meta(replay_dir / "meta.json")
+    if meta is not None and not isinstance(meta, dict):
+        raise ConsoleError("meta.json 顶层必须是对象")
 
     typist: Typist = PacedTypist(args.pace) if args.pace is not None else InstantTypist()
-    renderer = ConsoleRenderer(typist=typist, show_audience=not args.no_audience)
+    renderer = ConsoleRenderer(typist=typist)
     renderer.render(sentences, meta)
 
 
-if __name__ == "__main__":
-    main([])
+def _positive_float(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("必须是数字") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("必须是有限正数")
+    return value
+
+
+def _load_optional_meta(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = read_regular_bytes(path)
+    except FileNotFoundError:
+        return None
+    except (OSError, UnsafePathError) as exc:
+        raise ConsoleError(f"无法安全读取 meta.json：{exc}") from exc
+    try:
+        meta = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ConsoleError(f"meta.json 不是合法 JSON：{exc}") from exc
+    return meta
+
+
+__all__ = [
+    "ConsoleError",
+    "ConsoleRenderer",
+    "InstantTypist",
+    "PacedTypist",
+    "main",
+]

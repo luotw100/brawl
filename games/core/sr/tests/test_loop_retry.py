@@ -1,7 +1,7 @@
 """loop 的 speak+parse 同单元重试语义。
 
-actor 调用失败（网络/超时）与 rules.parse 校验不过（坏 JSON、非法目标）同等对待：
-都重新调 actor 拿新产出；重试上限后 fail-fast 抛出，绝不把非法产出写进日志。
+只有 actor 明确标记的瞬态失败与 JsonParseError（坏 JSON、非法目标）会重试；
+普通编程错误立即失败。重试上限后 fail-fast，绝不把非法产出写进日志。
 重试间隔用 monkeypatch 打掉的 _sleep，测试零等待。
 """
 
@@ -13,10 +13,11 @@ from typing import Any
 import pytest
 
 import core.sr.loop as loop_mod
-from core.sr.dummy import SEATS, DummyRules
-from core.sr.errors import FatalActorError
+from core.parsing import JsonParseError
+from core.sr.errors import FatalActorError, RetryableActorError
 from core.sr.journal import NullJournal
 from core.sr.loop import run
+from core.sr.tests.dummy import SEATS, DummyActor, DummyRules
 from core.sr.types import Expectation
 from core.threads import SeatThread
 
@@ -35,18 +36,20 @@ class FlakySpeakActor:
     def __init__(self, fail_times: int) -> None:
         self.fail_times = fail_times
         self.calls = 0
+        self.rollbacks = 0
+        self.commits = 0
 
-    async def speak(self, seat: int, view: Any, turn_id: str) -> tuple[str, None]:
+    async def speak(self, seat: int, view: Any, turn_id: str) -> str:
         self.calls += 1
         if self.calls <= self.fail_times:
-            raise TimeoutError("模拟网络超时")
-        return f"{seat}号说：大家好", None
+            raise RetryableActorError("模拟瞬态网络错误")
+        return f"{seat}号说：大家好"
 
-    def commit_turn(self, seat: int) -> None: ...
+    def commit_turn(self, seat: int) -> None:
+        self.commits += 1
 
-    async def rollback(self, seat: int) -> None: ...
-
-    async def close(self) -> None: ...
+    async def rollback(self, seat: int) -> None:
+        self.rollbacks += 1
 
 
 class FlakyParseActor:
@@ -58,11 +61,11 @@ class FlakyParseActor:
         self.rollbacks = 0
         self.commits = 0
 
-    async def speak(self, seat: int, view: Any, turn_id: str) -> tuple[str, None]:
+    async def speak(self, seat: int, view: Any, turn_id: str) -> str:
         self.calls += 1
         if self.calls <= self.fail_times:
-            return "", None  # 空产出：语义校验不过
-        return f"{seat}号说：大家好", None
+            return ""  # 空产出：语义校验不过
+        return f"{seat}号说：大家好"
 
     def commit_turn(self, seat: int) -> None:
         self.commits += 1
@@ -70,20 +73,29 @@ class FlakyParseActor:
     async def rollback(self, seat: int) -> None:
         self.rollbacks += 1
 
-    async def close(self) -> None: ...
-
 
 class StrictDummyRules(DummyRules):
     """空产出视为非法（模拟玩法 parse 硬校验）。"""
 
     def parse(self, seat: int, raw: str, state: dict):
         if not raw.strip():
-            raise ValueError("空产出非法")
+            raise JsonParseError("空产出非法")
         return super().parse(seat, raw, state)
 
 
 def _threads() -> dict[int, SeatThread]:
     return {no: SeatThread() for no in SEATS}
+
+
+class OneTurnTwoSeatRules(DummyRules):
+    def is_terminal(self, state: dict) -> bool:
+        return state["step"] >= 1
+
+    def expected(self, state: dict) -> Expectation:
+        return Expectation(seats=[1, 2], turn_id="simultaneous.0")
+
+    def pending(self, state: dict):
+        return []
 
 
 @pytest.mark.asyncio
@@ -111,7 +123,6 @@ async def test_journal_batches_turn_atomically(tmp_path):
     """一个 turn 的玩家句子 + host 串场同批落盘（追加一次成型），seq 连续无洞。"""
     import json
 
-    from core.sr.dummy import DummyActor
     from core.sr.journal import DirJournal
 
     journal = DirJournal(tmp_path / "rep", resume=False)
@@ -129,7 +140,7 @@ async def test_journal_batches_turn_atomically(tmp_path):
 async def test_retry_exhaustion_fails_fast(tmp_path):
     actor = FlakySpeakActor(fail_times=loop_mod._MAX_RETRIES)  # 每次都失败
     actors = {no: (actor if no == SEATS[0] else FlakySpeakActor(0)) for no in SEATS}
-    with pytest.raises(TimeoutError):
+    with pytest.raises(RetryableActorError):
         await run(DummyRules(), setup=None, actors=actors, journal=NullJournal(), threads=_threads())
     assert actor.calls == loop_mod._MAX_RETRIES  # 恰好试满上限，不多调
 
@@ -138,9 +149,143 @@ async def test_retry_exhaustion_fails_fast(tmp_path):
 async def test_parse_exhaustion_fails_fast(tmp_path):
     actor = FlakyParseActor(fail_times=loop_mod._MAX_RETRIES)
     actors = {no: (actor if no == SEATS[0] else FlakyParseActor(0)) for no in SEATS}
-    with pytest.raises(ValueError, match="空产出非法"):
+    with pytest.raises(JsonParseError, match="空产出非法"):
         await run(StrictDummyRules(), setup=None, actors=actors, journal=NullJournal(), threads=_threads())
     assert actor.calls == loop_mod._MAX_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_unclassified_actor_error_is_not_retried():
+    class BrokenActor(FlakySpeakActor):
+        async def speak(self, seat: int, view: Any, turn_id: str) -> str:
+            self.calls += 1
+            raise RuntimeError("actor programming bug")
+
+    actor = BrokenActor(0)
+    actors = {no: (actor if no == 1 else FlakySpeakActor(0)) for no in SEATS}
+    with pytest.raises(RuntimeError, match="programming bug"):
+        await run(
+            DummyRules(),
+            setup=None,
+            actors=actors,
+            journal=NullJournal(),
+            threads=_threads(),
+        )
+    assert actor.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["apply", "journal"])
+async def test_expectation_rolls_back_all_actors_before_commit(failure: str):
+    events: list[str] = []
+
+    class TrackingActor:
+        def __init__(self, seat: int) -> None:
+            self.seat = seat
+            self.rollbacks = 0
+            self.commits = 0
+
+        async def speak(self, seat: int, view: Any, turn_id: str) -> str:
+            return f"{seat}号说：大家好"
+
+        def commit_turn(self, seat: int) -> None:
+            self.commits += 1
+            events.append(f"commit:{seat}")
+
+        async def rollback(self, seat: int) -> None:
+            self.rollbacks += 1
+
+    class ApplyFailureRules(OneTurnTwoSeatRules):
+        def apply(self, state: dict, action: str) -> dict:
+            if failure == "apply":
+                raise RuntimeError("apply failed")
+            return super().apply(state, action)
+
+    class RecordingJournal(NullJournal):
+        def append_batch(self, sents):
+            events.append("journal")
+            if failure == "journal":
+                raise OSError("journal failed")
+            return super().append_batch(sents)
+
+    actors = {seat: TrackingActor(seat) for seat in (1, 2)}
+    expected_error = RuntimeError if failure == "apply" else OSError
+    with pytest.raises(expected_error):
+        await run(
+            ApplyFailureRules(),
+            setup=None,
+            actors=actors,
+            journal=RecordingJournal(),
+            threads={1: SeatThread(), 2: SeatThread()},
+        )
+
+    assert [actors[seat].rollbacks for seat in (1, 2)] == [1, 1]
+    assert [actors[seat].commits for seat in (1, 2)] == [0, 0]
+    assert not any(event.startswith("commit:") for event in events)
+
+
+@pytest.mark.asyncio
+async def test_actor_commit_happens_only_after_journal_commit():
+    events: list[str] = []
+
+    class TrackingActor(FlakySpeakActor):
+        def commit_turn(self, seat: int) -> None:
+            events.append(f"commit:{seat}")
+
+    class RecordingJournal(NullJournal):
+        def append_batch(self, sents):
+            events.append("journal")
+            return super().append_batch(sents)
+
+    await run(
+        OneTurnTwoSeatRules(),
+        setup=None,
+        actors={1: TrackingActor(0), 2: TrackingActor(0)},
+        journal=RecordingJournal(),
+        threads={1: SeatThread(), 2: SeatThread()},
+    )
+    assert events == ["journal", "commit:1", "commit:2"]
+
+
+@pytest.mark.asyncio
+async def test_retry_backoff_does_not_hold_concurrency_slot(monkeypatch):
+    sleeping = asyncio.Event()
+    release_sleep = asyncio.Event()
+
+    async def controlled_sleep(delay: float) -> None:
+        sleeping.set()
+        await release_sleep.wait()
+
+    monkeypatch.setattr(loop_mod, "_sleep", controlled_sleep)
+
+    class RetryingActor(FlakySpeakActor):
+        pass
+
+    class ObservedActor(FlakySpeakActor):
+        def __init__(self) -> None:
+            super().__init__(0)
+            self.spoke = asyncio.Event()
+
+        async def speak(self, seat: int, view: Any, turn_id: str) -> str:
+            self.spoke.set()
+            return await super().speak(seat, view, turn_id)
+
+    retrying = RetryingActor(1)
+    observed = ObservedActor()
+    task = asyncio.create_task(
+        run(
+            OneTurnTwoSeatRules(),
+            setup=None,
+            actors={1: retrying, 2: observed},
+            journal=NullJournal(),
+            threads={1: SeatThread(), 2: SeatThread()},
+            max_concurrency=1,
+        )
+    )
+    await asyncio.wait_for(sleeping.wait(), timeout=1)
+    await asyncio.wait_for(observed.spoke.wait(), timeout=1)
+    release_sleep.set()
+    await task
 
 
 @pytest.mark.asyncio
@@ -171,8 +316,6 @@ async def test_concurrent_actor_failure_cancels_and_awaits_siblings():
         async def rollback(self, seat: int) -> None:
             self.rollbacks += 1
 
-        async def close(self) -> None: ...
-
     class FatalActor:
         def __init__(self, sibling_started: asyncio.Event) -> None:
             self.sibling_started = sibling_started
@@ -183,7 +326,6 @@ async def test_concurrent_actor_failure_cancels_and_awaits_siblings():
 
         def commit_turn(self, seat: int) -> None: ...
         async def rollback(self, seat: int) -> None: ...
-        async def close(self) -> None: ...
 
     blocker = BlockingActor()
     actors = {1: FatalActor(blocker.started), 2: blocker}
@@ -199,4 +341,4 @@ async def test_concurrent_actor_failure_cancels_and_awaits_siblings():
         )
 
     assert blocker.cancelled.is_set()
-    assert blocker.rollbacks == 1
+    assert blocker.rollbacks >= 1

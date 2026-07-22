@@ -33,6 +33,13 @@ from core.sr.types import Delivery, Expectation, HostEmit, ParseResult
 from core.threads import SeatThread
 
 
+class LadyTransfer(BaseModel):
+    """已经生效、等待主持人同事务播报的仙女令牌转移。"""
+
+    holder: int
+    target: int
+
+
 class AvalonState(BaseModel):
     """对局状态：对 core 不透明，仅由 AvalonRules 管理。"""
 
@@ -47,17 +54,18 @@ class AvalonState(BaseModel):
     lady_used: list[int] = Field(default_factory=list)
     winner: str | None = None
     win_reason: str | None = None
-    finished: bool = False
     phase: str = "propose"
     pregame_done: bool = False
     discuss_index: int = 0
     discuss_count: int = 0
+    evil_chat_index: int = 0
+    evil_chat_opened: bool = False
+    evil_team: list[int] = Field(default_factory=list)
     banter_index: int = 0
     reveal_emitted: bool = False
-    closing_emitted: bool = False
     lady_target: int | None = None
     lady_seen: str | None = None
-    lady_announced: bool = False
+    lady_transfer: LadyTransfer | None = None
     assassination: dict[str, Any] | None = None
 
     @property
@@ -95,21 +103,15 @@ class AvalonState(BaseModel):
         """败方先复盘，组内按座位号。"""
         return sorted((s.no for s in self.seats), key=lambda no: (self.seats[no - 1].role.side.value == self.winner, no))
 
+    @property
+    def _evil_chat_order(self) -> list[int]:
+        return list(self.evil_team)
+
     def _seat(self, no: int) -> Seat:
         return self.seats[no - 1]
 
-    def _model_spec(self, seat: Seat, registry) -> Any:
-        if seat.model is None:
-            return None
-        return registry.models.get(seat.model)
-
-
 class AvalonRules(Rules):
     """Avalon 玩法插件：实现 core.sr.rules.Rules 协议。"""
-
-    def __init__(self, registry: Any, settings: Any) -> None:
-        self._registry = registry
-        self._settings = settings
 
     def initial_state(self, setup: GameSetup) -> AvalonState:
         seats = []
@@ -120,7 +122,8 @@ class AvalonRules(Rules):
                     no=no,
                     persona_id=setup.cast[i],
                     strategy_id=setup.strategies[i],
-                    model=setup.models[i],
+                    tone=setup.tones[i],
+                    strategy=setup.strategy_systems[i],
                     role=role,
                     intel=rules.night_intel(setup.roles, no),
                 )
@@ -133,9 +136,9 @@ class AvalonRules(Rules):
         )
 
     def is_terminal(self, state: AvalonState) -> bool:
-        return state.finished or state.phase == "done"
+        return state.phase == "done"
 
-    def turn_id(self, state: AvalonState) -> str:
+    def _turn_id(self, state: AvalonState) -> str:
         q = min(state.quest_no, rules.QUESTS)
         a = state.attempt
         if state.phase == "propose":
@@ -147,9 +150,11 @@ class AvalonRules(Rules):
         if state.phase == "quest":
             return f"q{q}.a{a}.quest"
         if state.phase == "lady_choose":
-            return f"q{q}.a{a}.lady.choose"
+            return f"q{max(1, state.quest_no - 1)}.lady.choose"
         if state.phase == "lady_announce":
-            return f"q{q}.a{a}.lady.announce"
+            return f"q{max(1, state.quest_no - 1)}.lady.announce"
+        if state.phase == "evil_chat":
+            return f"evil_chat.{state.evil_chat_index}"
         if state.phase == "assassinate":
             return "assassinate"
         if state.phase == "banter":
@@ -158,26 +163,31 @@ class AvalonRules(Rules):
 
     def expected(self, state: AvalonState) -> Expectation:
         if state.phase == "propose":
-            return Expectation(seats=[state.leader], turn_id=self.turn_id(state))
+            return Expectation(seats=[state.leader], turn_id=self._turn_id(state))
         if state.phase == "discuss":
             order = state._discuss_order
-            return Expectation(seats=[order[state.discuss_index]], turn_id=self.turn_id(state))
+            return Expectation(seats=[order[state.discuss_index]], turn_id=self._turn_id(state))
         if state.phase == "team_vote":
-            return Expectation(seats=list(range(1, state.players + 1)), turn_id=self.turn_id(state))
+            return Expectation(seats=list(range(1, state.players + 1)), turn_id=self._turn_id(state))
         if state.phase == "quest":
-            return Expectation(seats=list(state.team), turn_id=self.turn_id(state))
+            return Expectation(seats=list(state.team), turn_id=self._turn_id(state))
         if state.phase == "lady_choose":
             assert state.lady_holder is not None
-            return Expectation(seats=[state.lady_holder], turn_id=self.turn_id(state))
+            return Expectation(seats=[state.lady_holder], turn_id=self._turn_id(state))
         if state.phase == "lady_announce":
             assert state.lady_holder is not None
-            return Expectation(seats=[state.lady_holder], turn_id=self.turn_id(state))
+            return Expectation(seats=[state.lady_holder], turn_id=self._turn_id(state))
+        if state.phase == "evil_chat":
+            return Expectation(
+                seats=[state._evil_chat_order[state.evil_chat_index]],
+                turn_id=self._turn_id(state),
+            )
         if state.phase == "assassinate":
             assassin = next(s.no for s in state.seats if s.role is Role.ASSASSIN)
-            return Expectation(seats=[assassin], turn_id=self.turn_id(state))
+            return Expectation(seats=[assassin], turn_id=self._turn_id(state))
         if state.phase == "banter":
             order = state._banter_order
-            return Expectation(seats=[order[state.banter_index]], turn_id=self.turn_id(state))
+            return Expectation(seats=[order[state.banter_index]], turn_id=self._turn_id(state))
         raise RuntimeError(f"unexpected phase for expected(): {state.phase}")
 
     def view(self, seat: int, state: AvalonState, thread: SeatThread, *, first_speak: bool = False) -> Any:
@@ -193,7 +203,6 @@ class AvalonRules(Rules):
             seat_no=seat,
             role=s.role,
             intel=list(s.intel),
-            model=state._model_spec(s, self._registry),
             lineup=sorted((s.role for s in state.seats), key=tuple(Role).index),
             players=state.players,
             leader_no=state.leader,
@@ -207,14 +216,15 @@ class AvalonRules(Rules):
             lady_used=list(state.lady_used),
             lady_target=state.lady_target,
             lady_seen=state.lady_seen if seat == state.lady_holder else None,
-            tone=self._registry.personas[s.persona_id].tone,
-            strategy=self._registry.strategies[s.strategy_id].system,
+            tone=s.tone,
+            strategy=s.strategy,
             history=list(state.history),
             messages=list(thread.messages),
             phase=state.phase,
+            evil_team=list(state.evil_team),
         )
-        with_situation = state.phase not in ("assassinate", "lady_announce", "banter")
-        mimicry_guard = state.phase != "banter"
+        with_situation = state.phase not in ("evil_chat", "assassinate", "lady_announce", "banter")
+        mimicry_guard = state.phase not in ("evil_chat", "banter")
         ask = prompts.opencode_ask(state.phase, view)
         context = prompts.situation(view) if with_situation else ""
         view.turn_prompt = prompts.human_message(
@@ -238,6 +248,8 @@ class AvalonRules(Rules):
             return self._parse_lady_choose(seat, raw, state)
         if phase == "lady_announce":
             return self._parse_lady_announce(seat, raw, state)
+        if phase == "evil_chat":
+            return self._parse_evil_chat(seat, raw, state)
         if phase == "assassinate":
             return self._parse_assassinate(seat, raw, state)
         if phase == "banter":
@@ -325,13 +337,31 @@ class AvalonRules(Rules):
         }, ensure_ascii=False)
         return ParseResult(deliveries=deliveries, action=action)
 
+    def _parse_evil_chat(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
+        result = parse_json(raw, Statement)
+        if result.phase != "evil_chat":
+            raise JsonParseError(f"动作 phase 应为 evil_chat，实际为 {result.phase}")
+        evil_channels: list[str | int] = [*state._evil_chat_order, "audience"]
+        deliveries = [
+            Delivery(text=prompts.line_player(seat, result.speech), channels=evil_channels),
+            Delivery(text=result.monologue, channels=["audience"]),
+        ]
+        action = json.dumps(
+            {
+                "kind": "evil_chat",
+                "seat": seat,
+                "speech": result.speech,
+                "monologue": result.monologue,
+            },
+            ensure_ascii=False,
+        )
+        return ParseResult(deliveries=deliveries, action=action)
+
     def _parse_assassinate(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
         result = parse_json(raw, Assassination)
-        s = state._seat(seat)
-        # 合法目标 = 除自己与已知同伙外的任何人（候选清单与 view.good_suspects 同源）。
-        # 奥伯伦不参与红方互认，刺客认不出他——误刀奥伯伦是合法操作（等于空刀，蓝方胜），
-        # 绝不能在校验层拒绝：候选清单给得出、校验却拒收，会把对局卡死在重试上。
-        legal = {x.no for x in state.seats if x.no != seat} - set(s.intel)
+        # 终局互认已把完整红方名单明确交给刺客；合法目标由这份已披露名单自然投影，
+        # 不在这里借裁判 role 真值另做一套隐形过滤。
+        legal = {x.no for x in state.seats} - set(state.evil_team)
         if result.target_no not in legal:
             raise JsonParseError(f"刺客 {seat}号 刺向非法目标 {result.target_no}（可选：{sorted(legal)}）")
         target = state._seat(result.target_no)
@@ -368,6 +398,7 @@ class AvalonRules(Rules):
             return state.model_copy(deep=True, update={
                 "team": list(a["team"]),
                 "pregame_done": True,
+                "lady_transfer": None,
             })
         if kind == "discuss":
             return state.model_copy(deep=True, update={
@@ -388,9 +419,9 @@ class AvalonRules(Rules):
                 "lady_seen": target.role.side.value,
             })
         if kind == "lady_announce":
-            return state.model_copy(deep=True, update={
-                "lady_announced": True,
-            })
+            return state
+        if kind == "evil_chat":
+            return state.model_copy(deep=True, update={"evil_chat_opened": True})
         if kind == "assassinate":
             return state.model_copy(deep=True, update={
                 "assassination": dict(a),
@@ -416,22 +447,33 @@ class AvalonRules(Rules):
         if phase == "quest":
             return self._advance_after_quest(state)
         if phase == "lady_choose":
-            return state.model_copy(deep=True, update={"phase": "lady_announce", "lady_announced": False})
+            return state.model_copy(deep=True, update={"phase": "lady_announce"})
         if phase == "lady_announce":
+            assert state.lady_holder is not None and state.lady_target is not None
             return state.model_copy(deep=True, update={
                 "phase": "propose",
                 "lady_holder": state.lady_target,
                 "lady_used": [*state.lady_used, state.lady_target],
+                "lady_transfer": LadyTransfer(
+                    holder=state.lady_holder,
+                    target=state.lady_target,
+                ),
                 "lady_target": None,
                 "lady_seen": None,
-                "lady_announced": False,
             })
+        if phase == "evil_chat":
+            if state.evil_chat_index + 1 < len(state._evil_chat_order):
+                return state.model_copy(
+                    deep=True,
+                    update={"evil_chat_index": state.evil_chat_index + 1},
+                )
+            return state.model_copy(deep=True, update={"phase": "assassinate"})
         if phase == "assassinate":
             return state.model_copy(deep=True, update={"phase": "banter", "banter_index": 0})
         if phase == "banter":
             if state.banter_index + 1 < state.players:
                 return state.model_copy(deep=True, update={"banter_index": state.banter_index + 1})
-            return state.model_copy(deep=True, update={"phase": "done", "finished": True})
+            return state.model_copy(deep=True, update={"phase": "done"})
         if phase == "done":
             return state
         raise RuntimeError(f"unexpected phase for advance(): {phase}")
@@ -496,7 +538,11 @@ class AvalonRules(Rules):
             out["phase"] = "banter"
             out["banter_index"] = 0
         elif succeeded >= rules.QUESTS_TO_WIN:
-            out["phase"] = "assassinate"
+            evil_nos = [s.no for s in state.seats if s.role.side is Side.EVIL]
+            out["phase"] = "evil_chat"
+            out["evil_chat_index"] = 0
+            out["evil_chat_opened"] = False
+            out["evil_team"] = evil_nos
         elif state.lady_holder is not None and state.quest_no in rules.LADY_QUESTS:
             out["phase"] = "lady_choose"
         else:
@@ -512,19 +558,23 @@ class AvalonRules(Rules):
             return self._vote_result(state)
         if state.phase == "quest" and len(state.cards) == len(state.team):
             return self._quest_result(state)
-        if state.phase == "lady_announce" and state.lady_target is not None and not state.lady_announced:
+        if state.phase == "lady_choose" and state.lady_target is not None:
+            return self._lady_choice(state)
+        if state.lady_transfer is not None:
             return self._lady_transfer(state)
+        if state.phase == "evil_chat" and not state.evil_chat_opened:
+            return self._evil_chat_opening(state)
         if state.phase == "assassinate" and state.assassination is not None:
             return self._assassination_result(state)
         if state.phase == "banter" and state.banter_index == 0 and not state.reveal_emitted:
             return self._postgame_reveal(state)
-        if state.phase == "done" and not state.closing_emitted:
+        if state.phase == "done":
             return self._closing(state)
         return []
 
     def _pregame(self, state: AvalonState) -> list[HostEmit]:
         seats_payload = [
-            {"no": s.no, "persona": s.persona_id, "strategy": s.strategy_id, "role": s.role.value, "side": s.role.side.value, "intel": s.intel, "model": s.model}
+            {"no": s.no, "persona": s.persona_id, "strategy": s.strategy_id, "role": s.role.value, "side": s.role.side.value, "intel": s.intel}
             for s in state.seats
         ]
         first_team_size = rules.team_size(state.players, 1)
@@ -553,7 +603,7 @@ class AvalonRules(Rules):
         text = prompts.line_host_team(first)
         return [
             HostEmit(
-                turn_id=self.turn_id(state),
+                turn_id=self._turn_id(state),
                 deliveries=[Delivery(text=text, channels=["broadcast", "audience"])],
                 action=json.dumps({"kind": "team_intro", "team": state.team}, ensure_ascii=False),
             )
@@ -579,7 +629,7 @@ class AvalonRules(Rules):
         }
         return [
             HostEmit(
-                turn_id=self.turn_id(state),
+                turn_id=self._turn_id(state),
                 deliveries=[
                     # 票型是全员可见的文字账本，但符号串不适合配音；口语结果由主持人念出。
                     Delivery(
@@ -619,20 +669,78 @@ class AvalonRules(Rules):
         }
         return [
             HostEmit(
-                turn_id=self.turn_id(state),
+                turn_id=self._turn_id(state),
                 deliveries=[Delivery(text=text, channels=["broadcast", "audience"])],
                 action=json.dumps(action, ensure_ascii=False),
             )
         ]
 
     def _lady_transfer(self, state: AvalonState) -> list[HostEmit]:
-        assert state.lady_holder is not None and state.lady_target is not None
-        text = prompts.line_host_lady(state.lady_holder, state.lady_target)
+        assert state.lady_transfer is not None
+        transfer = state.lady_transfer
+        text = prompts.line_host_lady_transfer(transfer.holder, transfer.target)
         return [
             HostEmit(
-                turn_id=self.turn_id(state),
+                turn_id=(
+                    f"q{max(1, state.quest_no - 1)}.lady.transfer."
+                    f"{transfer.holder}.{transfer.target}"
+                ),
                 deliveries=[Delivery(text=text, channels=["broadcast", "audience"])],
-                action=json.dumps({"kind": "lady_transfer", "holder": state.lady_holder, "target": state.lady_target}, ensure_ascii=False),
+                action=json.dumps(
+                    {
+                        "kind": "lady_transfer",
+                        "holder": transfer.holder,
+                        "target": transfer.target,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
+    def _lady_choice(self, state: AvalonState) -> list[HostEmit]:
+        assert state.lady_holder is not None and state.lady_target is not None
+        text = prompts.line_host_lady_choice(state.lady_holder, state.lady_target)
+        return [
+            HostEmit(
+                turn_id=(
+                    f"q{max(1, state.quest_no - 1)}.lady.choice."
+                    f"{state.lady_holder}.{state.lady_target}"
+                ),
+                deliveries=[Delivery(text=text, channels=["broadcast", "audience"])],
+                action=json.dumps(
+                    {
+                        "kind": "lady_choice",
+                        "holder": state.lady_holder,
+                        "target": state.lady_target,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ]
+
+    def _evil_chat_opening(self, state: AvalonState) -> list[HostEmit]:
+        roles = {
+            seat.no: seat.role
+            for seat in state.seats
+            if seat.role.side is Side.EVIL
+        }
+        channels: list[str | int] = [*roles, "audience"]
+        return [
+            HostEmit(
+                turn_id="evil_chat.opening",
+                deliveries=[
+                    Delivery(
+                        text=prompts.line_host_evil_chat(roles),
+                        channels=channels,
+                    )
+                ],
+                action=json.dumps(
+                    {
+                        "kind": "evil_chat_opening",
+                        "roles": {no: role.value for no, role in roles.items()},
+                    },
+                    ensure_ascii=False,
+                ),
             )
         ]
 
@@ -673,11 +781,10 @@ class AvalonRules(Rules):
 
     def random_action(self, seat: int, view: PlayerView) -> str:
         """零网络 sampler：为当前 phase 生成合法 JSON raw。"""
-        phase = getattr(view, "phase", "")
-        base = phase.removesuffix(".extract") if hasattr(phase, "removesuffix") else phase
-        r = random.Random(f"{seat}:{view.seat_no}:{view.quest_no}:{view.attempt}:{base}")
+        phase = view.phase
+        r = random.Random(f"{seat}:{view.seat_no}:{view.quest_no}:{view.attempt}:{phase}")
 
-        if base == "propose":
+        if phase == "propose":
             team = sorted(r.sample(range(1, view.players + 1), view.team_size))
             return Proposal(
                 phase="propose",
@@ -685,26 +792,26 @@ class AvalonRules(Rules):
                 speech=f"（随机）我看 {'、'.join(f'{no}号' for no in team)} 就挺合适，出发。",
                 monologue="（随机）闭眼点的将。",
             ).model_dump_json()
-        if base == "discuss":
+        if phase == "discuss":
             return Statement(
                 phase="discuss",
                 speech="（随机）这队我说不上好坏，先看看大家的票。",
                 monologue="（随机）水一句，别看我。",
             ).model_dump_json()
-        if base == "team_vote":
+        if phase == "team_vote":
             return TeamVote(
                 phase="team_vote",
                 approve=r.random() < 0.5,
                 monologue="（随机）抛硬币定的。",
             ).model_dump_json()
-        if base == "quest":
+        if phase == "quest":
             success = True if view.role.side is Side.GOOD else r.random() < 0.5
             return QuestCard(
                 phase="quest",
                 success=success,
                 monologue="（随机）牌已扣下，面无表情。",
             ).model_dump_json()
-        if base == "assassinate":
+        if phase == "assassinate":
             target = r.choice(view.good_suspects())
             return Assassination(
                 phase="assassinate",
@@ -712,13 +819,19 @@ class AvalonRules(Rules):
                 speech=f"（随机）直觉告诉我，{target}号就是梅林。",
                 monologue="（随机）蒙的，但要蒙得自信。",
             ).model_dump_json()
-        if base == "lady_choose":
+        if phase == "evil_chat":
+            return Statement(
+                phase="evil_chat",
+                speech="（随机）红方身份已经互认，我的梅林线索都在公开轨迹里，刺客按长程表现判断。",
+                monologue="（随机）终于不用再装蓝方了。",
+            ).model_dump_json()
+        if phase == "lady_choose":
             return LadyChoice(
                 phase="lady_choose",
                 target_no=r.choice(view.lady_candidates()),
                 monologue="（随机）就查你了。",
             ).model_dump_json()
-        if base == "lady_announce":
+        if phase == "lady_announce":
             claim = view.lady_seen if r.random() < 0.5 else ("evil" if view.lady_seen == "good" else "good")
             side = "蓝方" if claim == "good" else "红方"
             return Statement(
@@ -726,16 +839,10 @@ class AvalonRules(Rules):
                 speech=f"（随机）我查验了{view.lady_target}号——{side}。",
                 monologue="（随机）信不信由你们。",
             ).model_dump_json()
-        if base == "banter":
+        if phase == "banter":
             return Statement(
                 phase="banter",
                 speech="（随机）这局打完了，各位辛苦，下把再战。",
                 monologue="（随机）复盘就免了，赢牌全靠脸。",
             ).model_dump_json()
-        raise ValueError(f"未知决策阶段：{base}")
-
-    def pack(self, state: AvalonState) -> bytes:
-        return state.model_dump_json().encode("utf-8")
-
-    def unpack(self, raw: bytes) -> AvalonState:
-        return AvalonState.model_validate_json(raw)
+        raise ValueError(f"未知决策阶段：{phase}")

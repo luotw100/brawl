@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import ClassVar, Literal
 
 from dotenv import load_dotenv
-from pydantic import model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic_settings import (
     BaseSettings,
     CliSettingsSource,
@@ -54,8 +54,6 @@ class WerewolfSettings(BaseSettings):
     # 批量/CI 跑 opencode 可用 --no-render 关闭。
     render: bool = True
 
-    resume: bool = False
-
     @property
     def players(self) -> int:
         return rules.board_by_id(self.board).players
@@ -69,8 +67,6 @@ class WerewolfSettings(BaseSettings):
                 raise ValueError(f"{field} 长度 {len(val)} 必须等于 {players}（{self.board}）")
         if self.concurrency < 1:
             raise ValueError(f"concurrency 必须 >=1，收到 {self.concurrency}")
-        if self.resume and self.replay is None:
-            raise ValueError("--resume 需配合 --replay 指向那个要续跑的对局目录")
         if self.player == "opencode" and self.replay is None:
             raise ValueError("--player opencode 必须提供 --replay，用于隔离并保存 OpenCode 上下文")
         return self
@@ -109,4 +105,31 @@ class WerewolfSettings(BaseSettings):
             cls._config_file = None
 
 
-__all__ = ["SettingsError", "WerewolfSettings"]
+class WerewolfResumeSettings(BaseModel):
+    """续跑命令的全部输入。
+
+    对局参数只能在 fresh 时决定；resume 边界只接受 replay 目录，
+    玩家后端、模型、人设、流派和渲染设置全部由 meta.json 恢复。
+    """
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    replay: Path
+
+    @classmethod
+    def from_cli(cls, argv: list[str]) -> WerewolfResumeSettings:
+        if (
+            len(argv) != 3
+            or argv[0] != "--resume"
+            or argv[1] != "--replay"
+            or not argv[2]
+            or argv[2].startswith("-")
+        ):
+            raise SettingsError(
+                "续跑只允许: brawl werewolf --resume --replay PATH；"
+                "玩家、模型、人设、流派、并发度等元信息不能在续跑时修改"
+            )
+        return cls(replay=Path(argv[2]))
+
+
+__all__ = ["SettingsError", "WerewolfResumeSettings", "WerewolfSettings"]

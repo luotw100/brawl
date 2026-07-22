@@ -13,23 +13,18 @@ from core.parsing import JsonParseError
 from core.sr.actor import RandomActor
 from core.sr.journal import DirJournal
 from core.sr.loop import resume, run
-from core.sr.tts import SilenceTTSBackend, TTSRenderer
 from core.threads import SeatThread, ThreadMessage
-from werewolf import prompts
+from werewolf import prompts, rules
 from werewolf.registry import load_registry
-from werewolf.rules import RULE_CONTRACT, Role, Side
+from werewolf.rules import Role, Side
 from werewolf.rules_engine import WerewolfRules, WerewolfState
 from werewolf.settings import WerewolfSettings
 from werewolf.state import DeathRecord, SeerCheck
 from werewolf.validation import GameSetup, resolve_and_validate
 from werewolf.view import PlayerView
 
-# 便于断言的固定牌堆：1~4 狼，5 预言家，6 女巫，7 猎人，8 白痴，9~12 平民
-_ROLES = [
-    Role.WEREWOLF, Role.WEREWOLF, Role.WEREWOLF, Role.WEREWOLF,
-    Role.SEER, Role.WITCH, Role.HUNTER, Role.IDIOT,
-    Role.VILLAGER, Role.VILLAGER, Role.VILLAGER, Role.VILLAGER,
-]
+# 直接使用生产 BoardSpec，避免测试牌堆与真实板子各自漂移。
+_ROLES = list(rules.PRE_WITCH_HUNTER_IDIOT_12.roles)
 
 
 def _setup(seed: int = 42) -> tuple[WerewolfSettings, Any, Any]:
@@ -41,29 +36,30 @@ def _setup(seed: int = 42) -> tuple[WerewolfSettings, Any, Any]:
 
 
 def _fixed_setup() -> GameSetup:
-    """不洗牌的最小 setup（unit test 用）；人设/流派用在册 id，view 要查 registry。"""
+    """不洗牌的最小完整 setup（unit test 用）。"""
     n = len(_ROLES)
     personas = ["fox", "janitor", "diva", "shy", "shade", "honest", "boss", "prof", "bard", "deadpan", "raven", "lantern"]
     return GameSetup(
         board="pre-witch-hunter-idiot-12",
-        cast=personas[:n],
+        cast=tuple(personas[:n]),
         host_cast="herald",
-        names=["p"] * n,
+        names=tuple(f"p{seat}" for seat in range(1, n + 1)),
         host_name="司仪",
-        voices=[""] * n,
-        host_voice="",
-        self_hosted_voices=[""] * n,
-        host_self_hosted_voice="",
-        voice_designs=[""] * n,
+        voices=("test-voice",) * n,
+        host_voice="test-host-voice",
+        voice_designs=("",) * n,
         host_voice_design="",
-        strategies=["prudent"] * n,
-        models=[""] * n,
-        roles=list(_ROLES),
+        tones=("测试腔调",) * n,
+        strategies=("prudent",) * n,
+        strategy_systems=("测试流派",) * n,
+        models=("test-model",) * n,
+        opencode_models=("",) * n,
+        roles=tuple(_ROLES),
     )
 
 
 def _rules() -> WerewolfRules:
-    return WerewolfRules(registry=load_registry(), settings=None)
+    return WerewolfRules()
 
 
 def _state(**over: Any) -> WerewolfState:
@@ -80,7 +76,7 @@ def _kill_all(state: WerewolfState, nos: list[int]) -> WerewolfState:
 
 
 async def _run(settings: WerewolfSettings, registry: Any, setup: Any, rep: Path) -> WerewolfState:
-    rules = WerewolfRules(registry, settings)
+    rules = WerewolfRules()
     actors = {no: RandomActor(rules.random_action) for no in range(1, len(setup.roles) + 1)}
     journal = DirJournal(rep, resume=False)
     threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
@@ -121,13 +117,9 @@ async def test_random_game_finishes(tmp_path) -> None:
     ):
         assert kind in kinds, f"缺少句子类型 {kind}"
 
-    # 查验反馈是裁判私密回话：日志 speaker=host，TTS 必须用主持人声线，不能冒充预言家说话。
+    # 查验反馈是裁判私密回话，不能冒充预言家说话。
     seer_results = [s for s in sentences if s["action"] and json.loads(s["action"]).get("kind") == "seer_result"]
     assert seer_results and all(s["speaker"] == "host" for s in seer_results)
-    utterances = TTSRenderer(SilenceTTSBackend(), tmp_path / "rep")._utterances(
-        seer_results, [f"player-{no}" for no in range(1, 13)], "host-voice"
-    )
-    assert utterances and all(u.voice_id == "host-voice" and u.speaker == "主持人" for u in utterances)
 
 
 @pytest.mark.asyncio
@@ -137,33 +129,10 @@ async def test_resume_matches_runtime(tmp_path) -> None:
     final = await _run(settings, registry, setup, rep)
 
     journal2 = DirJournal(rep, resume=True)
-    rules2 = WerewolfRules(registry, settings)
+    rules2 = WerewolfRules()
     threads2 = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
     try:
-        restored = await resume(rules2, actors={}, journal=journal2, threads=threads2, setup=setup)
-    finally:
-        journal2.close()
-
-    assert restored.model_dump_json() == final.model_dump_json()
-
-
-@pytest.mark.asyncio
-async def test_cold_resume_without_snapshot_matches_runtime(tmp_path) -> None:
-    """冷续跑（无快照全量重放）必须与实时终态逐字段一致。
-
-    放逐投票一个 turn_id 多达 12 条句子：逐句 advance 会用不完整票型结算放逐结果
-    （回归：真实崩局没有 _snapshot.json，快照只在终局才落）。
-    """
-    settings, registry, setup = _setup()
-    rep = tmp_path / "rep"
-    final = await _run(settings, registry, setup, rep)
-    (rep / "_snapshot.json").unlink()  # 崩局现场：没有终态快照，强制冷重放
-
-    journal2 = DirJournal(rep, resume=True)
-    rules2 = WerewolfRules(registry, settings)
-    threads2 = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-    try:
-        restored = await resume(rules2, actors={}, journal=journal2, threads=threads2, setup=setup)
+        restored = await resume(rules2, journal=journal2, threads=threads2, setup=setup)
     finally:
         journal2.close()
 
@@ -190,13 +159,12 @@ async def test_midgame_crash_resume_reproduces_identical_log(tmp_path) -> None:
     prefix = "\n".join(original[:cut])
     (crashed / "sentences.jsonl").write_text(f"{prefix}\n" if prefix else "", encoding="utf-8")
 
-    rules2 = WerewolfRules(registry, settings)
+    rules2 = WerewolfRules()
     journal = DirJournal(crashed, resume=True)
     threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
     try:
-        restored = await resume(rules2, actors={}, journal=journal, threads=threads, setup=setup)
         actors = {no: RandomActor(rules2.random_action) for no in range(1, len(setup.roles) + 1)}
-        final2 = await run(rules2, setup, actors, journal, threads, state=restored)
+        final2 = await run(rules2, setup, actors, journal, threads)
     finally:
         journal.close()
 
@@ -208,16 +176,15 @@ async def test_midgame_crash_resume_reproduces_identical_log(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_random_actor_produces_valid_json() -> None:
     settings, registry, setup = _setup()
-    rules = WerewolfRules(registry, settings)
+    rules = WerewolfRules()
     view = PlayerView(
         seat_no=1, role=Role.WEREWOLF, players=12, day=1, phase="night_wolf",
         candidates=[5, 6, 7, 8, 9, 10, 11, 12],
     )
     actor = RandomActor(rules.random_action)
-    raw, audit = await actor.speak(1, view, "day1.wolf.0")
+    raw = await actor.speak(1, view, "day1.wolf.0")
     data = json.loads(raw)
     assert data["target_no"] in view.candidates
-    assert audit["seat_no"] == 1
 
 
 # ---------------------------------------------------------------- parse 校验（非法输出一律 JsonParseError，交给 loop 重试）
@@ -354,7 +321,10 @@ def test_wolf_chat_never_reaches_good_inbox_channels() -> None:
         ensure_ascii=False,
     )
     pr = _rules().parse(1, raw, st)
+    allowed = {2, 3, 4, "audience"}
     for d in pr.deliveries:
+        assert set(d.channels) <= allowed
+        assert "broadcast" not in d.channels
         for ch in d.channels:
             if isinstance(ch, int):
                 assert st.seat(ch).role is Role.WEREWOLF, f"狼队夜聊进了好人 {ch}号 的频道"
@@ -389,7 +359,7 @@ def test_witch_action_is_silent_to_seats() -> None:
     assert channels == {"audience"}
 
 
-def test_speech_visibility_rules_are_phase_specific() -> None:
+def test_action_prompts_only_request_phase_json() -> None:
     view = PlayerView(
         seat_no=1,
         role=Role.WEREWOLF,
@@ -403,11 +373,32 @@ def test_speech_visibility_rules_are_phase_specific() -> None:
     day = prompts.opencode_ask("day_discuss", view)
     last_words = prompts.opencode_ask("last_words", view)
 
-    assert "只在狼队内部传递" in night and "真实判断" in night
-    assert "全场公开" in day and "策略性跳身份" in day and "报查验" in day
-    assert "全场公开遗言" in last_words and "报情报" in last_words
+    assert '"phase": "wolf_kill"' in night
+    assert '"phase": "discuss"' in day
+    assert '"phase": "last_words"' in last_words
+    for ask in (night, day, last_words):
+        assert ask.endswith("只输出上述 JSON 对象，不要输出其他文字。")
+        assert "自检" not in ask and "思考过程" not in ask
     assert "speech 会被一字不差地公布上桌，全场可见" not in prompts.RULES
     assert "night_wolf 的 speech 只在狼队内部传递" in prompts.RULES
+
+
+def test_witch_prompt_freezes_spent_medicines_to_legal_values() -> None:
+    view = _rules().view(
+        6,
+        _state(
+            phase="night_witch",
+            wolf_target=9,
+            witch_has_antidote=False,
+            witch_has_poison=False,
+        ),
+        SeatThread(),
+        first_speak=True,
+    )
+
+    assert "解药已用完；save 必须为 false" in view.turn_prompt
+    assert "毒药已用完；poison_target_no 必须为 null" in view.turn_prompt
+    assert "你可以用解药" not in view.turn_prompt
 
 
 def test_view_never_shows_others_private_intel() -> None:
@@ -493,13 +484,16 @@ def test_witch_secrets_are_fail_closed_at_view_boundary() -> None:
 
 # ---------------------------------------------------------------- 规则推进
 
-def test_rule_contract_freezes_current_house_rules() -> None:
-    assert RULE_CONTRACT.witch_may_use_both_potions_on_different_targets is True
-    assert RULE_CONTRACT.witch_may_self_save is True
-    assert RULE_CONTRACT.hunter_may_shoot_when_knifed_and_poisoned is True
-    assert RULE_CONTRACT.hunter_may_shoot_when_only_poisoned is False
-    assert RULE_CONTRACT.deaths_reveal_roles is True
-    assert RULE_CONTRACT.tied_vote_exiles_nobody is True
+
+def test_opening_says_night_falls_exactly_once() -> None:
+    opening = _rules().pending(_state())
+    spoken = "\n".join(
+        delivery.text
+        for emit in opening
+        for delivery in emit.deliveries
+        if delivery.spoken
+    )
+    assert spoken.count("天黑请闭眼") == 1
 
 
 def test_wolf_majority_emits_canonical_audience_only_result() -> None:
@@ -527,7 +521,6 @@ def test_wolf_majority_emits_canonical_audience_only_result() -> None:
         "resolution": "majority_then_lowest_seat",
     }
     assert r.pending(st) == events
-    assert r.pending(r.unpack(r.pack(st))) == events
 
 
 def test_witch_double_use_emits_canonical_result_and_resolves_both_potions() -> None:
@@ -562,7 +555,6 @@ def test_witch_double_use_emits_canonical_result_and_resolves_both_potions() -> 
         "poison_remaining": False,
     }
     assert acted.witch_has_antidote is False and acted.witch_has_poison is False
-    assert r.pending(r.unpack(r.pack(acted))) == events
 
     resolved = r.advance(acted)
     assert [event.turn_id for event in r.pending(resolved)] == ["day1.dawn"]
@@ -654,6 +646,40 @@ def test_knifed_and_poisoned_hunter_still_shoots() -> None:
     assert st.pending_hunter == 7 and st.phase == "hunter_shot"
 
 
+def test_swapping_night_causes_does_not_change_any_public_projection() -> None:
+    """刀口/毒口是裁判秘密；交换两名同角色死者的死因不得改变公开顺序。"""
+    r = _rules()
+
+    def resolve(knife: int, poison: int) -> WerewolfState:
+        state = _state(phase="night_witch", wolf_target=knife)
+        acted = r.apply(
+            state,
+            json.dumps(
+                {
+                    "kind": "witch_action",
+                    "seat": 6,
+                    "save": False,
+                    "poison_target_no": poison,
+                }
+            ),
+        )
+        return r.advance(acted)
+
+    left = resolve(9, 10)
+    right = resolve(10, 9)
+
+    assert {death.seat_no: death.reason for death in left.round_deaths} != {
+        death.seat_no: death.reason for death in right.round_deaths
+    }
+    assert left.lw_queue == right.lw_queue == [9, 10]
+    assert r.pending(left) == r.pending(right)
+
+    left_view = r.view(9, left, SeatThread(), first_speak=False)
+    right_view = r.view(9, right, SeatThread(), first_speak=False)
+    assert left_view.deaths == right_view.deaths
+    assert prompts.situation(left_view) == prompts.situation(right_view)
+
+
 def test_knifed_hunter_shoots_after_last_words() -> None:
     r = _rules()
     st = _state(phase="night_witch", wolf_target=7)
@@ -678,10 +704,14 @@ def test_idiot_first_exile_flips_and_survives() -> None:
     idiot = st.seat(8)
     assert idiot.alive and idiot.revealed and not idiot.can_vote
     assert st.phase == "night_wolf" and st.day == 2  # 无死亡直接入夜
+    assert st.votes_history[-1].top_voted == 8
+    assert st.votes_history[-1].exiled is None
     kinds = [json.loads(e.action)["kind"] for e in st.host_outbox]
     assert kinds == ["vote_result", "idiot_revealed", "night_start"]
     # 播报顺序与措辞：先票型（不宣"出局"）、再翻牌免死、再天黑——不得自相矛盾
     vote_ledger, vote_result = st.host_outbox[0].deliveries
+    vote_action = json.loads(st.host_outbox[0].action)
+    assert vote_action["top_voted"] == 8 and vote_action["exiled"] is None
     assert vote_ledger.text.startswith("【放逐票型】") and vote_ledger.spoken is False
     assert "得票最高" in vote_result.text and "被放逐出局" not in vote_result.text
     assert "白痴牌" in st.host_outbox[1].deliveries[0].text and "免于放逐" in st.host_outbox[1].deliveries[0].text
@@ -708,7 +738,7 @@ def test_tie_vote_exiles_no_one() -> None:
         st = r.apply(st, json.dumps({"kind": "vote", "seat": voter, "target_no": target}))
     st = r.advance(st)
     rec = st.votes_history[-1]
-    assert rec.tied and rec.exiled is None
+    assert rec.tied and rec.top_voted is None and rec.exiled is None
     assert len(st.deaths) == 0 and st.phase == "night_wolf"
 
 
@@ -763,6 +793,33 @@ def test_all_villagers_dead_werewolf_wins() -> None:
     assert st.winner == "werewolf" and st.win_reason == "all_villagers_dead"
 
 
+def test_hunter_trade_that_eliminates_both_sides_awards_good_priority() -> None:
+    """最后一神猎人出局后开枪带走最后一狼：双方同时达成条件，好人胜。"""
+    r = _rules()
+    state = _kill_all(_state(phase="hunter_shot", pending_hunter=7), [1, 2, 3, 5, 6, 7, 8])
+    state = state.model_copy(
+        deep=True,
+        update={
+            "hunter_action": {
+                "kind": "hunter_shot",
+                "seat": 7,
+                "target_no": 4,
+                "speech": "带走最后一狼",
+                "monologue": "同归于尽",
+            },
+            "round_deaths": [
+                DeathRecord(seat_no=7, role=Role.HUNTER, reason="wolf_kill", day=1)
+            ],
+        },
+    )
+
+    resolved = r.advance(state)
+
+    assert resolved.winner == "good"
+    assert resolved.win_reason == "all_wolves_dead"
+    assert "同一次结算" in prompts.RULES and "好人胜优先" in prompts.RULES
+
+
 # ---------------------------------------------------------------- host_outbox 纪律（串场词绝不重发）
 
 def test_pending_is_pure_query_and_consumed_once() -> None:
@@ -798,10 +855,3 @@ def test_pending_is_pure_query_and_consumed_once() -> None:
     dawn = r.pending(st3)
     assert [e.turn_id for e in dawn] == ["day1.dawn"]
     assert json.loads(dawn[0].action)["deaths"][0]["seat_no"] == 9
-
-
-def test_pack_unpack_roundtrip() -> None:
-    r = _rules()
-    st = _state(phase="day_vote", vote_round={1: 9, 2: 9})
-    blob = r.pack(st)
-    assert r.unpack(blob) == st

@@ -7,7 +7,6 @@ WerewolfRules.random_action 读 `.phase` / `.candidates` 等字段生成合法 J
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from core.threads import ThreadMessage
 from werewolf.rules import Role
@@ -46,7 +45,6 @@ class PlayerView:
     candidates: list[int] = field(default_factory=list)  # 当前行动的合法目标座位（刀/验/毒/投/枪）
     deaths: list[PublicDeath] = field(default_factory=list)  # 公开账本：死者与翻牌，不含裁判死因
     votes_history: list[VoteRecord] = field(default_factory=list)  # 公开账本：放逐票型记录
-    model: Any = None
     tone: str = ""
     strategy: str = ""
     messages: list[ThreadMessage] = field(default_factory=list)

@@ -1,137 +1,288 @@
-"""配置的边界：把 raw settings + registry + rng 解析成一份**校验过的具体方案**，或抛错。
+"""Avalon 的新局与恢复边界。
 
-跑任何对局工作之前调一次 resolve_and_validate，它把"这一局到底是什么"一次性定死成
-一个 GameSetup：哪个座位用什么人设、谁拿什么角色、首任队长是谁——**所有"开局设定"的
-随机都在这里摇定**（依赖的只有 config+registry，开打前已全部就位），图里拿到的是确定值。
-对局过程没有任何裁判侧随机（组队/表决/出牌全是玩家决策，平局规则也是确定的：
-表决平票即否决），故 rng 只在这里用。
-
-同时把所有"跨引用 / 世界一致性"约束查清：
-    - cast / strategy / model 名是否在 registry、人设库是否够坐满
-    - --replay 目录是否已存在
-
-通过之后，下游（_build_seats、pregame_node、open_recorder）默认拿到的就是干净正确、
-且角色/队长已定的环境，不再各自重复校验或现场摇骰子——非法状态与"开局随机"都在边界
-一次性解决（fail-fast + 确定性入图）。
-
-为什么不放进 pydantic：这些约束依赖 registry（yaml 活数据）和文件系统，塞进 settings
-会让最底层的 settings 反向依赖它们。pydantic 只管字段内在校验（players 范围、cast 长度，
-见 settings.py 的 validator）；跨引用校验与开局摇牌归这里。
+新局只在这里读取 settings / registry 并摇定开局；落盘后的 ``meta.json`` 是此后续跑、
+TTS 与回放的唯一真源。凡是会影响未来 prompt、模型选择或后处理的值都快照进 meta，
+恢复路径不再读取活 YAML。
 """
 
 from __future__ import annotations
 
-import json
 import random
-from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Literal
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from avalon import rules
 from avalon.registry import Registry
 from avalon.settings import AvalonSettings, SettingsError
 from avalon.state import Role, Side
 from core import setup as core_setup
+from core.sr.files import UnsafePathError, read_regular_bytes
+from core.sr.journal import JournalCorruptionError, load_replay_sentences
 
 
-@dataclass
-class GameSetup:
-    """一局的确定性开局方案：边界解析+摇定。各列表按发牌顺序排列，下标 i 对应 i+1 号座位
-    （座位号一律 1 起）。"""
+class GameSetup(BaseModel):
+    """一局已解析、可独立续跑的确定性方案。"""
 
-    cast: list[str]  # 座位 → 人设 id
-    host_cast: str  # 主持人人设 id（只供显示名与将来 TTS 音色；台词由代码合成）
-    names: list[str]  # 座位 → 显示名（生成时从 cast.yaml 快照进来，回放层据此自圆，不再读 cast.yaml）
-    host_name: str  # 主持人显示名（同上快照）
-    voices: list[str]  # 座位 → TTS 音色 id（生成时从 cast.yaml 快照进来，空串=该人设未铸音色）
-    host_voice: str  # 主持人 TTS 音色 id（同上快照，空串=未铸）
-    self_hosted_voices: list[str]  # 座位 → 自托管 Qwen3-TTS voice_id
-    host_self_hosted_voice: str  # 主持人自托管 Qwen3-TTS voice_id
-    voice_designs: list[str]  # 座位 → voice design prompt（音色描述快照，供后续铸造/溯源）
-    host_voice_design: str  # 主持人 voice design prompt
-    strategies: list[str]  # 座位 → 流派 id
-    models: list[str]  # 座位 → 逻辑模型名
-    roles: list[Role]  # 座位 → 角色（已摇定）
-    first_leader: int  # 首任队长座位号（1..N，已摇定）
-    lady_holder: int | None  # 湖中仙女初始持有者（首任队长上家）；None=本局未启用
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
-    def to_meta(self) -> dict:
-        """落 replay meta.json 的 JSON 友好快照：这一局的确定性方案即复盘唯一真源
-        （players/阵营计数是 roles 的派生量，不再单独存）。"""
-        return {
+    cast: tuple[str, ...]
+    host_cast: str
+    names: tuple[str, ...]
+    host_name: str
+    voices: tuple[str, ...]
+    host_voice: str
+    voice_designs: tuple[str, ...]
+    host_voice_design: str
+    tones: tuple[str, ...]
+    strategies: tuple[str, ...]
+    strategy_systems: tuple[str, ...]
+    models: tuple[str, ...]
+    opencode_models: tuple[str, ...]
+    roles: tuple[Role, ...]
+    first_leader: int
+    lady_holder: int | None
+
+    @model_validator(mode="after")
+    def _check_shape(self) -> GameSetup:
+        players = len(self.roles)
+        if players not in rules.TEAM_SIZES:
+            raise ValueError(
+                f"setup.roles 必须是 {min(rules.TEAM_SIZES)}~{max(rules.TEAM_SIZES)} 人，收到 {players}"
+            )
+        per_seat = {
             "cast": self.cast,
-            "host_cast": self.host_cast,
             "names": self.names,
-            "host_name": self.host_name,
             "voices": self.voices,
-            "host_voice": self.host_voice,
-            "self_hosted_voices": self.self_hosted_voices,
-            "host_self_hosted_voice": self.host_self_hosted_voice,
             "voice_designs": self.voice_designs,
-            "host_voice_design": self.host_voice_design,
+            "tones": self.tones,
             "strategies": self.strategies,
+            "strategy_systems": self.strategy_systems,
             "models": self.models,
-            "roles": [r.value for r in self.roles],
-            # 终端/回放渲染的席位配色（数据驱动，渲染层不硬编码玩法角色→颜色）。
-            "role_colors": {r.value: ("red" if r.side is Side.EVIL else "blue") for r in set(self.roles)},
-            "first_leader": self.first_leader,
-            "lady_holder": self.lady_holder,
+            "opencode_models": self.opencode_models,
         }
+        wrong = {name: len(values) for name, values in per_seat.items() if len(values) != players}
+        if wrong:
+            raise ValueError(f"setup 逐座位列表长度必须都是 {players}：{wrong}")
+
+        required_values = {
+            "host_cast": self.host_cast,
+            "host_name": self.host_name,
+            "host_voice": self.host_voice,
+            **{
+                f"{name}[{index}]": value
+                for name, values in per_seat.items()
+                if name not in {"voice_designs", "tones", "opencode_models"}
+                for index, value in enumerate(values, start=1)
+            },
+        }
+        empty = [name for name, value in required_values.items() if not value.strip()]
+        if empty:
+            raise ValueError(f"setup 必填文本不能为空：{empty}")
+        bad_refs = [ref for ref in self.opencode_models if ref and not _valid_model_ref(ref)]
+        if bad_refs:
+            raise ValueError(f"setup.opencode_models 必须是 providerID/modelID：{bad_refs}")
+
+        if not 1 <= self.first_leader <= players:
+            raise ValueError(f"setup.first_leader 必须在 1..{players}，收到 {self.first_leader}")
+        if self.lady_holder is not None:
+            expected_holder = (self.first_leader - 2) % players + 1
+            if self.lady_holder != expected_holder:
+                raise ValueError(
+                    f"setup.lady_holder 必须是首任队长上家 {expected_holder}，收到 {self.lady_holder}"
+                )
+
+        _validate_role_pool(self.roles)
+        return self
+
+    @property
+    def players(self) -> int:
+        return len(self.roles)
 
 
-def resolve_and_validate(settings: AvalonSettings, registry: Registry, rng: random.Random) -> GameSetup:
-    """把 settings 解析成确定的 GameSetup（座位号即下标）：cast 缺省即用 registry 默认
-    补齐，角色/首任队长用 rng 摇定。违规抛 SettingsError（被 cli 捕获、只打印消息
-    不甩 traceback）。"""
-    cast = core_setup.resolve_personas(settings.cast, players=settings.players, registry=registry, rng=rng, error=SettingsError)
-    host_cast = core_setup.resolve_host(settings.host_cast, registry=registry, default="herald", error=SettingsError)
-    strategies = core_setup.resolve_strategies(settings.strategies, players=settings.players, registry=registry, rng=rng, error=SettingsError)
-    models = core_setup.resolve_models(settings.models, players=settings.players, registry=registry, rng=rng, error=SettingsError)
+class AvalonReplayMeta(BaseModel):
+    """版本化 replay envelope；恢复入口只接受这个完整形状。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    game: Literal["avalon"] = "avalon"
+    started_at: str
+    player: Literal["random", "opencode"]
+    concurrency: int = Field(ge=1)
+    render: bool
+    seed: int | None
+    setup: GameSetup
+    model_labels: dict[str, str]
+
+    @model_validator(mode="after")
+    def _check_meta(self) -> AvalonReplayMeta:
+        try:
+            started_at = datetime.fromisoformat(self.started_at)
+        except ValueError as exc:
+            raise ValueError("started_at 不是 ISO-8601 时间") from exc
+        if started_at.tzinfo is None:
+            raise ValueError("started_at 必须携带时区")
+        unknown = set(self.model_labels) - set(self.setup.models)
+        if unknown:
+            raise ValueError(f"model_labels 包含未入座模型：{sorted(unknown)}")
+        if self.player == "opencode" and any(
+            not ref for ref in self.setup.opencode_models
+        ):
+            raise ValueError("opencode 对局的每个座位都必须冻结有效模型引用")
+        return self
+
+
+class ResumeRequest(BaseModel):
+    """恢复命令唯一允许携带的输入。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    replay: Path
+
+    @classmethod
+    def from_cli(cls, argv: list[str]) -> ResumeRequest:
+        if (
+            len(argv) != 3
+            or argv[0] != "--resume"
+            or argv[1] != "--replay"
+            or not argv[2]
+            or argv[2].startswith("-")
+        ):
+            raise SettingsError("续跑只允许：brawl avalon --resume --replay PATH；不能再指定任何新局参数或 --config")
+        return cls(replay=Path(argv[2]))
+
+
+def resolve_and_validate(
+    settings: AvalonSettings,
+    registry: Registry,
+    rng: random.Random,
+) -> GameSetup:
+    """把新局配置解析成无缺项 setup；所有活数据读取到此为止。"""
+    cast = core_setup.resolve_personas(
+        settings.cast,
+        players=settings.players,
+        registry=registry,
+        rng=rng,
+        error=SettingsError,
+    )
+    host_cast = core_setup.resolve_host(
+        settings.host_cast,
+        registry=registry,
+        default="herald",
+        error=SettingsError,
+    )
+    strategies = core_setup.resolve_strategies(
+        settings.strategies,
+        players=settings.players,
+        registry=registry,
+        rng=rng,
+        error=SettingsError,
+    )
+    models = core_setup.resolve_models(
+        settings.models,
+        players=settings.players,
+        registry=registry,
+        rng=rng,
+        error=SettingsError,
+    )
     core_setup.check_new_replay(settings.replay, error=SettingsError)
     first_leader = rng.randint(1, settings.players)
+    roles = tuple(_resolve_roles(settings, rng))
+    opencode_models = tuple(
+        registry.models[name].opencode_model or settings.opencode_model
+        for name in models
+    )
     return GameSetup(
-        cast=cast,
+        cast=tuple(cast),
         host_cast=host_cast,
-        # 显示名与音色都随开局快照进 meta：replay 据此自圆，cast.yaml 之后再改不影响老 replay。
-        names=[registry.personas[pid].name for pid in cast],
+        names=tuple(registry.personas[pid].name for pid in cast),
         host_name=registry.hosts[host_cast].name,
-        voices=[registry.personas[pid].voice_id for pid in cast],
+        voices=tuple(registry.personas[pid].voice_id for pid in cast),
         host_voice=registry.hosts[host_cast].voice_id,
-        self_hosted_voices=[registry.personas[pid].self_hosted_voice_id for pid in cast],
-        host_self_hosted_voice=registry.hosts[host_cast].self_hosted_voice_id,
-        voice_designs=[registry.personas[pid].voice_design for pid in cast],
+        voice_designs=tuple(registry.personas[pid].voice_design for pid in cast),
         host_voice_design=registry.hosts[host_cast].voice_design,
-        strategies=strategies,
-        models=models,
-        roles=_resolve_roles(settings, rng),
+        tones=tuple(registry.personas[pid].tone for pid in cast),
+        strategies=tuple(strategies),
+        strategy_systems=tuple(registry.strategies[sid].system for sid in strategies),
+        models=tuple(models),
+        opencode_models=opencode_models,
+        roles=roles,
         first_leader=first_leader,
-        # 官方规则：湖中仙女开局交给首任队长的上家（最晚轮到队长的人）
         lady_holder=(first_leader - 2) % settings.players + 1 if settings.lady else None,
     )
 
 
+def load_replay(request: ResumeRequest) -> AvalonReplayMeta:
+    """在恢复开工前一次性验证目录、日志与 meta，错误统一成 SettingsError。"""
+    run_dir = request.replay
+    sentences_path = run_dir / "sentences.jsonl"
+    try:
+        load_replay_sentences(run_dir)
+    except (OSError, UnsafePathError, JournalCorruptionError) as exc:
+        raise SettingsError(f"{sentences_path} 不是有效的 Sentence Runtime 日志：{exc}") from exc
+
+    meta_path = run_dir / "meta.json"
+    try:
+        raw = read_regular_bytes(meta_path)
+        return AvalonReplayMeta.model_validate_json(raw, strict=True)
+    except (OSError, UnsafePathError, ValidationError, ValueError) as exc:
+        raise SettingsError(f"{meta_path} 不是有效的 Avalon schema v1 meta：{exc}") from exc
+
 
 def _resolve_roles(settings: AvalonSettings, rng: random.Random) -> list[Role]:
-    """按规则表与角色开关配出角色池，洗匀发给各座位。
-    蓝方：梅林必上 + 可选派西维尔，余者忠臣；红方：刺客必上 + 可选莫甘娜/莫德雷德/奥伯伦，
-    余者爪牙（开关与名额的自洽已由 settings 的形状校验保证）。"""
     good = [Role.MERLIN] + ([Role.PERCIVAL] if settings.percival else [])
-    evil = [Role.ASSASSIN] + [r for r, on in ((Role.MORGANA, settings.morgana), (Role.MORDRED, settings.mordred), (Role.OBERON, settings.oberon)) if on]
-    pool = good + [Role.SERVANT] * (settings.good - len(good)) + evil + [Role.MINION] * (settings.evil - len(evil))
+    evil = [Role.ASSASSIN] + [
+        role
+        for role, enabled in (
+            (Role.MORGANA, settings.morgana),
+            (Role.MORDRED, settings.mordred),
+            (Role.OBERON, settings.oberon),
+        )
+        if enabled
+    ]
+    pool = (
+        good
+        + [Role.SERVANT] * (settings.good - len(good))
+        + evil
+        + [Role.MINION] * (settings.evil - len(evil))
+    )
     rng.shuffle(pool)
     return pool
 
 
+def _validate_role_pool(roles: tuple[Role, ...]) -> None:
+    players = len(roles)
+    if roles.count(Role.MERLIN) != 1 or roles.count(Role.ASSASSIN) != 1:
+        raise ValueError("setup.roles 必须恰有一名梅林和一名刺客")
+    for unique in (Role.PERCIVAL, Role.MORGANA, Role.MORDRED, Role.OBERON):
+        if roles.count(unique) > 1:
+            raise ValueError(f"setup.roles 的特殊角色 {unique.value} 不能重复")
+    if Role.MORGANA in roles and Role.PERCIVAL not in roles:
+        raise ValueError("setup.roles 有莫甘娜时必须有派西维尔")
+    evil = sum(role.side is Side.EVIL for role in roles)
+    if evil != rules.EVIL_COUNT[players]:
+        raise ValueError(
+            f"setup.roles 的红方人数应为 {rules.EVIL_COUNT[players]}，收到 {evil}"
+        )
 
 
+def _valid_model_ref(ref: str) -> bool:
+    provider, slash, model = ref.partition("/")
+    return bool(
+        provider
+        and slash
+        and model
+        and not any(char.isspace() for char in ref)
+    )
 
-def validate_resume(settings: AvalonSettings, registry: Registry) -> dict:
-    """续跑的边界校验：目录在、有句子日志、meta 可读。返回解析好的 meta。"""
-    run_dir = settings.replay
-    assert run_dir is not None  # settings._check 已保证 --resume 必带 --replay
-    if not run_dir.exists():
-        raise SettingsError(f"--resume 指向的对局目录不存在：{run_dir}")
-    sentences_path = run_dir / "sentences.jsonl"
-    if not sentences_path.exists():
-        raise SettingsError(f"{run_dir} 里没有 sentences.jsonl，无法续跑")
-    meta_path = run_dir / "meta.json"
-    if not meta_path.exists():
-        raise SettingsError(f"{run_dir} 缺 meta.json，无法续跑")
-    return json.loads(meta_path.read_text(encoding="utf-8"))
+
+__all__ = [
+    "AvalonReplayMeta",
+    "GameSetup",
+    "ResumeRequest",
+    "load_replay",
+    "resolve_and_validate",
+]

@@ -7,7 +7,7 @@
 host 串场词机制（host_outbox）：apply/advance 把要播报的 HostEmit 放进 state.host_outbox，
 pending() 原样读出；loop 在每次 apply/advance 后 flush 一次并落日志。**每条 apply/advance
 都必须显式重写 host_outbox**（无播报就置 []）——outbox 的生命周期只到紧随其后的那次
-flush，绝不跨年携带。这条不变量保证：同一串场词不会重发，resume 重放时逐字重建。
+flush，绝不跨轮携带。这条不变量保证：同一串场词不会重发，resume 重放时逐字重建。
 
 昼夜时序（贴合真人桌）：夜里狼刀→预言家→女巫各自暗行动，advance 只结算不播报；天亮
 dawn 播报死讯与翻牌，死者留遗言，随后死亡的猎人才开枪，最后判胜负。枪在结算之前、
@@ -24,7 +24,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from core.parsing import JsonParseError, parse_json
-from core.sr.rules import Rules
 from core.sr.types import Delivery, Expectation, HostEmit, ParseResult
 from core.threads import SeatThread
 from werewolf import prompts, rules
@@ -42,13 +41,6 @@ from werewolf.state import (
 )
 from werewolf.validation import GameSetup
 from werewolf.view import PlayerView, PublicDeath
-
-_PHASES = (
-    "night_wolf", "night_seer", "night_witch",
-    "last_words", "hunter_shot",
-    "day_discuss", "day_vote",
-    "banter", "done",
-)
 
 
 def _emit(turn_id: str, text: str, channels: list, action: dict) -> HostEmit:
@@ -97,7 +89,6 @@ class WerewolfState(BaseModel):
     banter_index: int = 0
     winner: str | None = None
     win_reason: str | None = None
-    finished: bool = False
     host_outbox: list[HostEmit] = Field(default_factory=list)
 
     @property
@@ -122,19 +113,23 @@ class WerewolfState(BaseModel):
         return [s.no for s in sorted(self.seats, key=lambda s: (s.side.value == self.winner, s.no))]
 
 
-class WerewolfRules(Rules):
+class WerewolfRules:
     """Werewolf 玩法插件：实现 core.sr.rules.Rules 协议。"""
-
-    def __init__(self, registry: Any, settings: Any) -> None:
-        self._registry = registry
-        self._settings = settings
 
     # ---------------------------------------------------------------- 循环驱动
 
     def initial_state(self, setup: GameSetup) -> WerewolfState:
         # 角色已在边界摇定（回放确定性不变量：对局过程零裁判侧随机）。
         seats = [
-            Seat(no=i + 1, persona_id=setup.cast[i], strategy_id=setup.strategies[i], model=setup.models[i], role=role)
+            Seat(
+                no=i + 1,
+                persona_id=setup.cast[i],
+                strategy_id=setup.strategies[i],
+                tone=setup.tones[i],
+                strategy_system=setup.strategy_systems[i],
+                model=setup.models[i],
+                role=role,
+            )
             for i, role in enumerate(setup.roles)
         ]
         board = rules.board_by_id(setup.board)
@@ -162,7 +157,7 @@ class WerewolfRules(Rules):
         return WerewolfState(seats=seats, board=board.id, host_outbox=[opening, night])
 
     def is_terminal(self, state: WerewolfState) -> bool:
-        return state.finished or state.phase == "done"
+        return state.phase == "done"
 
     def turn_id(self, state: WerewolfState) -> str:
         d = state.day
@@ -235,10 +230,13 @@ class WerewolfRules(Rules):
             witch_has_poison=state.witch_has_poison if s.role is rules.Role.WITCH else False,
             night_target=state.wolf_target if phase == "night_witch" and s.role is rules.Role.WITCH else None,
             candidates=self._candidates(seat, state),
-            deaths=[PublicDeath(seat_no=d.seat_no, role=d.role, day=d.day) for d in state.deaths],
+            deaths=[
+                PublicDeath(seat_no=d.seat_no, role=d.role, day=d.day)
+                for d in sorted(state.deaths, key=lambda item: (item.day, item.seat_no))
+            ],
             votes_history=list(state.votes_history),
-            tone=self._registry.personas[s.persona_id].tone,
-            strategy=self._registry.strategies[s.strategy_id].system,
+            tone=s.tone,
+            strategy=s.strategy_system,
             messages=list(thread.messages),
         )
         with_situation = phase != "banter"
@@ -468,7 +466,7 @@ class WerewolfRules(Rules):
             if state.banter_index + 1 < state.players:
                 return state.model_copy(deep=True, update={"banter_index": state.banter_index + 1, "host_outbox": []})
             closing = _emit("postgame.closing", prompts.line_host_closing(), ["broadcast", "audience"], {"kind": "closing"})
-            return state.model_copy(deep=True, update={"phase": "done", "finished": True, "host_outbox": [closing]})
+            return state.model_copy(deep=True, update={"phase": "done", "host_outbox": [closing]})
         if phase == "done":
             return state
         raise RuntimeError(f"unexpected phase for advance(): {phase}")
@@ -543,14 +541,25 @@ class WerewolfRules(Rules):
         seats = self._apply_deaths(state, deaths)
         # 死于狼刀的猎人可开枪，死于毒不可
         hunter = next((d.seat_no for d in deaths if d.role is rules.Role.HUNTER and d.reason != "poison"), None)
+        public_deaths = sorted(deaths, key=lambda item: item.seat_no)
         dawn = _emit(
             f"day{state.day}.dawn",
-            prompts.line_host_dawn(state.day, [(d.seat_no, d.role) for d in deaths]),
+            prompts.line_host_dawn(
+                state.day,
+                [(death.seat_no, death.role) for death in public_deaths],
+            ),
             ["broadcast", "audience"],
             {
                 "kind": "dawn",
                 "day": state.day,
-                "deaths": [d.model_dump(mode="json") for d in deaths],
+                "deaths": [
+                    {
+                        "seat_no": death.seat_no,
+                        "role": death.role.value,
+                        "day": death.day,
+                    }
+                    for death in public_deaths
+                ],
             },
         )
         resolved = state.model_copy(deep=True, update={
@@ -617,11 +626,23 @@ class WerewolfRules(Rules):
         top = max(counts.values()) if counts else 0
         leaders = sorted(no for no, n in counts.items() if n == top)
         tied = len(leaders) != 1
-        exiled = None if tied else leaders[0]
-        record = VoteRecord(day=state.day, votes=votes, exiled=exiled, tied=tied)
+        top_voted = None if tied else leaders[0]
+        top_role = state.seat(top_voted).role if top_voted is not None else None
+        # 白痴无论首次翻牌还是已经翻牌都不会被放逐；账本必须区分“最高票”和“实际出局”。
+        exiled = (
+            top_voted
+            if top_voted is not None and top_role is not rules.Role.IDIOT
+            else None
+        )
+        record = VoteRecord(
+            day=state.day,
+            votes=votes,
+            top_voted=top_voted,
+            exiled=exiled,
+            tied=tied,
+        )
         base_update: dict[str, Any] = {"votes_history": [*state.votes_history, record]}
         # 白痴翻牌免死的局，结果播报只说票型、不说"出局"（免死播报紧随其后，先报出局自相矛盾）。
-        exiled_role = state.seat(exiled).role if exiled is not None else None
         announces = [
             HostEmit(
                 turn_id=f"day{state.day}.vote_result",
@@ -632,19 +653,26 @@ class WerewolfRules(Rules):
                         spoken=False,
                     ),
                     Delivery(
-                        text=prompts.line_host_vote_result(exiled, exiled_role, tied),
+                        text=prompts.line_host_vote_result(top_voted, top_role, tied),
                         channels=["broadcast", "audience"],
                     ),
                 ],
                 action=json.dumps(
-                    {"kind": "vote_result", "day": state.day, "votes": votes, "exiled": exiled, "tied": tied},
+                    {
+                        "kind": "vote_result",
+                        "day": state.day,
+                        "votes": votes,
+                        "top_voted": top_voted,
+                        "exiled": exiled,
+                        "tied": tied,
+                    },
                     ensure_ascii=False,
                 ),
             ),
         ]
-        if exiled is None:
+        if top_voted is None:
             return self._enter_night(state.model_copy(deep=True, update=base_update), announces)
-        target = state.seat(exiled)
+        target = state.seat(top_voted)
         if target.role is rules.Role.IDIOT:
             if not target.revealed:
                 seats = [s.model_copy(update={"revealed": True, "can_vote": False}) if s.no == target.no else s for s in state.seats]
@@ -686,7 +714,11 @@ class WerewolfRules(Rules):
 
     def _after_deaths(self, state: WerewolfState, *, origin: str) -> WerewolfState:
         """死亡链入口：遗言（不含待开枪猎人）→ 猎人开枪 → 判胜负。host_outbox 保留已有播报。"""
-        lw_queue = [d.seat_no for d in state.round_deaths if d.seat_no != state.pending_hunter]
+        lw_queue = sorted(
+            death.seat_no
+            for death in state.round_deaths
+            if death.seat_no != state.pending_hunter
+        )
         if lw_queue:
             return state.model_copy(deep=True, update={
                 "phase": "last_words", "lw_queue": lw_queue, "lw_index": 0, "origin": origin,
@@ -709,7 +741,13 @@ class WerewolfRules(Rules):
                     "winner": winner,
                     "win_reason": reason,
                     "roles": {no: r.value for no, r in roles.items()},
-                    "deaths": [d.model_dump(mode="json") for d in state.deaths],
+                    "deaths": [
+                        death.model_dump(mode="json")
+                        for death in sorted(
+                            state.deaths,
+                            key=lambda item: (item.day, item.seat_no),
+                        )
+                    ],
                 },
             )
             return state.model_copy(deep=True, update={
@@ -749,7 +787,7 @@ class WerewolfRules(Rules):
         })
 
     def _win(self, state: WerewolfState) -> tuple[str | None, str | None]:
-        """屠边判负（纯函数）。狼全死→好人胜；神全灭或民全灭→狼胜。"""
+        """屠边判负。同一次结算同时达成双方条件时，狼全灭的好人胜优先。"""
         pairs = [(s.role, s.alive) for s in state.seats]
         if rules.living_wolves(pairs) == 0:
             return "good", "all_wolves_dead"
@@ -839,11 +877,3 @@ class WerewolfRules(Rules):
                 monologue="（随机）复盘就免了，输赢全靠脸。",
             ).model_dump_json()
         raise ValueError(f"未知决策阶段：{phase}")
-
-    # ---------------------------------------------------------------- 持久化
-
-    def pack(self, state: WerewolfState) -> bytes:
-        return state.model_dump_json().encode("utf-8")
-
-    def unpack(self, raw: bytes) -> WerewolfState:
-        return WerewolfState.model_validate_json(raw)

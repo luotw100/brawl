@@ -10,7 +10,6 @@ from typing import Any
 import httpx
 import pytest
 
-from core.models import ModelSpec
 from core.opencode_runtime import OpenCodeConnection
 from core.sr.errors import FatalActorError
 from core.sr.messages import ChatMessage
@@ -138,7 +137,6 @@ async def _call(backend: OpenCodeBackend) -> ChatMessage:
     return await backend.call(
         "test-turn",
         SimpleNamespace(seat_no=1),
-        ModelSpec(name="test"),
         [ChatMessage(role="human", content="new prompt")],
     )
 

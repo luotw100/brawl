@@ -1,4 +1,4 @@
-"""Werewolf 新 runtime 入口：用 core.sr.loop 驱动 WerewolfRules。"""
+"""Werewolf production assembly for fresh games and replay-only resume."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from core.opencode_runtime import (
     OpenCodeInstallation,
@@ -17,148 +17,181 @@ from core.opencode_runtime import (
 )
 from core.sr.actor import OpenCodeActor, RandomActor
 from core.sr.console import ConsoleRenderer, InstantTypist
-from core.sr.journal import open_journal
+from core.sr.journal import Journal, open_journal
 from core.sr.loop import resume, run, run_async_main
 from core.sr.opencode_backend import OpenCodeBackend
 from core.threads import SeatThread
-from werewolf.registry import load_registry
-from werewolf.rules import Role, board_by_id
+from werewolf.registry import Registry, load_registry
 from werewolf.rules_engine import WerewolfRules, WerewolfState
-from werewolf.settings import WerewolfSettings
-from werewolf.validation import GameSetup, resolve_and_validate, validate_resume
+from werewolf.settings import WerewolfResumeSettings, WerewolfSettings
+from werewolf.validation import (
+    GameSetup,
+    ReplayMeta,
+    build_replay_meta,
+    load_replay_meta,
+    resolve_and_validate,
+)
 
 
 async def run_game(settings: WerewolfSettings) -> WerewolfState:
+    """新建并跑完一局。fresh settings 是唯一允许指定玩法参数的边界。"""
     registry = load_registry()
-    if settings.resume:
-        return await _resume_game(settings, registry)
-    return await _fresh_game(settings, registry)
-
-
-async def _fresh_game(settings: WerewolfSettings, registry: Any) -> WerewolfState:
     rng = random.Random(settings.seed)
     setup = resolve_and_validate(settings, registry, rng)
-    installation = _prepare_runtime(settings)
-    meta = _build_meta(registry, setup, settings)
+    meta = build_replay_meta(
+        settings,
+        registry,
+        setup,
+        started_at=datetime.now(UTC),
+    )
+    installation = _prepare_runtime(meta.player)
     journal = open_journal(settings.replay, resume=False)
-    journal.write_meta(meta)
-    renderer = _build_renderer(settings, meta)
-    for i, model_name in enumerate(setup.models, start=1):
-        src = registry.avatar_path(model_name)
-        if src is not None:
-            journal.write_avatar(i, src)
+    try:
+        journal.write_meta(meta.model_dump(mode="json"))
+        _write_avatars(journal, registry, setup)
+        rules = WerewolfRules()
+        renderer = _build_renderer(meta)
+        async with _open_actors(
+            meta.player,
+            settings.replay,
+            setup,
+            installation,
+            rules,
+        ) as actors:
+            threads = _new_threads(setup)
+            return await run(
+                rules,
+                setup,
+                actors,
+                journal,
+                threads,
+                renderer=renderer,
+                max_concurrency=meta.concurrency,
+            )
+    finally:
+        journal.close()
 
-    rules = WerewolfRules(registry, settings)
-    async with _open_actors(settings, registry, setup, installation, rules) as actors:
-        threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-        return await run(rules, setup, actors, journal, threads, renderer=renderer, max_concurrency=settings.concurrency)
 
-
-async def _resume_game(settings: WerewolfSettings, registry: Any) -> WerewolfState:
-    meta = validate_resume(settings, registry)
-    setup = _setup_from_meta(meta)
-    installation = _prepare_runtime(settings)
+async def resume_game(settings: WerewolfResumeSettings) -> WerewolfState:
+    """仅依 replay 冻结元信息续跑；不加载任何活的玩法 registry。"""
+    meta = load_replay_meta(settings.replay)
+    setup = meta.setup
+    rules = WerewolfRules()
     journal = open_journal(settings.replay, resume=True)
-    renderer = _build_renderer(settings, meta)
-    rules = WerewolfRules(registry, settings)
-    async with _open_actors(settings, registry, setup, installation, rules) as actors:
-        threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-        restored = await resume(rules, actors={}, journal=journal, threads=threads, setup=setup)
-        if not rules.is_terminal(restored):
-            return await run(rules, setup, actors, journal, threads, renderer=renderer, state=restored, max_concurrency=settings.concurrency)
-        return restored
+    threads = _new_threads(setup)
+    try:
+        restored = await resume(
+            rules,
+            journal=journal,
+            threads=threads,
+            setup=setup,
+        )
+        if rules.is_terminal(restored):
+            return restored
+
+        installation = _prepare_runtime(meta.player)
+        renderer = _build_renderer(meta)
+        async with _open_actors(
+            meta.player,
+            settings.replay,
+            setup,
+            installation,
+            rules,
+        ) as actors:
+            return await run(
+                rules,
+                setup,
+                actors,
+                journal,
+                threads,
+                renderer=renderer,
+                max_concurrency=meta.concurrency,
+            )
+    finally:
+        journal.close()
 
 
 @asynccontextmanager
 async def _open_actors(
-    settings: WerewolfSettings,
-    registry: Any,
+    player: Literal["random", "opencode"],
+    replay: Path | None,
     setup: GameSetup,
     installation: OpenCodeInstallation | None,
     rules: WerewolfRules,
 ) -> AsyncIterator[dict[int, Any]]:
-    if settings.player == "random":
-        actors = {no: RandomActor(rules.random_action) for no in range(1, len(setup.roles) + 1)}
-        try:
-            yield actors
-        finally:
-            for a in actors.values():
-                await a.close()
+    if player == "random":
+        yield {
+            no: RandomActor(rules.random_action)
+            for no in range(1, len(setup.roles) + 1)
+        }
         return
 
-    assert installation is not None and settings.replay is not None
-    async with open_opencode_runtime(installation, settings.replay, len(setup.roles)) as connection:
+    assert installation is not None and replay is not None
+    async with open_opencode_runtime(installation, replay, len(setup.roles)) as connection:
         backend = OpenCodeBackend(
             connection=connection,
-            default_model=settings.opencode_model,
-            seat_models=_build_seat_models(registry, setup),
+            seat_models=_build_seat_models(setup),
         )
-        actors = {no: OpenCodeActor(backend) for no in range(1, len(setup.roles) + 1)}
         try:
-            yield actors
+            yield {
+                no: OpenCodeActor(backend)
+                for no in range(1, len(setup.roles) + 1)
+            }
         finally:
-            for a in actors.values():
-                await a.close()
+            await backend.close()
 
 
-def _build_seat_models(registry: Any, setup: GameSetup) -> dict[int, str]:
-    seat_models: dict[int, str] = {}
-    for i, name in enumerate(setup.models, start=1):
-        spec = registry.models.get(name)
-        if spec is not None and spec.opencode_model:
-            seat_models[i] = spec.opencode_model
-    return seat_models
-
-
-def _build_renderer(settings: WerewolfSettings, meta: dict[str, Any]) -> ConsoleRenderer | None:
-    if not settings.render:
-        return None
-    return ConsoleRenderer(typist=InstantTypist(), meta=meta)
-
-
-def _prepare_runtime(settings: WerewolfSettings) -> OpenCodeInstallation | None:
-    return prepare_opencode_installation() if settings.player == "opencode" else None
-
-
-def _build_meta(registry: Any, setup: GameSetup, settings: WerewolfSettings) -> dict[str, Any]:
-    board = board_by_id(setup.board)
+def _build_seat_models(setup: GameSetup) -> dict[int, str]:
     return {
-        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "game": "werewolf",  # stage registry 按此派发 plugin
-        "player": settings.player,
-        "setup": setup.to_meta(),
-        "board_name": board.name,
-        "model_labels": {
-            m: registry.models[m].display
-            for m in dict.fromkeys(setup.models)
-            if m and m in registry.models and registry.models[m].display
-        },
+        seat: setup.opencode_models[seat - 1]
+        for seat in range(1, len(setup.opencode_models) + 1)
     }
 
 
-def _setup_from_meta(meta: dict[str, Any]) -> GameSetup:
-    s = meta["setup"]
-    return GameSetup(
-        board=s["board"],
-        cast=s["cast"],
-        host_cast=s["host_cast"],
-        names=s["names"],
-        host_name=s["host_name"],
-        voices=s["voices"],
-        host_voice=s["host_voice"],
-        self_hosted_voices=s["self_hosted_voices"],
-        host_self_hosted_voice=s["host_self_hosted_voice"],
-        voice_designs=s["voice_designs"],
-        host_voice_design=s["host_voice_design"],
-        strategies=s["strategies"],
-        models=s["models"],
-        roles=[Role(r) for r in s["roles"]],
+def _build_renderer(meta: ReplayMeta) -> ConsoleRenderer | None:
+    if not meta.render:
+        return None
+    return ConsoleRenderer(
+        typist=InstantTypist(),
+        meta=meta.model_dump(mode="json"),
     )
 
 
+def _prepare_runtime(player: Literal["random", "opencode"]) -> OpenCodeInstallation | None:
+    return prepare_opencode_installation() if player == "opencode" else None
+
+
+def _new_threads(setup: GameSetup) -> dict[int, SeatThread]:
+    return {
+        no: SeatThread()
+        for no in range(1, len(setup.roles) + 1)
+    }
+
+
+def _write_avatars(journal: Journal, registry: Registry, setup: GameSetup) -> None:
+    for seat, model_name in enumerate(setup.models, start=1):
+        src = registry.avatar_path(model_name)
+        if src is not None:
+            journal.write_avatar(seat, src)
+
+
 def main(argv: list[str]) -> None:
+    if "--resume" in argv:
+        run_async_main(resume_game(WerewolfResumeSettings.from_cli(argv)))
+        return
+
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--config", dest="config", type=Path, default=None, metavar="PATH", help="JSON 配置文件路径")
+    pre.add_argument(
+        "--config",
+        dest="config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="JSON 配置文件路径",
+    )
     args, rest = pre.parse_known_args(argv)
     settings = WerewolfSettings.load(cli_args=rest, config_file=args.config)
     run_async_main(run_game(settings))
+
+
+__all__ = ["main", "resume_game", "run_game"]

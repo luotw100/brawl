@@ -11,9 +11,11 @@ import json
 
 import pytest
 
-from avalon.registry import load_registry
+from avalon import prompts
+from avalon import rules as av_rules
 from avalon.rules_engine import AvalonRules, AvalonState
 from avalon.state import Role, Seat
+from avalon.view import PlayerView
 from core.parsing import JsonParseError
 from core.threads import SeatThread, ThreadMessage
 
@@ -22,14 +24,20 @@ _ROLES = [Role.MERLIN, Role.PERCIVAL, Role.SERVANT, Role.ASSASSIN, Role.MORGANA]
 
 
 def _rules() -> AvalonRules:
-    return AvalonRules(registry=load_registry(), settings=None)
+    return AvalonRules()
 
 
 def _state(**over) -> AvalonState:
-    from avalon import rules as av_rules
-
     seats = [
-        Seat(no=i + 1, persona_id="fox", strategy_id="prudent", model="", role=role, intel=av_rules.night_intel(_ROLES, i + 1))
+        Seat(
+            no=i + 1,
+            persona_id="fox",
+            strategy_id="prudent",
+            tone="tone",
+            strategy="strategy",
+            role=role,
+            intel=av_rules.night_intel(_ROLES, i + 1),
+        )
         for i, role in enumerate(_ROLES)
     ]
     st = AvalonState(seats=seats, leader=1)
@@ -140,8 +148,32 @@ def test_team_vote_rejects_string_boolean() -> None:
 
 # ---------------------------------------------------------------- 刺杀
 
+
+def test_final_evil_chat_reaches_all_evil_and_audience_but_no_good_seat() -> None:
+    r = _rules()
+    st = _state(
+        phase="evil_chat",
+        evil_chat_index=0,
+        evil_team=[4, 5],
+    )
+    raw = json.dumps(
+        {"phase": "evil_chat", "speech": "一号最像梅林", "monologue": "交刀口"},
+        ensure_ascii=False,
+    )
+    parsed = r.parse(4, raw, st)
+    speech = parsed.deliveries[0]
+    assert set(speech.channels) == {4, 5, "audience"}
+    assert "broadcast" not in speech.channels
+
+    view = r.view(4, st, SeatThread(), first_speak=True)
+    assert view.evil_team == [4, 5]
+    assert view.intel == [5]
+    assert "完整红方名单" in view.prompt
+    assert "终局互认已经取代开局互认限制" in view.turn_prompt
+
+
 def test_assassin_cannot_target_known_teammate() -> None:
-    st = _state(phase="assassinate")
+    st = _state(phase="assassinate", evil_team=[4, 5])
     raw = json.dumps(
         {"phase": "assassinate", "target_no": 5, "speech": "就是你了", "monologue": "m"},
         ensure_ascii=False,
@@ -150,37 +182,45 @@ def test_assassin_cannot_target_known_teammate() -> None:
         _rules().parse(4, raw, st)
 
 
-def test_assassin_may_stab_oberon_by_mistake() -> None:
-    """奥伯伦不参与红方互认：刺客候选清单里有他，误刀合法（等于空刀，蓝方胜）。
-
-    回归：候选清单与校验必须同源——此前校验只收蓝方，奥伯伦在候选里却被拒收，
-    RandomActor 固定选中后连错 5 次、整局中断。
-    """
+def test_assassin_cannot_stab_oberon_after_final_evil_reveal() -> None:
+    """奥伯伦开局不互认，但终局私聊明确把他加入完整红方名单。"""
     from avalon.state import Seat as _Seat
 
     roles = [Role.MERLIN, Role.SERVANT, Role.SERVANT, Role.ASSASSIN, Role.OBERON, Role.MORDRED, Role.MINION]
     seats = [
-        _Seat(no=i + 1, persona_id="fox", strategy_id="prudent", model="", role=r, intel=[])
+        _Seat(
+            no=i + 1,
+            persona_id="fox",
+            strategy_id="prudent",
+            role=r,
+            intel=[],
+        )
         for i, r in enumerate(roles)
     ]
-    st = AvalonState(seats=seats, leader=1, phase="assassinate")
-    assassin_intel = {4: [6, 7]}  # 刺客夜里只认莫德雷德与爪牙，不认奥伯伦
-    st = st.model_copy(update={
-        "seats": [s.model_copy(update={"intel": assassin_intel.get(s.no, [])}) for s in st.seats]
-    })
+    st = AvalonState(
+        seats=seats,
+        leader=1,
+        phase="assassinate",
+        evil_team=[4, 5, 6, 7],
+    )
     raw = json.dumps(
         {"phase": "assassinate", "target_no": 5, "speech": "就是你了", "monologue": "m"},
         ensure_ascii=False,
     )
-    pr = _rules().parse(4, raw, st)
-    st2 = _rules().apply(st, pr.action)
-    assert json.loads(pr.action)["hit"] is False
-    assert st2.winner == "good"  # 误刀奥伯伦=空刀，蓝方胜
+    with pytest.raises(JsonParseError, match="非法目标"):
+        _rules().parse(4, raw, st)
+
+    rules = _rules()
+    view = rules.view(4, st, SeatThread(), first_speak=True)
+    assert view.good_suspects() == [1, 2, 3]
+    assert all(f"{seat}号" not in view.turn_prompt for seat in st.evil_team)
+    random_target = json.loads(rules.random_action(4, view))["target_no"]
+    assert random_target in view.good_suspects()
 
 
 def test_assassin_hitting_merlin_flips_winner() -> None:
     r = _rules()
-    st = _state(phase="assassinate")
+    st = _state(phase="assassinate", evil_team=[4, 5])
     raw = json.dumps(
         {"phase": "assassinate", "target_no": 1, "speech": "就是你了", "monologue": "m"},
         ensure_ascii=False,
@@ -193,7 +233,7 @@ def test_assassin_hitting_merlin_flips_winner() -> None:
 
 def test_assassin_missing_merlin_good_wins() -> None:
     r = _rules()
-    st = _state(phase="assassinate")
+    st = _state(phase="assassinate", evil_team=[4, 5])
     raw = json.dumps(
         {"phase": "assassinate", "target_no": 3, "speech": "就是你了", "monologue": "m"},
         ensure_ascii=False,
@@ -220,9 +260,18 @@ def test_lady_choice_reveals_side_to_holder_only() -> None:
     pr = r.parse(2, raw, st)
     st2 = r.apply(st, pr.action)
     assert st2.lady_seen == "evil"  # 4 号是刺客
-    # 查验选择本身只进观众流（公开宣布在下一阶段由持有者自己说）
+    # 玩家动作只含 audience 内心戏；裁判紧接着公开查验目标，但绝不公开真阵营。
     channels = {ch for d in pr.deliveries for ch in d.channels}
     assert channels == {"audience"}
+    [choice] = r.pending(st2)
+    assert json.loads(choice.action) == {
+        "kind": "lady_choice",
+        "holder": 2,
+        "target": 4,
+    }
+    assert choice.deliveries[0].channels == ["broadcast", "audience"]
+    assert "二号选择查验四号" in choice.deliveries[0].text
+    assert "红方" not in choice.deliveries[0].text
 
 
 def test_lady_truth_is_projected_only_to_current_holder_view() -> None:
@@ -279,3 +328,39 @@ def test_first_speak_seeds_context_later_speak_is_incremental() -> None:
     assert "固定设定" not in again.prompt  # 续跑/再次发言只带增量，session 里已有上下文
     assert first.turn_prompt == again.turn_prompt
     assert "刚刚公开发生的事" in first.turn_prompt
+
+
+def test_prompt_only_requests_exact_json_without_freeform_escape_hatch() -> None:
+    r = _rules()
+    st = _state(phase="propose", leader=1)
+    view = r.view(1, st, SeatThread(), first_speak=True)
+    assert "自由思考" not in prompts.RULES
+    assert "JSON 外" not in prompts.RULES
+    assert "自检" not in view.prompt
+    assert "只输出上面这个 JSON 对象" in view.prompt
+
+
+def test_oberon_final_prompt_uses_revealed_team_not_opening_isolation() -> None:
+    view = PlayerView(
+        seat_no=5,
+        role=Role.OBERON,
+        intel=[4, 6],
+        lineup=[
+            Role.MERLIN,
+            Role.SERVANT,
+            Role.SERVANT,
+            Role.ASSASSIN,
+            Role.OBERON,
+            Role.MINION,
+        ],
+        players=6,
+        tone="tone",
+        strategy="strategy",
+        phase="evil_chat",
+        evil_team=[4, 5, 6],
+    )
+    # 固定 system 仍忠实描述开局夜视；当轮增量明确宣布规则转换，保证 live / 冷恢复一致。
+    assert "你不认识同伙" in prompts.system_text(view)
+    turn = prompts.opencode_ask("evil_chat", view)
+    assert "完整红方名单是：4号、5号、6号" in turn
+    assert "终局互认已经取代开局互认限制" in turn

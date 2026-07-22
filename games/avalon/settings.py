@@ -10,7 +10,7 @@
 
 阵营构成与每任务队伍人数不在这里配——那是规则表(rules.py),由 players 唯一决定。
 角色面:梅林 + 刺客必上;派西维尔/莫甘娜/莫德雷德/奥伯伦是可选开关(占用本阵营名额,
-其余名额由忠臣/爪牙补满)。湖中仙女是流程模块不是角色牌,尚未实现。
+其余名额由忠臣/爪牙补满)。湖中仙女是流程模块，不是角色牌。
 
 注意:这里没有任何"计时/等待"配置——games 只做"对局快照生成器",尽快跑完一局
 落成 replay,节奏(每阶段停留多久)是回放/直播层的事,不在生成器里 sleep。
@@ -105,10 +105,6 @@ class AvalonSettings(BaseSettings):
     # 批量/CI 跑 opencode 可用 --no-render 关闭。
     render: bool = True
 
-    # 断点续生成:--resume 配合 --replay 指向一个**已存在**、中途崩掉的对局目录,从最后一个
-    # 完整 super-step 接着往下跑(见 resume.py),不重摇开局、不从头重烧。新局不要给这个开关。
-    resume: bool = False
-
     @property
     def evil(self) -> int:
         return rules.EVIL_COUNT[self.players]
@@ -136,8 +132,6 @@ class AvalonSettings(BaseSettings):
                 raise ValueError(f"{field} 长度 {len(val)} 必须等于 players={self.players}")
         if self.concurrency < 1:
             raise ValueError(f"concurrency 必须 ≥1,收到 {self.concurrency}")
-        if self.resume and self.replay is None:
-            raise ValueError("--resume 需配合 --replay 指向那个要续跑的对局目录")
         if self.player == "opencode" and self.replay is None:
             raise ValueError("--player opencode 必须提供 --replay，用于隔离并保存 OpenCode 上下文")
         return self

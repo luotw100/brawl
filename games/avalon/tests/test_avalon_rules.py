@@ -1,183 +1,200 @@
-"""AvalonRules × core.sr.loop 端到端测试。"""
+"""AvalonRules 通过 production run/resume 装配的整局测试。"""
 
 from __future__ import annotations
 
 import json
-import random
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from avalon.registry import load_registry
-from avalon.rules_engine import AvalonRules, AvalonState
+from avalon import run as avalon_run
+from avalon.run import resume_game, run_game
 from avalon.settings import AvalonSettings
-from avalon.state import Role
-from avalon.validation import resolve_and_validate
-from avalon.view import PlayerView
-from core.sr.actor import RandomActor
-from core.sr.journal import DirJournal
-from core.sr.loop import resume, run
-from core.threads import SeatThread
+from avalon.state import Role, Side
+from avalon.validation import ResumeRequest, load_replay
+from core.sr.errors import FatalActorError
 
 
-def _setup(seed: int = 42, players: int = 5) -> tuple[AvalonSettings, Any, Any]:
-    registry = load_registry()
-    settings = AvalonSettings(players=players, seed=seed, player="random")
-    rng = random.Random(settings.seed)
-    setup = resolve_and_validate(settings, registry, rng)
-    return settings, registry, setup
-
-
-async def _run(settings: AvalonSettings, registry: Any, setup: Any, rep: Path) -> AvalonState:
-    rules = AvalonRules(registry, settings)
-    actors = {no: RandomActor(rules.random_action) for no in range(1, len(setup.roles) + 1)}
-    journal = DirJournal(rep, resume=False)
-    threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-    try:
-        return await run(rules, setup, actors, journal, threads)
-    finally:
-        journal.close()
+def _settings(replay: Path, **over: Any) -> AvalonSettings:
+    return AvalonSettings(
+        players=over.pop("players", 5),
+        seed=over.pop("seed", 42),
+        player="random",
+        replay=replay,
+        render=False,
+        **over,
+    )
 
 
 @pytest.mark.asyncio
-async def test_random_game_finishes(tmp_path) -> None:
-    settings, registry, setup = _setup()
-    final = await _run(settings, registry, setup, tmp_path / "rep")
+async def test_production_random_game_finishes_and_terminal_resume_is_identical(tmp_path) -> None:
+    replay = tmp_path / "game"
+    final = await run_game(_settings(replay))
 
     assert final.phase == "done"
     assert final.winner in ("good", "evil")
     assert final.win_reason in ("quests", "rejections", "assassination")
 
-    journal = DirJournal(tmp_path / "rep", resume=True)
-    sentences = journal.load_sentences()
-    journal.close()
-    assert len(sentences) > 0
+    meta = load_replay(ResumeRequest(replay=replay))
+    assert meta.schema_version == 1
+    assert meta.game == "avalon"
+    assert meta.player == "random"
+    before = (replay / "sentences.jsonl").read_bytes()
+    restored = await resume_game(ResumeRequest(replay=replay))
+    assert restored.model_dump_json() == final.model_dump_json()
+    assert (replay / "sentences.jsonl").read_bytes() == before
 
 
 @pytest.mark.asyncio
-async def test_resume_matches_runtime(tmp_path) -> None:
-    settings, registry, setup = _setup()
-    rep = tmp_path / "rep"
-    final = await _run(settings, registry, setup, rep)
+async def test_resume_never_reads_live_registry(tmp_path, monkeypatch) -> None:
+    replay = tmp_path / "game"
+    final = await run_game(_settings(replay))
 
-    journal2 = DirJournal(rep, resume=True)
-    rules2 = AvalonRules(registry, settings)
-    threads2 = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-    try:
-        restored = await resume(rules2, actors={}, journal=journal2, threads=threads2, setup=setup)
-    finally:
-        journal2.close()
+    def fail_registry_load() -> None:
+        raise AssertionError("resume must use frozen meta, not YAML registry")
 
-    assert restored.phase == final.phase
-    assert restored.winner == final.winner
-    assert restored.win_reason == final.win_reason
+    monkeypatch.setattr(avalon_run, "load_registry", fail_registry_load)
+    restored = await resume_game(ResumeRequest(replay=replay))
+    assert restored.model_dump_json() == final.model_dump_json()
 
 
 @pytest.mark.asyncio
-async def test_cold_resume_without_snapshot_matches_runtime(tmp_path) -> None:
-    """冷续跑（无快照全量重放）必须与实时终态逐字段一致。
+async def test_terminal_opencode_replay_does_not_require_runtime_installation(tmp_path, monkeypatch) -> None:
+    replay = tmp_path / "game"
+    final = await run_game(_settings(replay))
+    meta_path = replay / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["player"] = "opencode"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
-    同时行动阶段（组队表决/任务出牌）一个 turn_id 多条句子：重放必须整组 apply 完
-    再 advance，逐句 advance 会用不完整票型/牌堆结算（回归：真实崩局没有 _snapshot.json）。
-    """
-    settings, registry, setup = _setup()
-    rep = tmp_path / "rep"
-    final = await _run(settings, registry, setup, rep)
-    (rep / "_snapshot.json").unlink()  # 崩局现场：没有终态快照，强制冷重放
+    def fail_prepare(_meta) -> None:
+        raise AssertionError("终局 replay 不应准备 OpenCode runtime")
 
-    journal2 = DirJournal(rep, resume=True)
-    rules2 = AvalonRules(registry, settings)
-    threads2 = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-    try:
-        restored = await resume(rules2, actors={}, journal=journal2, threads=threads2, setup=setup)
-    finally:
-        journal2.close()
+    monkeypatch.setattr(avalon_run, "_prepare_runtime", fail_prepare)
+    restored = await resume_game(ResumeRequest(replay=replay))
 
     assert restored.model_dump_json() == final.model_dump_json()
 
 
 @pytest.mark.asyncio
-async def test_midgame_crash_resume_reproduces_identical_log(tmp_path) -> None:
-    """中段崩溃后续跑：确定性重放整局，日志逐行一致、串场词零重复。
+async def test_real_actor_crash_then_production_resume_matches_clean_run(tmp_path, monkeypatch) -> None:
+    """在 production actor 调用点真实注入崩溃，而不是事后裁剪一份完整日志。"""
+    crashed_replay = tmp_path / "crashed"
+    clean_replay = tmp_path / "clean"
+    real_actor = avalon_run.RandomActor
 
-    崩局形状：某个 commit 及之后全部丢失（并发行动与随后的 host 串场要么整批落盘
-    要么整批丢失，不存在半批）。续跑重问该 turn，RandomActor 按 (seat,quest,attempt,phase) 定 seed，
-    产出逐字节一致；host 串场按 turn_id 去重，已播报过的开场/开票不重记。
-    """
-    settings, registry, setup = _setup()
-    rep = tmp_path / "rep"
-    final = await _run(settings, registry, setup, rep)
-    original = (rep / "sentences.jsonl").read_text(encoding="utf-8").splitlines()
+    class InjectedCrash(FatalActorError):
+        pass
 
-    rows = [json.loads(line) for line in original]
-    cut_commit = rows[len(rows) // 2]["commit_id"]
-    cut = next(index for index, row in enumerate(rows) if row["commit_id"] == cut_commit)
-    crashed = tmp_path / "crashed"
-    crashed.mkdir()
-    prefix = "\n".join(original[:cut])
-    (crashed / "sentences.jsonl").write_text(f"{prefix}\n" if prefix else "", encoding="utf-8")
+    calls = 0
 
-    rules2 = AvalonRules(registry, settings)
-    journal = DirJournal(crashed, resume=True)
-    threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-    try:
-        restored = await resume(rules2, actors={}, journal=journal, threads=threads, setup=setup)
-        actors = {no: RandomActor(rules2.random_action) for no in range(1, len(setup.roles) + 1)}
-        final2 = await run(rules2, setup, actors, journal, threads, state=restored)
-    finally:
-        journal.close()
+    class CrashActor:
+        def __init__(self, generator) -> None:
+            self._inner = real_actor(generator)
 
-    resumed = (crashed / "sentences.jsonl").read_text(encoding="utf-8").splitlines()
-    assert resumed == original
-    assert final2.model_dump_json() == final.model_dump_json()
+        async def speak(self, seat: int, view: Any, turn_id: str):
+            nonlocal calls
+            calls += 1
+            if calls == 12:
+                raise InjectedCrash("simulated process death")
+            return await self._inner.speak(seat, view, turn_id)
 
+        def commit_turn(self, seat: int) -> None:
+            self._inner.commit_turn(seat)
 
-@pytest.mark.asyncio
-async def test_resume_into_terminal_appends_nothing(tmp_path) -> None:
-    """终局后再 resume：closing 串场已播报过，run 零新增（host 去重守住终态重发）。"""
-    settings, registry, setup = _setup()
-    rep = tmp_path / "rep"
-    await _run(settings, registry, setup, rep)
-    n_before = len((rep / "sentences.jsonl").read_text(encoding="utf-8").splitlines())
+        async def rollback(self, seat: int) -> None:
+            await self._inner.rollback(seat)
 
-    rules2 = AvalonRules(registry, settings)
-    journal = DirJournal(rep, resume=True)
-    threads = {no: SeatThread() for no in range(1, len(setup.roles) + 1)}
-    try:
-        restored = await resume(rules2, actors={}, journal=journal, threads=threads, setup=setup)
-        actors = {no: RandomActor(rules2.random_action) for no in range(1, len(setup.roles) + 1)}
-        await run(rules2, setup, actors, journal, threads, state=restored)
-    finally:
-        journal.close()
+    monkeypatch.setattr(avalon_run, "RandomActor", CrashActor)
+    with pytest.raises(InjectedCrash):
+        await run_game(_settings(crashed_replay, concurrency=1))
+    assert (crashed_replay / "sentences.jsonl").stat().st_size > 0
 
-    n_after = len((rep / "sentences.jsonl").read_text(encoding="utf-8").splitlines())
-    assert n_after == n_before
+    monkeypatch.setattr(avalon_run, "RandomActor", real_actor)
+    resumed = await resume_game(ResumeRequest(replay=crashed_replay))
+    clean = await run_game(_settings(clean_replay, concurrency=1))
+
+    assert resumed.model_dump_json() == clean.model_dump_json()
+    assert (crashed_replay / "sentences.jsonl").read_bytes() == (
+        clean_replay / "sentences.jsonl"
+    ).read_bytes()
 
 
 @pytest.mark.asyncio
-async def test_random_actor_produces_valid_json() -> None:
-    settings, registry, setup = _setup()
-    rules = AvalonRules(registry, settings)
-    view = PlayerView(
-        seat_no=1,
-        role=Role.MERLIN,
-        intel=[],
-        players=5,
-        team_size=2,
-        phase="propose",
+async def test_ten_player_full_role_game_reaches_evil_chat_and_stabs_only_good(tmp_path) -> None:
+    replay = tmp_path / "full-role"
+    await run_game(
+        _settings(
+            replay,
+            players=10,
+            seed=16,
+            percival=True,
+            morgana=True,
+            mordred=True,
+            oberon=True,
+        )
     )
-    actor = RandomActor(rules.random_action)
-    raw, audit = await actor.speak(1, view, "q1.a1.propose")
-    assert "team" in raw
-    assert audit["seat_no"] == 1
+    meta = load_replay(ResumeRequest(replay=replay))
+    assert set(meta.setup.roles) == {
+        Role.MERLIN,
+        Role.PERCIVAL,
+        Role.SERVANT,
+        Role.ASSASSIN,
+        Role.MORGANA,
+        Role.MORDRED,
+        Role.OBERON,
+    }
+
+    rows = [
+        json.loads(line)
+        for line in (replay / "sentences.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    opening_row = next(
+        row
+        for row in rows
+        if json.loads(row["action"] or "{}").get("kind") == "evil_chat_opening"
+    )
+    opening = json.loads(opening_row["action"])
+    assert set(opening["roles"].values()) == {
+        Role.ASSASSIN.value,
+        Role.MORGANA.value,
+        Role.MORDRED.value,
+        Role.OBERON.value,
+    }
+    evil_seats = {int(no) for no in opening["roles"]}
+    assert set(opening_row["deliveries"][0]["channels"]) == {
+        *evil_seats,
+        "audience",
+    }
+    evil_chat_rows = [
+        row
+        for row in rows
+        if json.loads(row["action"] or "{}").get("kind") == "evil_chat"
+    ]
+    assert len(evil_chat_rows) == 4
+    assert all(
+        "broadcast" not in delivery["channels"]
+        for row in evil_chat_rows
+        for delivery in row["deliveries"]
+    )
+    assert all(
+        set(row["deliveries"][0]["channels"]) == {*evil_seats, "audience"}
+        for row in evil_chat_rows
+    )
+
+    assassination = next(
+        json.loads(row["action"])
+        for row in rows
+        if json.loads(row["action"] or "{}").get("kind") == "assassinate"
+    )
+    target = assassination["target_no"]
+    assert meta.setup.roles[target - 1].side is Side.GOOD
 
 
 @pytest.mark.asyncio
-async def test_random_game_with_lady_finishes(tmp_path) -> None:
-    settings, registry, setup = _setup(players=7)
-    settings = AvalonSettings(players=7, seed=42, player="random", lady=True)
-    rng = random.Random(settings.seed)
-    setup = resolve_and_validate(settings, registry, rng)
-    final = await _run(settings, registry, setup, tmp_path / "rep")
+async def test_production_random_game_with_lady_finishes(tmp_path) -> None:
+    final = await run_game(
+        _settings(tmp_path / "lady", players=7, seed=42, lady=True)
+    )
     assert final.phase == "done"

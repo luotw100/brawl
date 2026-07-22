@@ -14,7 +14,6 @@ from typing import Any, Protocol
 
 import httpx
 
-from core.models import ModelSpec
 from core.opencode_runtime import OpenCodeConnection
 from core.sr.errors import FatalActorError
 from core.sr.messages import ChatMessage
@@ -23,7 +22,10 @@ from core.sr.messages import ChatMessage
 class ModelBackend(Protocol):
     """一次 agent 调用的抽象。"""
 
-    async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[ChatMessage]) -> ChatMessage: ...
+    async def call(self, phase: str, view: Any, messages: list[ChatMessage]) -> ChatMessage: ...
+    def commit_turn(self, seat_no: int) -> None: ...
+    async def rollback(self, seat_no: int) -> None: ...
+    async def close(self) -> None: ...
 
 
 class OpenCodeSessionPoisoned(FatalActorError):
@@ -398,7 +400,7 @@ class OpenCodeBackend:
 
         raise TimeoutError(f"等待 OpenCode session {session_id} 响应超时")
 
-    async def call(self, phase: str, view: Any, spec: ModelSpec, messages: list[ChatMessage]) -> ChatMessage:
+    async def call(self, phase: str, view: Any, messages: list[ChatMessage]) -> ChatMessage:
         seat_no = getattr(view, "seat_no", 0)
         session_id = await self._ensure_session(seat_no)
         self._raise_if_poisoned(seat_no)

@@ -30,7 +30,9 @@ class Seat(BaseModel):
     no: int
     persona_id: str
     strategy_id: str
-    model: str | None = None
+    tone: str
+    strategy_system: str
+    model: str
     role: Role
     alive: bool = True
     can_vote: bool = True
@@ -49,10 +51,11 @@ class DeathRecord(BaseModel):
 
 
 class VoteRecord(BaseModel):
-    """一轮放逐投票的公开结果：谁投了谁、放逐了谁、是否平票。票型全是明牌。"""
+    """一轮放逐投票的公开结果：票型、最高票与实际放逐。"""
 
     day: int
     votes: dict[int, int]  # voter_no → target_no
+    top_voted: int | None
     exiled: int | None
     tied: bool
 

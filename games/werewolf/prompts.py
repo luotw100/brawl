@@ -34,7 +34,7 @@ RULES = """\
 流程：
 - 每天分黑夜与白天。黑夜：狼人共商刀口 → 预言家验人 → 女巫决定救/毒。天亮后公布昨夜死讯并翻开死者身份，死者留遗言。
 - 白天：全体存活玩家轮流发言，然后全体同时暗投票放逐一人（票型开出后公开，平票则无人出局）。被放逐者翻牌、留遗言。
-- 胜负（屠边）：狼人全部出局 → 好人胜；4 个神职全部出局，或 4 个平民全部出局 → 狼人胜。
+- 胜负（屠边）：狼人全部出局 → 好人胜；4 个神职全部出局，或 4 个平民全部出局 → 狼人胜。若同一次结算同时达成狼全灭与神/民全灭，好人胜优先。
 
 对局方式：
 - 我会持续把桌面上公开发生的事播报给你，并在轮到你行动时向你提问。
@@ -106,7 +106,12 @@ def situation(view: PlayerView) -> str:
         rows = []
         for v in view.votes_history:
             marks = "，".join(f"{a}号→{b}号" for a, b in sorted(v.votes.items()))
-            outcome = "平票无人出局" if v.exiled is None else f"{v.exiled}号 得票最高"
+            if v.tied:
+                outcome = "平票无人出局"
+            elif v.exiled is None:
+                outcome = f"{v.top_voted}号 得票最高但未被放逐"
+            else:
+                outcome = f"{v.exiled}号 被放逐"
             rows.append(f"第{v.day}天 票型[{marks}]→{outcome}")
         parts.append("放逐记录：\n" + "\n".join(rows))
     parts.append(_REASONING_BASELINE)
@@ -145,51 +150,7 @@ def human_message(events: list[str], context: str, ask: str, tone: str = "", mim
 
 # ---------------------------------------------------------------- OpenCode agent 专用提问（JSON schema）
 
-_OPENCODE_JSON_DISCIPLINE = "最终恰好输出一个 JSON 对象，首尾空白外不要有任何其他文字（不要 markdown 代码块、不要解释、不要第二个 JSON、不要写出自检过程）。"
-
-
-def _opencode_self_check(phase: str, view: PlayerView) -> str:
-    common = [
-        "按当前阶段说明确认 speech 的可见范围；monologue 只给观众看，也要简短。",
-        "自己检查行动合法性、阵营收益和 JSON 格式。",
-        "检查通过后只给最终 JSON，不要写出思考或自检过程。",
-    ]
-    cands = "、".join(f"{no}号" for no in view.candidates)
-    checks = {
-        "night_wolf": [
-            f"target_no 必须从可选刀口 {cands} 中选一个。",
-            "speech 只在狼队内部传递，不会上桌；请直说真实判断、回应队友并协作定刀。",
-        ],
-        "night_seer": [
-            f"target_no 必须从可查验对象 {cands} 中选一个（不能查自己）。",
-        ],
-        "night_witch": [
-            "save 必须是 JSON boolean true/false，不要写成字符串。",
-            f"poison_target_no 只能是 {cands} 之一或 null（不用毒）。",
-            "同一晚不要对同一个人又救又毒；没有刀口时不能救。",
-        ],
-        "last_words": [
-            "speech 是全场公开遗言；可以策略性跳身份、报情报、指认狼或继续伪装，以阵营收益为准。",
-        ],
-        "day_discuss": [
-            "speech 全场公开；可以策略性跳身份、报查验或夜间判断，也可以为阵营利益伪装。",
-            "speech 要亮明立场：怀疑谁、相信谁、今天想投谁，并点出至少一个公开证据。",
-        ],
-        "day_vote": [
-            f"target_no 必须从可放逐对象 {cands} 中选一个（存活且不能投自己）。",
-            "投票要服务你的阵营目标，并能被公开理由解释。",
-        ],
-        "hunter_shot": [
-            f"target_no 只能是 {cands} 之一或 null（不开枪）。",
-            "speech 是全场公开的临终发言，会一字不差公布上桌；可以报出你的真实判断或策略性遗言。",
-        ],
-        "banter": [
-            "speech 是底牌已公开后的全场复盘，不再需要隐藏身份与夜间计划。",
-            "复盘可以接梗、回怼、甩锅，但仍保持 2~3 句，不要长篇总结。",
-        ],
-    }[phase]
-    lines = "\n".join(f"- {line}" for line in [*common, *checks])
-    return f"输出前自检（只在心里做）：\n{lines}\n{_OPENCODE_JSON_DISCIPLINE}"
+_OUTPUT_ONLY = "只输出上述 JSON 对象，不要输出其他文字。"
 
 
 def opencode_ask(phase: str, view: PlayerView) -> str:
@@ -201,58 +162,69 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"可选刀口：{cands}。最终刀口取全体存活狼人提议里的多数（平票取最小座位号）。\n"
             f"输出 JSON：\n"
             f'{{"phase": "wolf_kill", "monologue": "说给观众的一句短话", "speech": "对狼队友说的一句话（只有狼队听得到）", "target_no": 座位号}}\n'
-            f"{_opencode_self_check(phase, view)}"
+            f"{_OUTPUT_ONLY}"
         )
     if phase == "night_seer":
         return (
             f"当前阶段：夜晚预言家行动（night_seer）。选一名玩家查验真实阵营（结果只有你知道）。可选：{cands}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "seer_check", "monologue": "说给观众的一句短话", "target_no": 座位号}}\n'
-            f"{_opencode_self_check(phase, view)}"
+            f"{_OUTPUT_ONLY}"
         )
     if phase == "night_witch":
         kill = f"{view.night_target}号" if view.night_target is not None else "无人（今夜空刀）"
+        if view.witch_has_antidote and view.night_target is not None:
+            antidote = "解药可用；save 可以为 true（救刀口）或 false（不用解药）。"
+        elif view.witch_has_antidote:
+            antidote = "解药尚在，但今夜没有刀口；save 必须为 false。"
+        else:
+            antidote = "解药已用完；save 必须为 false。"
+        poison = (
+            f"毒药可用；poison_target_no 可以从 {cands} 中选一人，或填 null（不用毒药）。"
+            if view.witch_has_poison
+            else "毒药已用完；poison_target_no 必须为 null。"
+        )
         return (
-            f"当前阶段：夜晚女巫行动（night_witch）。今晚狼人的刀口是：{kill}。你可以用解药救回刀口、用毒药毒死一人、或都不用。\n"
-            f"若用毒，目标只能是：{cands}。\n"
+            f"当前阶段：夜晚女巫行动（night_witch）。今晚狼人的刀口是：{kill}。\n"
+            f"{antidote}\n{poison}\n"
             f"输出 JSON：\n"
             f'{{"phase": "witch_action", "monologue": "说给观众的一句短话", "save": true或false, "poison_target_no": 座位号或null}}\n'
-            f"{_opencode_self_check(phase, view)}"
+            f"{_OUTPUT_ONLY}"
         )
     if phase == "last_words":
         return (
             f"当前阶段：遗言（last_words）。你已经出局，现在是你的遗言时间，全场会听到。\n"
             f"输出 JSON：\n"
             f'{{"phase": "last_words", "monologue": "说给观众的一句短话", "speech": "你的遗言，会一字不差公布上桌"}}\n'
-            f"{_opencode_self_check(phase, view)}"
+            f"{_OUTPUT_ONLY}"
         )
     if phase == "day_discuss":
         return (
             "当前阶段：白天自由发言（day_discuss）。结合昨夜死讯、前面玩家的发言和票型，亮明你的立场。\n"
             f"输出 JSON：\n"
             f'{{"phase": "discuss", "monologue": "说给观众的一句短话", "speech": "你的桌面发言，会一字不差公布上桌"}}\n'
-            f"{_opencode_self_check(phase, view)}"
+            f"{_OUTPUT_ONLY}"
         )
     if phase == "day_vote":
         return (
             f"当前阶段：放逐投票（day_vote）。全员同时暗投，你看不到别人这一票；开票后票型公开，平票无人出局。可选：{cands}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "vote", "monologue": "说给观众的一句短话", "target_no": 座位号}}\n'
-            f"{_opencode_self_check(phase, view)}"
+            f"{_OUTPUT_ONLY}"
         )
     if phase == "hunter_shot":
         return (
             f"当前阶段：猎人开枪（hunter_shot）。你作为猎人出局，可以开枪带走场上一名玩家，也可以不开枪。可选目标：{cands}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "hunter_shot", "monologue": "说给观众的一句短话", "speech": "开枪前的一句话，会一字不差公布上桌", "target_no": 座位号或null}}\n'
-            f"{_opencode_self_check(phase, view)}"
+            f"{_OUTPUT_ONLY}"
         )
     if phase == "banter":
         return (
             "当前阶段：赛后复盘（banter）。游戏已结束，底牌已翻开，输赢已定，畅所欲言。\n"
             f"输出 JSON：\n"
             f'{{"phase": "banter", "monologue": "说给观众的一句短话", "speech": "你的复盘发言"}}\n'
-            f"{_opencode_self_check(phase, view)}"
+            f"{_OUTPUT_ONLY}"
         )
     raise ValueError(f"未知的 OpenCode 决策阶段：{phase}")
 
@@ -317,7 +289,7 @@ def line_hunter_shot(hunter: int, target: int | None, role: Role | None) -> str:
 
 
 def line_host_opening(board_name: str, players: int, wolves: int) -> str:
-    return f"欢迎来到《狼人杀》，{board_name}，{players}人局，其中 {wolves} 只狼。身份已经发放完毕，天黑请闭眼。"
+    return f"欢迎来到《狼人杀》，{board_name}，{players}人局，其中 {wolves} 只狼。身份已经发放完毕。"
 
 
 def line_host_night(day: int) -> str:
@@ -332,15 +304,15 @@ def line_host_dawn(day: int, deaths: list[tuple[int, Role]]) -> str:
     return f"第{day}天，天亮了。昨夜倒下的是 {who}。{ids}。"
 
 
-def line_host_vote_result(exiled: int | None, role: Role | None, tied: bool) -> str:
+def line_host_vote_result(top_voted: int | None, role: Role | None, tied: bool) -> str:
     if tied:
         return "投票结束，最高票平票，本轮无人被放逐。"
-    if exiled is None or role is None:
+    if top_voted is None or role is None:
         return "投票结束，本轮无人被放逐。"
     if role is Role.IDIOT:
         # 白痴翻牌免死的局：只说票型，"出局"与否由紧随其后的白痴播报交代。
-        return f"投票结束，{exiled}号 得票最高。"
-    return f"投票结束，{exiled}号 被放逐出局，其身份是{role_name(role)}。"
+        return f"投票结束，{top_voted}号 得票最高。"
+    return f"投票结束，{top_voted}号 被放逐出局，其身份是{role_name(role)}。"
 
 
 def line_host_idiot(no: int) -> str:

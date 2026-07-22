@@ -18,7 +18,6 @@ class Persona(BaseModel):
     name: str
     tone: str = ""
     voice_id: str = ""
-    self_hosted_voice_id: str = ""
     voice_design: str = ""
 
 

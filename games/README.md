@@ -1,100 +1,91 @@
 # brawl-games
 
-AI 直播对战的纯游戏逻辑层。`core/sr/`（Sentence Runtime）提供跨玩法运行时，`avalon/` 与 `werewolf/` 是两套自包含玩法。
+AI 直播对战的纯游戏逻辑层。`core/sr/`（Sentence Runtime）提供跨玩法运行时，`avalon/` 与 `werewolf/` 各自拥有规则、配置和内容数据。
 
-语义全在玩法（rules 插件），管道全在 core：每个 AI 产出都是一条"句子"（Sentence），玩法规则负责解析、决定谁能听到、决定下一步该谁；core 只负责驱动循环、调用 OpenCode、按 channel 路由、落句子日志。**句子日志即 checkpoint**——一行一句 fsync，resume 就是重放 sentences，没有两路流对齐。
+玩法决定状态、信息隔离和输出格式；core 只负责调用 actor、路由 Delivery、按事务提交 Sentence。`sentences.jsonl` 是唯一 checkpoint，resume 会从头严格重放，不维护第二份快照。
 
-## 环境初始化
+## 安装
 
 ```bash
 uv sync
 ```
 
-TTS 推理不在本进程加载 Qwen3-TTS / PyTorch；需要自托管配音时，另起局域网 Qwen3-TTS API server，
-再用 `--backend selfhosted --self-hosted-url http://<host>:<port>` 调用（音色读 meta 里的自托管 voice_id）。
+## 新建对局
 
-## 跑一局
+只有新建对局时可以指定玩家、角色、模型、人设、流派、随机种子、并发度和渲染开关等参数。
 
 ```bash
-# 阿瓦隆（10 人全角色）
-uv run brawl avalon --player random --players 10 --percival --morgana --mordred --oberon --replay /tmp/avalon1
-# 狼人杀（12 人预女猎白）
-uv run brawl werewolf --player random --replay /tmp/ww1
+# 阿瓦隆：10 人全特殊角色
+uv run brawl avalon \
+  --player random --players 10 \
+  --percival --morgana --mordred --oberon \
+  --replay /tmp/avalon1
 
-# 回放与配音（跨玩法，消费 replay/sentences.jsonl）
+# 狼人杀：12 人预女猎白
+uv run brawl werewolf --player random --replay /tmp/werewolf1
+```
+
+新 replay 目录必须不存在。创建后，`meta.json` 只允许写一次，其中冻结了续跑所需的玩法配置、逐座位 prompt 内容、模型引用和阿里云音色；后续修改玩法 YAML 不会改变这局。
+同一 replay 同时只能有一个生成/续跑进程持有 journal 写权，第二个进程会明确失败，不会相互覆盖提交。
+
+## 恢复对局
+
+resume 只接受下面这一种命令形状：
+
+```bash
+uv run brawl avalon --resume --replay /tmp/avalon1
+uv run brawl werewolf --resume --replay /tmp/werewolf1
+```
+
+不能附加 `--player`、`--models`、`--config`、`--no-render` 或任何其他参数。恢复路径只读取 replay，不读取当前 registry/YAML，也不会改写 `meta.json`。
+
+## 回放与阿里云 TTS
+
+```bash
 uv run brawl console /tmp/avalon1
+uv run brawl console /tmp/avalon1 --pace 0.01
 uv run brawl tts /tmp/avalon1
-# 或走自托管 Qwen3-TTS
-uv run brawl tts /tmp/avalon1 --backend selfhosted --self-hosted-url http://192.168.232.31:7860
 ```
 
-## 用 OpenCode 当玩家后端
+TTS 保留可注入的 backend 协议供测试使用，但生产命令只使用阿里云 DashScope，音色只能来自 replay 中已冻结的 `setup.voices` / `setup.host_voice`。命令不提供 backend、voice 或 RPS 覆盖参数；增量结果写入 `tts/manifest.json`，并绑定具体模型 fingerprint、音色、文本与音频哈希，损坏或过期的单条缓存会自动补做。同一 replay 的并行 TTS 进程会直接拒绝。
 
-Avalon / 狼人杀 CLI 自己托管一个 `opencode serve`：每座位一个 session，游戏引擎每回合把当前提问发过去，再按玩法约定解析成结构化决策。外部 server 连接模式已废弃。
+凭证从环境变量或 `games/.env` 的 `DASHSCOPE_API_KEY` 读取。创建新音色也只走阿里云：
 
 ```bash
-# 先用固定支持版本登录一次；运行机还需安装 bubblewrap(bwrap)
+uv run brawl voice-forge '三十岁左右的清晰男声，语速沉稳' --name steady
+```
+
+## OpenCode 玩家
+
+Avalon / 狼人杀 CLI 会为一局对局托管独立的 `opencode serve`。先安装当前项目支持的 OpenCode `1.17.20`、完成登录，并确保运行机有 `bwrap`：
+
+```bash
 opencode auth login
-
-# CLI 启动、探活并回收本局专属 server；opencode 模式必须落 replay
 uv run brawl avalon --player opencode --replay /tmp/avalon-opencode
-uv run brawl werewolf --player opencode --replay /tmp/ww-opencode
-
-# 可选：强制指定默认模型（providerID/modelID），空字符串则用 server 默认模型
-uv run brawl avalon --player opencode --opencode-model kimi-for-coding/k2p7 --replay /tmp/avalon-opencode
+uv run brawl werewolf --player opencode --replay /tmp/werewolf-opencode
 ```
 
-当前固定支持 OpenCode `1.17.20`。CLI 用 `bwrap` 只把 `<replay>/_opencode` 映射给子进程，真实 replay 根目录不在其挂载空间；所有 agent 工具同时在 session 层禁用。每局生成的 workspace、OpenCode DB、XDG state/cache 和 server 日志都保留在 `_opencode/`，长期认证文件只读挂载，不复制进 replay。
+每座位的有效 `providerID/modelID` 在新局边界解析后写入 replay。优先使用该玩法 `data/models.yaml` 中逻辑模型的 `opencode_model`，否则使用新局的 `--opencode-model`；两者都为空才交给 OpenCode 默认模型。恢复时不能重新选模型。
 
-模型选择优先级（单座位）：
+本局的隔离 workspace、OpenCode DB、XDG state/cache 和 server 日志保存在 `<replay>/_opencode/`。完整模型调用记录以 OpenCode 会话库为准，games 不再额外生成旧式 `llm_calls.jsonl`。
 
-1. `data/models.yaml` 里该座位的逻辑模型若配有 `opencode_model: providerID/modelID`，则按座位映射；
-2. 否则退到 `--opencode-model`；
-3. 都为空则让 OpenCode server 用其默认模型。
+## 配置与测试
 
-因此 `--player opencode --models oc-deepseek-v4-pro,oc-qwen3.7-plus,...` 可以给不同座位分配不同 OpenCode 模型；不配 `--models` 时随机摇到的 `oc-*` 模型也会自动映射到对应 OpenCode provider/model。
-
-OpenCode 的可用模型可通过 `opencode models` 查询；`OpenCodeBackend` 会在每次 `POST /session/{id}/prompt_async` 时把该座位模型随 prompt 一起传给本局 server。
-
-公开配置只保留 `opencode_model`；动态 URL 和随机密码属于进程内运行时数据，不接受外部注入。不需要 `.opencode.json`、自定义 agent 或 `games/scripts/`。
-
-## 对局调试
-
-- `brawl console <replay_dir>`：把 sentences.jsonl 渲染成终端面板（含"谁能听到"路由标签）。
-- `brawl chat-view <llm_calls.jsonl> <行号>`：**旧格式 replay 专用**。新引擎不再本地落 llm_calls——每次模型调用的完整审计保留在 OpenCode 会话库里（`<replay>/_opencode/storage/opencode.db`）。
-
-## 测试
+新局配置优先级为：直接构造 kwargs > CLI > 环境变量 > `--config` JSON > 默认值。Avalon 环境变量前缀为 `BRAWL_AVALON_`，狼人杀为 `BRAWL_WEREWOLF_`。resume 不进入这套配置解析。
 
 ```bash
-uv run pytest -q   # 全套零 key、零网络（--player random / 纯函数）
+uv run pytest -q
+uv run ruff check .
 ```
 
-## 配置优先级
+测试默认零 key、零网络。除了规则正向流程，还覆盖坏 replay、事务中断、冷恢复、信息隔离、严格输出格式、CLI 参数边界及 TTS 失败路径。
 
-直接构造 kwargs > CLI `--xxx` > 环境变量（Avalon 前缀 `BRAWL_AVALON_`、狼人杀前缀 `BRAWL_WEREWOLF_`）> `--config xxx.json` > 默认。字段见 `avalon/settings.py` / `werewolf/settings.py`（settings 即 CLI，flag 自动派生）。
+## 目录
 
-## 框架分布
-
-- `core/sr/types.py`：游戏盲类型——Delivery / Sentence / Expectation / ParseResult / HostEmit。
-- `core/sr/rules.py`：玩法插件协议（Rules Protocol）——initial_state/expected/view/parse/apply/advance/pending/pack/unpack。
-- `core/sr/loop.py`：驱动循环——speak+parse 同单元重试、按座位序确定性落日志、deliver 路由、resume 重放。
-- `core/sr/journal.py`：replay 三件套——sentences.jsonl（句子日志）、meta.json、_snapshot.json（可选加速快照）+ avatars；不给 `--replay` 走 NullJournal。
-- `core/sr/actor.py` / `opencode_backend.py`：OpenCodeActor（opencode session 适配）、RandomActor（零网络）、OpenCodeBackend（HTTP 协议）。
-- `core/sr/console.py` / `tts.py`：跨玩法终端渲染与配音（消费 sentences.jsonl，对应 `brawl console` / `brawl tts`）。
-- `core/sr/messages.py`：一次 agent 调用的消息类型（20 行，替代 langchain-core）。
-- `core/registry.py` / `setup.py` / `threads.py` / `parsing.py` / `models.py` / `opencode_runtime.py`：注册表、边界解析（含人设唯一/可重复双模式）、席位线程、JSON 抽取、模型规格、opencode 托管生命周期。
-
-玩法包（avalon/、werewolf/ 同构）：
-
-- `rules_engine.py`：玩法全部语义——阶段机、计票/判负、信息隔离、prompt 构造、JSON 解析校验（Rules 实现）。
-- `rules.py`：规则表（阵营/角色/板子/纯函数判负计数）。
-- `state.py` / `view.py`：状态结构、结构化决策模型、喂给 actor 的视图对象。
-- `prompts.py`：所有发给模型的文案（纯函数）。
-- `validation.py` / `settings.py` / `registry.py`：配置边界（settings + registry + rng → GameSetup）、CLI 参数面、数据加载。
-- `run.py`：入口装配（setup → actors → loop → journal）。
-- `data/`：各自的 cast/hosts/models/strategies yaml，两玩法互不引用。
-
-## 架构地图
-
-见 `../.agents/skills/repository-overview/SKILL.md` 与 `../design/sentence-runtime.md`。
-
+- `core/sr/types.py`：Delivery / Sentence / Expectation / ParseResult / HostEmit。
+- `core/sr/loop.py`：actor 调用、整轮事务、重试、路由和严格重放。
+- `core/sr/journal.py`、`files.py`：create-once meta、原子 Sentence 日志和安全文件边界。
+- `core/sr/actor.py`、`opencode_backend.py`：Random/OpenCode actor 适配和会话事务。
+- `core/sr/console.py`、`tts.py`：只消费 replay 的终端回放与阿里云配音。
+- `avalon/`、`werewolf/`：各玩法自己的规则机、prompt、状态、配置、测试和 `data/`；内容资产保持玩法自包含。
+- `voicelab/`：阿里云音色铸造工具。

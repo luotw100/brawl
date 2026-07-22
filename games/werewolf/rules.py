@@ -1,10 +1,4 @@
-"""狼人杀规则表。
-
-第一版只开放 12 人预女猎白板子。BoardSpec 只装**真正被消费**的东西：角色池与它的纯
-派生（人数、神民狼计数）。本板子的玩法选择集中冻结在 RULE_CONTRACT，rules_engine 直接
-实现这一份契约，不把它们伪装成可切换配置。真要加狼王/魔术师/奇迹商人时，再按那时的
-真实差异设计新的规则边界。
-"""
+"""狼人杀角色与板子的唯一静态定义。"""
 
 from __future__ import annotations
 
@@ -64,28 +58,6 @@ class BoardSpec:
         return sum(1 for r in self.roles if r is Role.VILLAGER)
 
 
-@dataclass(frozen=True)
-class RuleContract:
-    """当前玩法唯一规则契约；字段是已冻结的事实，不是运行时开关。"""
-
-    witch_may_use_both_potions_on_different_targets: bool
-    witch_may_self_save: bool
-    hunter_may_shoot_when_knifed_and_poisoned: bool
-    hunter_may_shoot_when_only_poisoned: bool
-    deaths_reveal_roles: bool
-    tied_vote_exiles_nobody: bool
-
-
-RULE_CONTRACT = RuleContract(
-    witch_may_use_both_potions_on_different_targets=True,
-    witch_may_self_save=True,
-    hunter_may_shoot_when_knifed_and_poisoned=True,
-    hunter_may_shoot_when_only_poisoned=False,
-    deaths_reveal_roles=True,
-    tied_vote_exiles_nobody=True,
-)
-
-
 PRE_WITCH_HUNTER_IDIOT_12 = BoardSpec(
     id="pre-witch-hunter-idiot-12",
     name="预女猎白12人场",
@@ -119,15 +91,6 @@ ROLE_LABEL = {
 }
 
 SIDE_LABEL = {Side.GOOD: "好人阵营", Side.WEREWOLF: "狼人阵营"}
-
-# 死因 / 胜负原因的中文标签——prompts（喂 AI/观众的台词）与 console（god-view 渲染）同源，
-# 杜绝把内部英文枚举漏进中文文案。死因枚举见 state.DeathRecord.reason。
-DEATH_REASON_LABEL = {
-    "wolf_kill": "狼刀",
-    "poison": "毒杀",
-    "exile": "放逐",
-    "hunter_shot": "枪杀",
-}
 
 WIN_REASON_LABEL = {
     "all_wolves_dead": "狼人全部出局",

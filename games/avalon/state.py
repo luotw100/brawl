@@ -5,9 +5,8 @@
 身份与谁出了破坏票永远是秘密——各席位线程（SeatThread）里灌的公开事件只有发言、
 组队投票的明牌结果、和每个任务的破坏票**张数**。
 
-每个席位一条 append-only 消息线程：assistant 是该席位自己的自由文本原文（含内心戏，
-私密、只在自己线程里），human 是裁判灌入的公开事件与提问。线程只增不改——这是
-prompt 缓存命中的根基，也让模型能看到自己之前的想法。
+每个席位一条 append-only 消息线程：assistant 是该席位自己的严格 JSON 原文，human 是
+裁判灌入的可见事件与提问。线程只增不改，让模型能看到自己之前的行动。
 """
 
 from __future__ import annotations
@@ -18,8 +17,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 # 公开发言与内心戏的字段类型：去掉首尾空白后必须非空。这是"字段内在/形状校验"——声明式收在
-# 模型里，AgentPlayer 解析 JSON 时直接完成；该有发言却空了 / 该有内心戏却空了会直接 parse 失败
-# （抛 JsonParseError），由 AgentPlayer._act 的退避重试兜住，绝不让空发言静默上桌。
+# 模型里，Rules.parse 解析 JSON 时直接完成；该有发言却空了 / 该有内心戏却空了会直接 parse 失败，
+# 交由 runtime 的 actor 重试边界处理，绝不让空发言静默上桌。
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
@@ -45,13 +44,15 @@ class Role(StrEnum):
 
 class Seat(BaseModel):
     """桌上一个参与者的数据快照：几号位、什么角色、夜晚看到了谁。阿瓦隆没人出局。
-    persona_id（腔调）与 strategy_id（打法）均已接线，分别进 prompt。"""
+    persona_id / strategy_id 只作对局内标识；真正进入 prompt 的 tone / strategy 已在
+    开局边界从 YAML 冻结，恢复时不再查询活 registry。"""
 
     no: int  # 座位号，1..N
-    persona_id: str  # 人设 id；入图前由边界(validation→run._build_seats)填好
-    strategy_id: str  # 流派 id；同上由边界填好（无中性默认，必由 setup 指定）
-    model: str | None = None  # 逻辑模型名（llm 后端用）；random 后端为 None 也无妨
-    role: Role = Role.SERVANT  # 入图前由边界(validation→run._build_seats)摇定填好；默认仅为占位
+    persona_id: str
+    strategy_id: str
+    tone: str = ""
+    strategy: str = ""
+    role: Role
     # 夜晚情报（座位号列表，不含自己），含义随角色——可见性规则全在 rules.night_intel。
     intel: list[int] = Field(default_factory=list)
 
@@ -77,7 +78,7 @@ class Action(BaseModel):
 
 
 class Proposal(Action):
-    """组队阶段队长的结构化产出（AgentPlayer 直接解析后端返回的 JSON）。"""
+    """组队阶段队长的结构化产出。"""
 
     phase: Literal["propose"]
     team: list[int]  # 公开：带谁上任务（座位号，人数须等于本任务队伍人数）
@@ -88,7 +89,7 @@ class Proposal(Action):
 class Statement(Action):
     """讨论轮的结构化产出。"""
 
-    phase: Literal["discuss", "lady_announce", "banter"]
+    phase: Literal["discuss", "evil_chat", "lady_announce", "banter"]
     speech: NonEmptyStr  # 公开：一句桌面发言
     monologue: NonEmptyStr  # 仅观众可见：内心独白
 
@@ -124,4 +125,3 @@ class LadyChoice(Action):
     phase: Literal["lady_choose"]
     target_no: int
     monologue: NonEmptyStr
-

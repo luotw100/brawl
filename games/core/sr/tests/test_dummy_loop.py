@@ -3,7 +3,7 @@
 验证：
 1. 一个 expectation 与其 host 句子共用 commit_id。
 2. live 与 resume 以同一次序恢复 inbox 和私有 messages。
-3. 快照不能跳过逻辑 commit 校验，也不改变 thread 恢复结果。
+3. 错误日志在边界整体拒绝，不污染调用者 thread。
 4. renderer 只看到已分配 seq/commit_id 的已提交句子。
 core 全程不读 state 字段，未触发任何玩法名词。
 """
@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from core.sr.dummy import SEATS, DummyActor, DummyRules
 from core.sr.journal import DirJournal, NullJournal
 from core.sr.loop import resume, run
-from core.sr.types import Delivery, Expectation, ParseResult, Sentence
+from core.sr.tests.dummy import SEATS, DummyActor, DummyRules
+from core.sr.types import Delivery, Expectation, HostEmit, ParseResult, Sentence
 from core.threads import SeatThread
 
 
@@ -91,7 +91,7 @@ async def test_resume_restores_inboxes(tmp_path):
 
     journal2 = DirJournal(crashed, resume=True)
     threads = _threads()
-    await resume(DummyRules(), actors={}, journal=journal2, threads=threads, setup=None)
+    await resume(DummyRules(), journal=journal2, threads=threads, setup=None)
     journal2.close()
 
     assert threads[1].inbox == ["1号说：大家好"]  # 发言人：清过后只余自己这句
@@ -116,7 +116,6 @@ async def test_resume_rejects_logical_half_turn_even_if_caller_committed_it(tmp_
             return Expectation(seats=[1, 2], turn_id=f"dual.{step}")
 
     rep = tmp_path / "rep"
-    rep.mkdir()
 
     def sent(no: int, turn: str) -> Sentence:
         text = f"{no}号说：大家好"
@@ -127,19 +126,13 @@ async def test_resume_rejects_logical_half_turn_even_if_caller_committed_it(tmp_
             action=text,
         )
 
-    journal = DirJournal(rep, resume=True)
+    journal = DirJournal(rep, resume=False)
     # 完整 dual.0 + 误用 API 提交的半个 dual.1。新运行时自身不会这样写。
     journal.append_batch([sent(1, "dual.0"), sent(2, "dual.0")])
     journal.append_batch([sent(1, "dual.1")])
-    # 即便有人又为这份逻辑半组保存了哈希绑定的合法快照，快照也不能掩盖 commit 错误。
-    journal.save_snapshot(
-        journal.last_seq(),
-        TwoSeatRules().pack({"step": 0, "said": []}),
-    )
-
     threads = {1: SeatThread(), 2: SeatThread()}
     with pytest.raises(RuntimeError, match="席位不完整"):
-        await resume(TwoSeatRules(), actors={}, journal=journal, threads=threads, setup=None)
+        await resume(TwoSeatRules(), journal=journal, threads=threads, setup=None)
     journal.close()
 
 
@@ -197,12 +190,12 @@ async def test_resume_rejects_host_rows_that_live_loop_cannot_produce(
         journal.append_batch([bad, closing()])
 
     with pytest.raises(RuntimeError, match=message):
-        await resume(rules, actors={}, journal=journal, threads=_threads(), setup=None)
+        await resume(rules, journal=journal, threads=_threads(), setup=None)
     journal.close()
 
 
 @pytest.mark.asyncio
-async def test_resume_with_snapshot_matches_runtime(tmp_path):
+async def test_resume_matches_runtime(tmp_path):
     rep = tmp_path / "rep"
     rules = DummyRules()
     journal = DirJournal(rep, resume=False)
@@ -212,10 +205,9 @@ async def test_resume_with_snapshot_matches_runtime(tmp_path):
     await run(rules, setup=None, actors=actors, journal=journal, threads=live_threads)
     journal.close()
 
-    # 重新打开（snapshot 存在，但恢复真相仍来自完整 commit 日志）
     journal2 = DirJournal(rep, resume=True)
     restored_threads = _threads()
-    restored = await resume(rules, actors={}, journal=journal2, threads=restored_threads, setup=None)
+    restored = await resume(rules, journal=journal2, threads=restored_threads, setup=None)
     journal2.close()
 
     assert restored["step"] == 3
@@ -226,35 +218,42 @@ async def test_resume_with_snapshot_matches_runtime(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_cold_no_snapshot_replays_all(tmp_path):
-    """删掉 snapshot 后仍得同一终态——恢复正确性不依赖派生 checkpoint。"""
+async def test_run_owns_recovery_for_nonempty_journal(tmp_path) -> None:
+    """续跑 state 只能由 journal 重放产生，调用方没有可伪造的 state 参数。"""
     rep = tmp_path / "rep"
-    rules = DummyRules()
     journal = DirJournal(rep, resume=False)
-    journal.write_meta({"game": "dummy"})
-    live_threads = _threads()
-    await run(
-        rules,
+    first = "1号说：大家好"
+    journal.append_batch(
+        [
+            Sentence(
+                seq=-1,
+                turn_id="dummy.0.say",
+                speaker=1,
+                raw=first,
+                prompt="你是 1 号，请说一句话。",
+                deliveries=[Delivery(text=first, channels=["broadcast"])],
+                action=first,
+            )
+        ]
+    )
+
+    final = await run(
+        DummyRules(),
         setup=None,
         actors={no: DummyActor() for no in SEATS},
         journal=journal,
-        threads=live_threads,
+        threads=_threads(),
     )
+    rows = journal.load_sentences()
     journal.close()
 
-    # 删 snapshot，结果不变
-    (rep / "_snapshot.json").unlink()
-    journal2 = DirJournal(rep, resume=True)
-    restored_threads = _threads()
-    restored = await resume(rules, actors={}, journal=journal2, threads=restored_threads, setup=None)
-    journal2.close()
-
-    assert restored["step"] == 3
-    assert len(restored["said"]) == 3
-    assert {
-        no: thread.model_dump() for no, thread in restored_threads.items()
-    } == {no: thread.model_dump() for no, thread in live_threads.items()}
-
+    assert final["step"] == 3
+    assert [row["turn_id"] for row in rows] == [
+        "dummy.0.say",
+        "dummy.1.say",
+        "dummy.2.say",
+        "dummy.host.closing",
+    ]
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("journal_kind", ["dir", "null"])
@@ -321,7 +320,7 @@ async def test_simultaneous_speakers_all_receive_the_whole_batch_on_live_and_res
     assert live_threads[2].inbox == expected
 
     restored_threads = {1: SeatThread(), 2: SeatThread()}
-    await resume(rules, actors={}, journal=journal, threads=restored_threads, setup=None)
+    await resume(rules, journal=journal, threads=restored_threads, setup=None)
     assert {
         seat: thread.model_dump() for seat, thread in restored_threads.items()
     } == {seat: thread.model_dump() for seat, thread in live_threads.items()}
@@ -358,6 +357,35 @@ async def test_unknown_route_is_rejected_before_journal_or_threads_change(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_repeated_host_turn_id_fails_instead_of_being_silently_dropped(tmp_path):
+    class RepeatedHostRules(DummyRules):
+        def pending(self, state: dict) -> list[HostEmit]:
+            return [
+                HostEmit(
+                    turn_id="host.repeated",
+                    deliveries=[Delivery(text="重复串场", channels=["broadcast"])],
+                )
+            ]
+
+    journal = DirJournal(tmp_path / "rep", resume=False)
+    actors = {seat: DummyActor() for seat in SEATS}
+    with pytest.raises(RuntimeError, match="host turn_id 重复"):
+        await run(
+            RepeatedHostRules(),
+            setup=None,
+            actors=actors,
+            journal=journal,
+            threads=_threads(),
+        )
+
+    rows = journal.load_sentences()
+    assert len(rows) == 1
+    assert rows[0]["turn_id"] == "host.repeated"
+    assert [len(actors[seat].calls) for seat in SEATS] == [1, 0, 0]
+    journal.close()
+
+
+@pytest.mark.asyncio
 async def test_resume_rejects_unknown_route_before_clearing_threads(tmp_path):
     """外部篡改出的毒路由在恢复边界整体失败，不能留下半恢复 thread。"""
     journal = DirJournal(tmp_path / "rep", resume=False)
@@ -379,7 +407,7 @@ async def test_resume_rejects_unknown_route_before_clearing_threads(tmp_path):
     }
 
     with pytest.raises(RuntimeError, match="unknown seats"):
-        await resume(DummyRules(), actors={}, journal=journal, threads=threads, setup=None)
+        await resume(DummyRules(), journal=journal, threads=threads, setup=None)
 
     assert {seat: thread.inbox for seat, thread in threads.items()} == {
         seat: [f"保留{seat}"] for seat in SEATS

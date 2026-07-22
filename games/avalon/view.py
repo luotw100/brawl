@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from avalon.state import ProposalRecord, Role
 from core.threads import ThreadMessage
@@ -20,7 +19,6 @@ class PlayerView:
     seat_no: int
     role: Role
     intel: list[int]
-    model: Any = None
     lineup: list[Role] = field(default_factory=list)
     players: int = 0
     leader_no: int = 0
@@ -41,13 +39,15 @@ class PlayerView:
     turn_prompt: str = ""
     prompt: str = ""
     phase: str = ""
+    evil_team: list[int] = field(default_factory=list)
 
     def others(self) -> list[int]:
         return [no for no in range(1, self.players + 1) if no != self.seat_no]
 
     def good_suspects(self) -> list[int]:
-        """红方视角下可能是梅林的候选（除自己和已知同伙外）。"""
-        return [no for no in self.others() if no not in self.intel]
+        """刺客候选：终局互认后，排除已经明确告知的完整红方名单。"""
+        known_evil = self.evil_team or [self.seat_no, *self.intel]
+        return [no for no in self.others() if no not in known_evil]
 
     def lady_candidates(self) -> list[int]:
         """湖中仙女可查验对象：从未持有过令牌的人。"""

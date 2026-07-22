@@ -3,25 +3,34 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 from avalon import rules as av_rules
-from avalon.registry import load_registry
 from avalon.rules_engine import AvalonRules, AvalonState
 from avalon.state import Role, Seat
 from core.sr.loop import deliver
-from core.sr.tts import SilenceTTSBackend, TTSRenderer
+from core.sr.tts import TTSRenderer
+from core.sr.types import Sentence
 from core.threads import SeatThread
 
 _ROLES = [Role.MERLIN, Role.PERCIVAL, Role.SERVANT, Role.ASSASSIN, Role.MORGANA]
 
 
 def _rules() -> AvalonRules:
-    return AvalonRules(registry=load_registry(), settings=None)
+    return AvalonRules()
 
 
 def _state(**over) -> AvalonState:
     seats = [
-        Seat(no=i + 1, persona_id="fox", strategy_id="prudent", model="", role=role, intel=av_rules.night_intel(_ROLES, i + 1))
+        Seat(
+            no=i + 1,
+            persona_id="fox",
+            strategy_id="prudent",
+            tone="tone",
+            strategy="strategy",
+            role=role,
+            intel=av_rules.night_intel(_ROLES, i + 1),
+        )
         for i, role in enumerate(_ROLES)
     ]
     st = AvalonState(seats=seats, leader=1)
@@ -80,7 +89,7 @@ def test_three_failed_quests_evil_wins() -> None:
     assert st.phase == "banter"
 
 
-def test_three_succeeded_quests_triggers_assassination() -> None:
+def test_three_succeeded_quests_triggers_full_evil_chat_before_assassination() -> None:
     r = _rules()
     from avalon.state import ProposalRecord
     history = [
@@ -91,10 +100,19 @@ def test_three_succeeded_quests_triggers_assassination() -> None:
     st = r.apply(st, json.dumps({"kind": "quest", "seat": 1, "success": True}))
     st = r.apply(st, json.dumps({"kind": "quest", "seat": 2, "success": True}))
     st = r.advance(st)
-    assert st.phase == "assassinate"
+    assert st.phase == "evil_chat"
     assert st.winner is None  # 刺杀前胜负未定
+    # 完整红方名单作为终局披露信息独立保存，不篡改开局夜视。
+    assert st.evil_team == [4, 5]
+    assert st._seat(4).intel == [5]
+    assert st._seat(5).intel == [4]
     exp = r.expected(st)
-    assert exp.seats == [4]  # 只有刺客行动
+    assert exp.seats == [4]
+    st = r.advance(r.apply(st, json.dumps({"kind": "evil_chat", "seat": 4})))
+    assert r.expected(st).seats == [5]
+    st = r.advance(r.apply(st, json.dumps({"kind": "evil_chat", "seat": 5})))
+    assert st.phase == "assassinate"
+    assert r.expected(st).seats == [4]
 
 
 def test_quest_result_resets_rejections_and_rotates_leader() -> None:
@@ -139,12 +157,21 @@ def test_vote_result_tts_reads_summary_while_all_inboxes_receive_vote_ledger(tmp
     deliver(emit.deliveries, threads)
     assert all(ledger.text in threads[no].inbox for no in threads)
 
-    utterances = TTSRenderer(SilenceTTSBackend(), tmp_path)._utterances(
-        [{
-            "seq": 7,
-            "speaker": "host",
-            "deliveries": [d.model_dump(mode="json") for d in emit.deliveries],
-        }],
+    class FakeTTS:
+        name: ClassVar[str] = "fake"
+
+        async def synthesize(self, text: str, voice_id: str) -> bytes:
+            raise AssertionError("this test only projects utterances")
+
+    utterances = TTSRenderer(FakeTTS(), tmp_path)._utterances(
+        [
+            Sentence(
+                seq=7,
+                turn_id="vote",
+                speaker="host",
+                deliveries=emit.deliveries,
+            )
+        ],
         [f"player-{no}" for no in range(1, 6)],
         "host-voice",
     )
@@ -162,10 +189,43 @@ def test_pregame_opening_emitted_once() -> None:
     assert all(json.loads(e.action)["kind"] != "game_start" for e in r.pending(st))
 
 
-def test_pack_unpack_roundtrip() -> None:
+def test_lady_transfer_is_applied_before_host_announces_it() -> None:
     r = _rules()
-    st = _state(phase="quest", team=[1, 4], cards={1: True}, rejections=2)
-    assert r.unpack(r.pack(st)) == st
+    st = _state(
+        phase="lady_announce",
+        pregame_done=True,
+        lady_holder=2,
+        lady_used=[2],
+        lady_target=4,
+        lady_seen="evil",
+    )
+    announced = r.apply(
+        st,
+        json.dumps(
+            {
+                "kind": "lady_announce",
+                "seat": 2,
+                "speech": "四号是红方",
+                "monologue": "如实说",
+            }
+        ),
+    )
+    # 玩家宣布本身还没有声称令牌转移。
+    assert announced.lady_holder == 2
+    assert r.pending(announced) == []
+
+    transferred = r.advance(announced)
+    assert transferred.lady_holder == 4
+    assert transferred.lady_used == [2, 4]
+    emit = r.pending(transferred)
+    assert len(emit) == 1
+    assert json.loads(emit[0].action) == {
+        "kind": "lady_transfer",
+        "holder": 2,
+        "target": 4,
+    }
+    assert "令牌由二号传给四号" in emit[0].deliveries[0].text
+    assert "查验四号" not in emit[0].deliveries[0].text
 
 
 def test_banter_order_losers_first() -> None:

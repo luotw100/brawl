@@ -14,7 +14,8 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
-from core.sr.errors import FatalActorError
+from core.parsing import JsonParseError
+from core.sr.errors import FatalActorError, RetryableActorError
 from core.sr.journal import Journal
 from core.sr.rules import Rules
 from core.sr.types import Delivery, Expectation, HostEmit, ParseResult, Renderer, Sentence
@@ -24,17 +25,15 @@ from core.threads import SeatThread, ThreadMessage
 class Actor(Protocol):
     """一个席位的说话者契约。
 
-    commit_turn / rollback 是“产出验收”回执：rules.parse 过才 commit，不过就
-    rollback，避免坏产出污染 actor 会话。无会话 actor 的两个方法都是空操作。
+    commit_turn / rollback 是 turn 事务回执：整个 expectation 已落 journal 才
+    commit；任一 sibling、parse、apply 或 journal 失败都 rollback 全体行动者。
     """
 
-    async def speak(self, seat: int, view: Any, turn_id: str) -> tuple[str, dict[str, Any] | None]: ...
+    async def speak(self, seat: int, view: Any, turn_id: str) -> str: ...
 
     def commit_turn(self, seat: int) -> None: ...
 
     async def rollback(self, seat: int) -> None: ...
-
-    async def close(self) -> None: ...
 
 
 def _validate_seat_keys(mapping: dict[int, Any], name: str) -> None:
@@ -171,15 +170,40 @@ def _publish_batch(sentences: list[Sentence], threads: dict[int, SeatThread]) ->
         _deliver_validated(sentence.deliveries, threads)
 
 
-def _take_pending(rules: Rules, state: Any, seen_turns: set[str]) -> list[HostEmit]:
-    """按 live 契约取尚未落过日志的 host emit，并立刻占用其 turn_id。"""
-    pending: list[HostEmit] = []
-    for emit in rules.pending(state):
-        if emit.turn_id in seen_turns:
-            continue
-        pending.append(emit)
-        seen_turns.add(emit.turn_id)
-    return pending
+def _validated_pending(
+    rules: Rules,
+    state: Any,
+    seen_turns: set[str],
+) -> tuple[list[HostEmit], set[str]]:
+    """在 host 边界验完整批次；turn_id 任何重复都大声失败。"""
+    raw = rules.pending(state)
+    if not isinstance(raw, list):
+        raise RuntimeError("rules.pending must return a list")
+    checked: list[HostEmit] = []
+    updated = set(seen_turns)
+    for index, emit in enumerate(raw):
+        try:
+            item = HostEmit.model_validate(emit.model_dump(), strict=True)
+        except (AttributeError, ValidationError) as exc:
+            raise RuntimeError(f"rules.pending returned malformed HostEmit at {index}") from exc
+        if item.turn_id in updated:
+            raise RuntimeError(f"host turn_id 重复：{item.turn_id}")
+        updated.add(item.turn_id)
+        checked.append(item)
+    return checked, updated
+
+
+def _logged_host_turns(batches: list[list[dict[str, Any]]]) -> set[str]:
+    seen: set[str] = set()
+    for batch in batches:
+        for row in batch:
+            if row["speaker"] != "host":
+                continue
+            turn_id = row["turn_id"]
+            if turn_id in seen:
+                raise RuntimeError(f"日志中 host turn_id 重复：{turn_id}")
+            seen.add(turn_id)
+    return seen
 
 
 def _host_sentence(emit: HostEmit) -> Sentence:
@@ -291,6 +315,17 @@ async def _gather_cancel_on_error(coroutines: list[Any]) -> list[Any]:
         raise
 
 
+async def _rollback_turn(actors: dict[int, Actor], seats: list[int]) -> None:
+    """并发回滚整个 expectation；任何回滚失败都意味着 actor 已不可再用。"""
+    results = await asyncio.gather(
+        *(actors[seat].rollback(seat) for seat in seats),
+        return_exceptions=True,
+    )
+    failures = [result for result in results if isinstance(result, BaseException)]
+    if failures:
+        raise FatalActorError("expectation rollback 未能完整完成") from failures[0]
+
+
 async def run(
     rules: Rules,
     setup: Any,
@@ -299,60 +334,46 @@ async def run(
     threads: dict[int, SeatThread],
     *,
     renderer: Renderer | None = None,
-    snapshot_every: int = 0,
-    state: Any = None,
     max_concurrency: int = 0,
 ) -> Any:
     """跑一整局到终局，返回终局 state。
 
-    ``snapshot_every > 0`` 时在 turn 边界节流保存 state；0 表示只存终态。
-    ``max_concurrency > 0`` 限制同时 actor 调用数；0 不限。
+    ``max_concurrency > 0`` 限制同时 actor 调用数；0 不限。journal 非空时，
+    本函数亲自严格重放出 state/thread 后再继续，不接受调用方提供的裸状态。
 
     本函数采用 fail-stop 语义：任一 actor、journal 或 renderer 异常都会终止本次运行。
     调用方不得捕获后原地复用同一组 actors 继续；应关闭它们，并从已提交 journal
     通过 ``resume`` 建立全新 actor session。
     """
     _validate_live_world(actors, threads)
-    if state is None:
-        state = rules.initial_state(setup)
-    last_seq = journal.last_seq()
-    spoken: set[int] = set()
     existing_batches = journal.load_batches()
-    _validate_logged_batches(existing_batches, threads)
-    journaled_host_turns = {
-        row["turn_id"]
-        for batch_rows in existing_batches
-        for row in batch_rows
-        if row["speaker"] == "host"
-    }
+    if existing_batches:
+        state = await resume(rules, journal, threads, setup=setup)
+    else:
+        state = rules.initial_state(setup)
+    spoken: set[int] = set()
+    journaled_host_turns = _logged_host_turns(existing_batches)
 
-    def _collect_host(buffer: list[Sentence]) -> None:
-        """把当前 state 的 host emit 收进本 turn，此时不路由、不渲染。"""
-        buffer.extend(
-            _host_sentence(emit)
-            for emit in _take_pending(rules, state, journaled_host_turns)
-        )
-
-    def _commit_and_publish(buffer: list[Sentence]) -> None:
-        nonlocal last_seq
-        if not buffer:
-            return
-        _validate_sentence_batch(buffer, threads)
-        last_seq = journal.append_batch(buffer)
-        # 先完整恢复 thread；renderer 异常也不会留下半批 inbox。
+    def _publish_committed(buffer: list[Sentence]) -> None:
+        """journal 已是真相后，机械发布到 thread 和 renderer。"""
         _publish_batch(buffer, threads)
         spoken.update(
             sentence.speaker for sentence in buffer if sentence.speaker != "host"
         )
-        # append_batch 已分配 seq/commit_id，renderer 永远看到可定位的句子。
         if renderer is not None:
             for sentence in buffer:
                 renderer.render_sentence(sentence)
-        buffer.clear()
 
-    batch: list[Sentence] = []
-    _collect_host(batch)
-    _commit_and_publish(batch)
+    # 非空 journal 的 state 已由 resume 重放到当前边界，那一刻的 pending 也已在
+    # 日志中；空日志（包括 initial host 提交前崩溃）则仍需生成开场。
+    if not existing_batches:
+        initial_emits, next_seen = _validated_pending(rules, state, journaled_host_turns)
+        initial_batch = [_host_sentence(emit) for emit in initial_emits]
+        if initial_batch:
+            _validate_sentence_batch(initial_batch, threads)
+            journal.append_batch(initial_batch)
+            journaled_host_turns = next_seen
+            _publish_committed(initial_batch)
 
     semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency > 0 else None
 
@@ -363,49 +384,73 @@ async def run(
             seat: int,
             _state: Any = state,
             _turn_id: str = expectation.turn_id,
-        ) -> tuple[int, str, dict[str, Any] | None, Any, str]:
+        ) -> tuple[int, str, Any, str]:
             view = rules.view(seat, _state, threads[seat], first_speak=seat not in spoken)
             turn_prompt = getattr(view, "turn_prompt", None)
             if not isinstance(turn_prompt, str):
                 raise TypeError(f"rules.view result.turn_prompt must be str, got {type(turn_prompt)}")
-            if semaphore is None:
-                raw, audit, parsed = await _act_with_retry(
-                    rules, actors[seat], seat, view, _state, _turn_id
-                )
-            else:
-                async with semaphore:
-                    raw, audit, parsed = await _act_with_retry(
-                        rules, actors[seat], seat, view, _state, _turn_id
-                    )
-            return seat, raw, audit, parsed, turn_prompt
-
-        gathered = await _gather_cancel_on_error(
-            [_ask(seat) for seat in expectation.seats]
-        )
-
-        for seat, raw, _audit, parsed, turn_prompt in gathered:
-            batch.append(
-                Sentence(
-                    seq=-1,
-                    turn_id=expectation.turn_id,
-                    speaker=seat,
-                    raw=raw,
-                    prompt=turn_prompt,
-                    deliveries=parsed.deliveries,
-                    action=parsed.action,
-                )
+            raw, parsed = await _act_with_retry(
+                rules,
+                actors[seat],
+                seat,
+                view,
+                _state,
+                _turn_id,
+                semaphore,
             )
-            state = rules.apply(state, parsed.action)
+            return seat, raw, parsed, turn_prompt
 
-        _collect_host(batch)
-        state = rules.advance(state)
-        _collect_host(batch)
-        _commit_and_publish(batch)
+        try:
+            gathered = await _gather_cancel_on_error(
+                [_ask(seat) for seat in expectation.seats]
+            )
 
-        if snapshot_every and (last_seq + 1) % snapshot_every == 0:
-            journal.save_snapshot(last_seq, rules.pack(state))
+            candidate_state = state
+            batch: list[Sentence] = []
+            for seat, raw, parsed, turn_prompt in gathered:
+                batch.append(
+                    Sentence(
+                        seq=-1,
+                        turn_id=expectation.turn_id,
+                        speaker=seat,
+                        raw=raw,
+                        prompt=turn_prompt,
+                        deliveries=parsed.deliveries,
+                        action=parsed.action,
+                    )
+                )
+                candidate_state = rules.apply(candidate_state, parsed.action)
 
-    journal.save_snapshot(last_seq, rules.pack(state))
+            emits, candidate_seen = _validated_pending(
+                rules,
+                candidate_state,
+                journaled_host_turns,
+            )
+            batch.extend(_host_sentence(emit) for emit in emits)
+            candidate_state = rules.advance(candidate_state)
+            emits, candidate_seen = _validated_pending(
+                rules,
+                candidate_state,
+                candidate_seen,
+            )
+            batch.extend(_host_sentence(emit) for emit in emits)
+
+            _validate_sentence_batch(batch, threads)
+            journal.append_batch(batch)
+        except BaseException as exc:
+            try:
+                await _rollback_turn(actors, expectation.seats)
+            except BaseException as rollback_exc:
+                raise rollback_exc from exc
+            raise
+
+        # 至此 journal 已经是唯一真相；actor session 才允许保留本轮消息。
+        state = candidate_state
+        journaled_host_turns = candidate_seen
+        for seat in expectation.seats:
+            actors[seat].commit_turn(seat)
+        _publish_committed(batch)
+
     return state
 
 
@@ -415,7 +460,7 @@ def _replay_player_batch(
     batch: list[dict[str, Any]],
     seen_host_turns: set[str],
     threads: dict[int, SeatThread],
-) -> Any:
+) -> tuple[Any, set[str]]:
     """验证并 fold 一个 live loop 产出的完整玩家事务。"""
     commit_id = batch[0]["commit_id"]
     if rules.is_terminal(state):
@@ -444,16 +489,16 @@ def _replay_player_batch(
 
     for row in player_rows:
         state = rules.apply(state, row["action"])
-    host_emits = _take_pending(rules, state, seen_host_turns)
+    host_emits, next_seen = _validated_pending(rules, state, seen_host_turns)
     state = rules.advance(state)
-    host_emits.extend(_take_pending(rules, state, seen_host_turns))
+    more_emits, next_seen = _validated_pending(rules, state, next_seen)
+    host_emits.extend(more_emits)
     _assert_host_rows(batch[player_count:], host_emits, commit_id=commit_id)
-    return state
+    return state, next_seen
 
 
 async def resume(
     rules: Rules,
-    actors: dict[int, Actor],
     journal: Journal,
     threads: dict[int, SeatThread],
     *,
@@ -461,37 +506,44 @@ async def resume(
 ) -> Any:
     """从完整 commit 日志恢复 state 和每席位的完整私有 thread。
 
-    thread 从全部 Sentence 线性重建；state 也必须逐批 fold 全日志，以验证每个
-    commit 当时的 expected seats/turn_id。快照不能跳过这层逻辑校验，否则一份与
-    物理日志哈希相符、但内容语义不完整的快照会让 state/thread 分裂。当前快照仅是
-    原子保存且与日志绑定的派生产物，不参与恢复真相；将来若要用它加速，必须先为
-    被跳过的 commit 提供等价的可验证证明。
+    thread 从全部 Sentence 线性重建；state 也逐批 fold 全日志，以验证每个 commit
+    当时的 expected seats/turn_id。恢复先在隔离的 thread 副本中完成，整份日志通过
+    后才一次发布给调用者，错误日志不会留下半恢复内存状态。
     """
-    del actors  # resume 是纯重放，不调 actor。
     batches = journal.load_batches()
     _validate_seat_keys(threads, "threads")
     checked_batches = _validate_logged_batches(batches, threads)
+    _logged_host_turns(batches)
 
-    for thread in threads.values():
-        thread.inbox.clear()
-        thread.messages.clear()
+    working_threads = {seat: SeatThread() for seat in threads}
     state = rules.initial_state(setup)
     seen_host_turns: set[str] = set()
     batch_index = 0
 
     # live loop 在首个 expectation 之前单独提交 initial pending。日志为空表示
     # 进程可能恰好在这次提交前崩溃，属于合法未开始状态；若已有后续 batch 则不能跳过。
-    initial_emits = _take_pending(rules, state, seen_host_turns)
+    initial_emits, initial_seen = _validated_pending(rules, state, seen_host_turns)
     if initial_emits and batches:
         first = batches[0]
         _assert_host_rows(first, initial_emits, commit_id=first[0]["commit_id"])
-        _publish_batch(checked_batches[0], threads)
+        _publish_batch(checked_batches[0], working_threads)
+        seen_host_turns = initial_seen
         batch_index = 1
 
     for index in range(batch_index, len(batches)):
         batch = batches[index]
-        state = _replay_player_batch(rules, state, batch, seen_host_turns, threads)
-        _publish_batch(checked_batches[index], threads)
+        state, seen_host_turns = _replay_player_batch(
+            rules,
+            state,
+            batch,
+            seen_host_turns,
+            working_threads,
+        )
+        _publish_batch(checked_batches[index], working_threads)
+
+    for seat, restored in working_threads.items():
+        threads[seat].inbox[:] = restored.inbox
+        threads[seat].messages[:] = restored.messages
     return state
 
 
@@ -502,34 +554,48 @@ async def _act_with_retry(
     view: Any,
     state: Any,
     turn_id: str,
-) -> tuple[str, dict[str, Any] | None, Any]:
-    """调 actor + rules.parse，作为一个单元带退避重试。"""
+    semaphore: asyncio.Semaphore | None,
+) -> tuple[str, Any]:
+    """只重试明确的瞬态 actor 失败与明确的模型产出拒绝。"""
     for retry_no in range(1, _MAX_RETRIES + 1):
+        retry_error: BaseException
         try:
+            if semaphore is None:
+                raw = await actor.speak(seat, view, turn_id)
+            else:
+                async with semaphore:
+                    raw = await actor.speak(seat, view, turn_id)
+        except asyncio.CancelledError:
+            await actor.rollback(seat)
+            raise
+        except RetryableActorError as exc:
+            await actor.rollback(seat)
+            retry_error = exc
+        except BaseException:
+            await actor.rollback(seat)
+            raise
+        else:
             try:
-                raw, audit = await actor.speak(seat, view, turn_id)
-                try:
-                    parsed = rules.parse(seat, raw, state)
-                except Exception:
-                    await actor.rollback(seat)
-                    raise
-                actor.commit_turn(seat)
-                return raw, audit, parsed
-            except asyncio.CancelledError:
+                parsed = rules.parse(seat, raw, state)
+            except JsonParseError as exc:
+                await actor.rollback(seat)
+                retry_error = exc
+            except BaseException:
                 await actor.rollback(seat)
                 raise
-        except FatalActorError:
-            raise
-        except Exception as exc:
-            if retry_no == _MAX_RETRIES:
-                raise
-            delay = min(_BACKOFF_BASE * 2 ** (retry_no - 1), _BACKOFF_CAP) + random.random()
-            print(
-                f"[retry] 座位{seat} turn={turn_id} 第 {retry_no}/{_MAX_RETRIES} 次失败，"
-                f"{delay:.1f}s 后重试：{exc}",
-                file=sys.stderr,
-            )
-            await _sleep(delay)
+            else:
+                return raw, parsed
+
+        if retry_no == _MAX_RETRIES:
+            raise retry_error
+        delay = min(_BACKOFF_BASE * 2 ** (retry_no - 1), _BACKOFF_CAP) + random.random()
+        print(
+            f"[retry] 座位{seat} turn={turn_id} 第 {retry_no}/{_MAX_RETRIES} 次失败，"
+            f"{delay:.1f}s 后重试：{retry_error}",
+            file=sys.stderr,
+        )
+        # semaphore 只包实际 speak；回滚与退避都不会占用并发槽。
+        await _sleep(delay)
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -538,28 +604,6 @@ async def _sleep(delay: float) -> None:
 
 
 def run_async_main[T](coroutine) -> T:  # type: ignore[no-untyped-def]
-    """用 asyncio.Runner 运行 CLI 协程，并把首次 SIGINT 转成友好取消。"""
-    import signal
-
+    """运行 CLI 协程；Runner 原生提供首次取消、再次 SIGINT 强中断。"""
     with asyncio.Runner() as runner:
-        loop = runner.get_loop()
-        task = loop.create_task(coroutine)
-        interrupted = False
-        previous = signal.getsignal(signal.SIGINT)
-
-        def handle_sigint() -> None:
-            nonlocal interrupted
-            if interrupted:
-                return
-            interrupted = True
-            task.cancel()
-
-        loop.add_signal_handler(signal.SIGINT, handle_sigint)
-        try:
-            try:
-                return loop.run_until_complete(task)
-            except asyncio.CancelledError as exc:
-                raise KeyboardInterrupt from exc
-        finally:
-            loop.remove_signal_handler(signal.SIGINT)
-            signal.signal(signal.SIGINT, previous)
+        return runner.run(coroutine)
