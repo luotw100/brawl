@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -35,7 +36,7 @@ import httpx
 
 from brawl.runtime.errors import FatalActorError, RetryableActorError
 from brawl.runtime.messages import ChatMessage
-from brawl.runtime.opencode_runtime import OpenCodeConnection
+from brawl.runtime.opencode_runtime import OpenCodeConnection, OpenCodeRuntimeError
 
 
 class ModelBackend(Protocol):
@@ -139,16 +140,36 @@ class OpenCodeBackend:
             return None
         return resp.json()
 
-    async def list_models(self) -> list[dict[str, Any]]:
-        """查询 OpenCode server 当前可用的模型列表。"""
+    async def list_model_refs(self) -> set[str]:
+        """查询 OpenCode server 当前可用模型的 providerID/modelID 全集。"""
         data = await self._request("GET", "/config/providers", directory=self._workspace_root)
         providers = data.get("providers", []) if isinstance(data, dict) else []
-        models: list[dict[str, Any]] = []
+        refs: set[str] = set()
         for provider in providers:
-            raw = provider.get("models", {}) if isinstance(provider, dict) else {}
-            if isinstance(raw, dict):
-                models.extend(m for m in raw.values() if isinstance(m, dict))
-        return models
+            if not isinstance(provider, dict):
+                continue
+            provider_id = provider.get("id")
+            raw = provider.get("models", {})
+            if isinstance(provider_id, str) and isinstance(raw, dict):
+                refs.update(f"{provider_id}/{model_id}" for model_id in raw)
+        return refs
+
+    async def assert_models_available(self, refs: Iterable[str]) -> None:
+        """开工前一次性核对：引用的模型必须在 server 可用列表里（空引用 = server 默认，跳过）。
+
+        模型名打错的典型事故不该推迟到该座位第一次发言才炸（整局开局作废）；
+        这里是世界一致性校验，违规抛 OpenCodeRuntimeError，由 CLI 友好打印。
+        """
+        wanted = {ref for ref in refs if ref}
+        if not wanted:
+            return
+        available = await self.list_model_refs()
+        missing = sorted(wanted - available)
+        if missing:
+            raise OpenCodeRuntimeError(
+                f"OpenCode server 不提供这些模型引用：{missing}；"
+                f"请检查 models.yaml 的 opencode_model（server 可用：{sorted(available)}）"
+            )
 
     async def _create_session(self, seat_no: int) -> str:
         payload: dict[str, Any] = {
@@ -390,7 +411,9 @@ class OpenCodeBackend:
         return resp
 
     async def call(self, phase: str, view: Any, messages: list[ChatMessage]) -> ChatMessage:
-        seat_no = getattr(view, "seat_no", 0)
+        seat_no = getattr(view, "seat_no", None)
+        if type(seat_no) is not int or seat_no <= 0:
+            raise TypeError(f"view.seat_no must be a positive int, got {seat_no!r}")
         session_id = await self._ensure_session(seat_no)
         self._raise_if_poisoned(seat_no)
         # 防御性清理上一轮未验收消息；正常 parse 失败会在 rollback 中立即完成。
@@ -398,7 +421,7 @@ class OpenCodeBackend:
 
         text = self._messages_to_text(messages)
         model_ref = self._model_for_seat(seat_no)
-        # 玩法层在 view 上挂的 JSON Schema；None 表示本局走纯文本协议（如狼人杀）。
+        # 玩法层在 view 上挂的 JSON Schema；None 表示本局走纯文本协议（无结构化输出约束）。
         schema = getattr(view, "schema", None)
         if schema is not None and not isinstance(schema, dict):
             raise TypeError(f"view.schema must be dict or None, got {type(schema)}")

@@ -18,7 +18,7 @@ import pytest
 from brawl.runtime.errors import FatalActorError, RetryableActorError
 from brawl.runtime.messages import ChatMessage
 from brawl.runtime.opencode_backend import OpenCodeBackend, OpenCodeSessionPoisoned
-from brawl.runtime.opencode_runtime import OpenCodeConnection
+from brawl.runtime.opencode_runtime import OpenCodeConnection, OpenCodeRuntimeError
 
 _SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -52,6 +52,7 @@ class _FakeOpenCode:
         self.block_post = False
         self.started = asyncio.Event()
         self.session_payload: dict[str, Any] | None = None
+        self.providers: list[dict[str, Any]] = []
 
     async def request(
         self,
@@ -61,6 +62,8 @@ class _FakeOpenCode:
         directory: str,
         **kwargs: Any,
     ) -> Any:
+        if method == "GET" and path == "/config/providers":
+            return {"providers": self.providers}
         assert directory.endswith("/seat-01")
         if method == "POST" and path.endswith("/session"):
             self.session_payload = kwargs.get("json")
@@ -343,6 +346,48 @@ async def test_malformed_response_poisons_session() -> None:
         assert 1 in backend._poisoned_sessions
         with pytest.raises(OpenCodeSessionPoisoned, match="已被毒化"):
             await _call(backend)
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_assert_models_available_passes_when_all_present() -> None:
+    server = _FakeOpenCode()
+    server.providers = [
+        {"id": "opencode-go", "models": {"deepseek-v4-pro": {}, "glm-5.2": {}}},
+        "not-a-dict",  # 坏形状条目静默跳过，不影响良构 provider
+        {"id": 42, "models": {"x": {}}},  # provider id 非字符串同样跳过
+    ]
+    backend = _backend(server)
+    try:
+        await backend.assert_models_available(
+            ["opencode-go/deepseek-v4-pro", "opencode-go/glm-5.2", ""]
+        )
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_assert_models_available_raises_and_lists_missing() -> None:
+    server = _FakeOpenCode()
+    server.providers = [{"id": "opencode-go", "models": {"deepseek-v4-pro": {}}}]
+    backend = _backend(server)
+    try:
+        with pytest.raises(OpenCodeRuntimeError, match=r"opencode-go/glm-9"):
+            await backend.assert_models_available(
+                ["opencode-go/deepseek-v4-pro", "opencode-go/glm-9"]
+            )
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_assert_models_available_skips_empty_refs() -> None:
+    """空引用 = 用 server 默认模型，必须整体跳过、不发起任何请求。"""
+    server = _FakeOpenCode()  # 无 providers；一旦发请求 fake 会因路径不匹配而炸
+    backend = _backend(server)
+    try:
+        await backend.assert_models_available(["", ""])
     finally:
         await backend.close()
 

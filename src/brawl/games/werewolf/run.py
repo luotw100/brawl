@@ -128,10 +128,9 @@ async def _open_actors(
 
     assert installation is not None and replay is not None
     async with open_opencode_runtime(installation, replay, len(setup.roles)) as connection:
-        backend = OpenCodeBackend(
-            connection=connection,
-            seat_models=_build_seat_models(setup),
-        )
+        seat_models = _build_seat_models(setup)
+        backend = OpenCodeBackend(connection=connection, seat_models=seat_models)
+        await backend.assert_models_available(seat_models.values())
         try:
             yield {
                 no: OpenCodeActor(backend)
