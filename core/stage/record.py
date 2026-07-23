@@ -576,7 +576,7 @@ async def _record(settings: RecordSettings) -> None:
     _console.rule(f"[bold]录制 {settings.dir.name}[/bold]")
     speed = f" · speed {settings.speed:g}×" if settings.speed != 1.0 else ""
     _console.print(f"[dim]→ {settings.video_path} · {settings.width}×{settings.height} · 编码 {settings.encoder}{speed}{limit}[/dim]")
-    with tempfile.TemporaryDirectory(prefix="stage-record-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="brawl-record-") as tmp:
         tmpdir = Path(tmp)
         web_dist = _build_web(tmpdir)  # 每局现构建前端，永远录最新（无 --web-dist、无旧 dist 地雷）
         beats, origin, video = await _capture(settings, web_dist, tmpdir)  # 视频已是成品 H.264/HEVC（边播边编）
@@ -592,9 +592,9 @@ async def _record(settings: RecordSettings) -> None:
 
 
 def main(argv: list[str]) -> int:
-    """`stage-record` 的薄入口：argv 全交给 RecordSettings 的 CLI source。
+    """`brawl record` 的薄入口：argv 全交给 RecordSettings 的 CLI source。
 
-    配置错误（坏参数 / 校验失败）只打友好消息、不甩 traceback（与 games/cli.py 同口径）。"""
+    配置错误（坏参数 / 校验失败）只打友好消息、不甩 traceback（与 brawl/cli.py 同口径）。"""
     try:
         settings = RecordSettings.load(cli_args=argv)
     except ValidationError as e:
