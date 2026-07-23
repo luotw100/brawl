@@ -18,12 +18,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from brawl.runtime.threads import SeatThread
 from brawl.runtime.types import Expectation, HostEmit, ParseResult
-
-State_contra = TypeVar("State_contra", contravariant=True)  # noqa: F841 — 仅用于 Protocol 类型示意
 
 
 @runtime_checkable
@@ -63,7 +61,7 @@ class Rules(Protocol):
     def parse(self, seat: int, raw: str, state: Any) -> ParseResult:
         """解析 + 校验该席位产出的 raw。唯一懂语义的地方。
 
-        模型产出不合规必须抛 core.parsing.JsonParseError，core 才会重新请求；
+        模型产出不合规必须抛 brawl.runtime.parsing.JsonParseError，core 才会重新请求；
         其他异常视为规则实现错误并立即 fail-stop。
         """
         ...

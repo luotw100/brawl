@@ -123,7 +123,7 @@ class HostEmit(_StrictModel):
 
     host 是 rules 纯函数模板产出（不调 actor）。speaker 固定 "host"；turn_id/路由/action 由
     rules 在此处给定。`action` 是给观众/stage 读的结构化 payload（如 reveal 的角色揭示），
-    `deliveries` 的 text 是面向席位的自然语言话。两者同一条总线服务两端（见 §8）。
+    `deliveries` 的 text 是面向席位的自然语言话。两者同一条总线服务两端。
     """
 
     turn_id: str = Field(min_length=1)

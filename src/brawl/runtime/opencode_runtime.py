@@ -1,4 +1,8 @@
-"""Avalon/Werewolf owned OpenCode server lifecycle and filesystem isolation."""
+"""托管 OpenCode server 的生命周期与文件系统隔离（游戏盲）。
+
+每局一个 bwrap 沙箱里的 `opencode serve`：只读系统挂载、每座位独立 workspace、
+随机密码、版本钉死并做健康检查。本模块只管进程与沙箱，不懂任何玩法。
+"""
 
 from __future__ import annotations
 

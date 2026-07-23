@@ -68,7 +68,7 @@ brawl/
 
 ## 核心不变量
 
-1. **runtime/stage 搜不到任何玩法名词**；玩法分发经 registry，装配只在 brawl/cli.py。
+1. **runtime/stage 不 import 玩法包**；玩法分发经 registry，装配只在 brawl/cli.py。
 2. **"懂规则"只发生在玩法包**。聚合（票型/任务牌/狼刀结果）只能出自 rules 的 state 或
    action payload；stagecast 不得重新计数，不得反解 turn_id。
 3. 路由（谁听得到）由 rules 在 parse 里用 channels 声明；私密信息只进授权席位 inbox 和

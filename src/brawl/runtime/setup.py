@@ -23,8 +23,8 @@ def resolve_personas(
 ) -> list[str]:
     """显式列表逐个校验；缺省从玩家人设池抽样。
 
-    allow_repeat=False（默认，阿瓦隆）：无放回抽样，各座位人设互异（免撞音色/网名）。
-    allow_repeat=True（狼人杀 12 人局）：人设池不足座位数时先无放回用满、再有放回补复用；
+    allow_repeat=False（默认）：无放回抽样，各座位人设互异（免撞音色/网名）。
+    allow_repeat=True：人设池不足座位数时先无放回用满、再有放回补复用；
     池子够大则与默认模式一样无放回。显式 --cast 不受此开关影响（用户给什么就是什么）。
     """
     if raw is not None:

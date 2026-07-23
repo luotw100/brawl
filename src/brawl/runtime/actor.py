@@ -1,4 +1,4 @@
-"""新 loop 的 actor 适配层。
+"""loop 的 actor 适配层。
 
 把现有 OpenCode 后端封装成 brawl.runtime.loop.Actor 协议，规则层的 view 对象只负责
 拼出 .prompt；actor 负责把 prompt 发进 opencode/session 并返回
@@ -65,6 +65,7 @@ class OpenCodeActor:
     async def rollback(self, seat: int) -> None:
         """本轮产出被 loop 拒收（parse 失败）：转告 backend 从 session 删掉这轮消息。"""
         await self._backend.rollback(seat)
+
 
 class RandomActor:
     """零网络 actor：由规则层传入一个生成器，按 view 产出合法 raw。

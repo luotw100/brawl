@@ -12,7 +12,7 @@ import random
 import sys
 from typing import Any, Protocol
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from brawl.runtime.errors import FatalActorError, RetryableActorError
 from brawl.runtime.journal import Journal
@@ -34,6 +34,14 @@ class Actor(Protocol):
     def commit_turn(self, seat: int) -> None: ...
 
     async def rollback(self, seat: int) -> None: ...
+
+
+def _recheck[ModelT: BaseModel](model: type[ModelT], value: Any, message: str) -> ModelT:
+    """边界重校验：把上游对象深拷贝过一遍 strict schema，不合规即 RuntimeError。"""
+    try:
+        return model.model_validate(value.model_dump(), strict=True)
+    except (AttributeError, ValidationError) as exc:
+        raise RuntimeError(message) from exc
 
 
 def _validate_seat_keys(mapping: dict[int, Any], name: str) -> None:
@@ -60,10 +68,7 @@ def _validated_expectation(
     threads: dict[int, SeatThread],
     actors: dict[int, Actor] | None = None,
 ) -> Expectation:
-    try:
-        checked = Expectation.model_validate(expectation.model_dump(), strict=True)
-    except (AttributeError, ValidationError) as exc:
-        raise RuntimeError("rules.expected returned a malformed Expectation") from exc
+    checked = _recheck(Expectation, expectation, "rules.expected returned a malformed Expectation")
     missing_threads = [seat for seat in checked.seats if seat not in threads]
     if missing_threads:
         raise RuntimeError(f"expectation references seats without threads: {missing_threads}")
@@ -81,10 +86,7 @@ def _validated_deliveries(
     """校验 Delivery 自身形状及其对当前 seat 世界的全部引用。"""
     checked: list[Delivery] = []
     for index, delivery in enumerate(deliveries):
-        try:
-            item = Delivery.model_validate(delivery.model_dump(), strict=True)
-        except (AttributeError, ValidationError) as exc:
-            raise RuntimeError(f"delivery {index} is malformed") from exc
+        item = _recheck(Delivery, delivery, f"delivery {index} is malformed")
         missing = [
             channel
             for channel in item.channels
@@ -96,7 +98,7 @@ def _validated_deliveries(
     return checked
 
 
-def _validate_sentence_batch(
+def _validated_sentence_batch(
     sentences: list[Sentence],
     threads: dict[int, SeatThread],
 ) -> list[Sentence]:
@@ -104,10 +106,7 @@ def _validate_sentence_batch(
     checked: list[Sentence] = []
     host_seen = False
     for index, sentence in enumerate(sentences):
-        try:
-            item = Sentence.model_validate(sentence.model_dump(), strict=True)
-        except (AttributeError, ValidationError) as exc:
-            raise RuntimeError(f"sentence {index} is malformed") from exc
+        item = _recheck(Sentence, sentence, f"sentence {index} is malformed")
         if item.speaker == "host":
             host_seen = True
         else:
@@ -120,7 +119,7 @@ def _validate_sentence_batch(
     return checked
 
 
-def _validate_logged_batches(
+def _validated_logged_batches(
     batches: list[list[dict[str, Any]]],
     threads: dict[int, SeatThread],
 ) -> list[list[Sentence]]:
@@ -130,7 +129,7 @@ def _validate_logged_batches(
         commit_id = batch[0].get("commit_id") if batch else "?"
         try:
             sentences = [Sentence.model_validate(row, strict=True) for row in batch]
-            checked_batches.append(_validate_sentence_batch(sentences, threads))
+            checked_batches.append(_validated_sentence_batch(sentences, threads))
         except (ValidationError, RuntimeError) as exc:
             raise RuntimeError(
                 f"日志 commit {commit_id} 的 Sentence 或路由不合法：{exc}"
@@ -182,10 +181,7 @@ def _validated_pending(
     checked: list[HostEmit] = []
     updated = set(seen_turns)
     for index, emit in enumerate(raw):
-        try:
-            item = HostEmit.model_validate(emit.model_dump(), strict=True)
-        except (AttributeError, ValidationError) as exc:
-            raise RuntimeError(f"rules.pending returned malformed HostEmit at {index}") from exc
+        item = _recheck(HostEmit, emit, f"rules.pending returned malformed HostEmit at {index}")
         if item.turn_id in updated:
             raise RuntimeError(f"host turn_id 重复：{item.turn_id}")
         updated.add(item.turn_id)
@@ -370,7 +366,7 @@ async def run(
         initial_emits, next_seen = _validated_pending(rules, state, journaled_host_turns)
         initial_batch = [_host_sentence(emit) for emit in initial_emits]
         if initial_batch:
-            _validate_sentence_batch(initial_batch, threads)
+            _validated_sentence_batch(initial_batch, threads)
             journal.append_batch(initial_batch)
             journaled_host_turns = next_seen
             _publish_committed(initial_batch)
@@ -435,7 +431,7 @@ async def run(
             )
             batch.extend(_host_sentence(emit) for emit in emits)
 
-            _validate_sentence_batch(batch, threads)
+            _validated_sentence_batch(batch, threads)
             journal.append_batch(batch)
         except BaseException as exc:
             try:
@@ -512,7 +508,7 @@ async def resume(
     """
     batches = journal.load_batches()
     _validate_seat_keys(threads, "threads")
-    checked_batches = _validate_logged_batches(batches, threads)
+    checked_batches = _validated_logged_batches(batches, threads)
     _logged_host_turns(batches)
 
     working_threads = {seat: SeatThread() for seat in threads}

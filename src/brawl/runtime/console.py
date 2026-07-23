@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -77,8 +78,6 @@ class PacedTypist:
         with Live(console=console, auto_refresh=False) as live:
             for n in range(1, len(body) + 1):
                 live.update(Panel(body[:n], title=title, title_align="left", border_style=border_style), refresh=True)
-                import time
-
                 time.sleep(self._char_delay)
 
 
