@@ -1,1 +1,0 @@
-{"root":["./src/main.tsx","./src/protocol.ts","./src/useChannel.ts","./src/games/avalon.ts","./src/games/werewolf.ts","./src/stage/Stage.tsx","./src/stage/StageIcon.tsx","./src/stage/bgm.ts"],"version":"5.9.3"}

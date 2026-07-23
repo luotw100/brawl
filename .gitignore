@@ -25,3 +25,8 @@ dist/
 
 # agent 工作区：每个改动开一个 git worktree 放这里，隔离主工作树
 .agent-worktrees/
+
+# 前端
+node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo
