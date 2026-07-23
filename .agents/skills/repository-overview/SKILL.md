@@ -1,6 +1,6 @@
 ---
 name: repository-overview
-description: brawl 仓库架构全景。AI 直播对战平台项目背景、Avalon/狼人杀玩法、Sentence Runtime 跨玩法运行时、目录指路、核心不变量、阅读顺序。
+description: brawl 仓库架构全景。AI 对战游戏项目背景、Avalon/狼人杀玩法、Sentence Runtime 对局运行时、stagecast 演出投影、目录指路、核心不变量、阅读顺序。
 ---
 
 # brawl 仓库架构
@@ -9,73 +9,94 @@ description: brawl 仓库架构全景。AI 直播对战平台项目背景、Aval
 
 ## 项目背景
 
-`brawl` 是一个 AI 直播对战平台：让若干常驻人设 AI 互相玩社交推理类游戏，目标是 7x24 无人值守直播。观众全程上帝视角，靠将来的押注/积分机制参与互动。
+`brawl` 是一个 AI 对战游戏：让若干常驻人设 AI 互相玩社交推理类游戏，把对局录成视频发布。
+观众全程上帝视角（看得见所有底牌与内心独白）。
 
-`games` 是**对局快照生成器**，不是直播实时引擎：CLI 离线生成一局 replay（句子时间线），直播时由 `stage` 回放这份 replay，不实时跑模型。生成器里没有 wall-clock 节奏控制。
+**根本纪律：brawl 就是一个完整的游戏，replay 是游戏存档。** 生成、终端回放、TTS、录屏都是
+同一代码库对同一存档的消费。曾有的 games/stage 两套系统（靠 events.jsonl 契约传递信息、
+两边分别理解规则）已随 One Brawl 改造整体拆除，设计定档见 `design/one-brawl.md`
+（运行时设计见 `design/sentence-runtime.md`）。
 
-当前玩法：**Avalon**（5~10 人）与**狼人杀**（12 人预女猎白）。运行时是新基建 **Sentence Runtime**（`core/sr/`）：LangGraph 已整体移除，设计文档见 `design/sentence-runtime.md`。
+当前玩法：**Avalon**（5~10 人）与**狼人杀**（12 人预女猎白）。
 
 ## 仓库布局
 
 ```
 brawl/
-├── games/
-│   ├── core/             # 跨玩法运行时
-│   │   ├── sr/           #   Sentence Runtime：types/rules/loop/journal/actor/opencode_backend/console/tts/messages/dummy
-│   │   └── …             #   registry/setup/threads/parsing/models/opencode_runtime
-│   ├── avalon/           # Avalon 玩法包：rules_engine/rules/state/view/prompts/validation/settings/run/data/tests
-│   ├── werewolf/         # 狼人杀玩法包：同构
-│   ├── cli.py            # 子命令路由（avalon/werewolf/console/tts/voice-forge/chat-view/slim-audio），只分发
-│   ├── llmview/          # chat-view：旧格式 llm_calls 查看工具
-│   └── voicelab/         # 音色铸造工具
-├── stage/                # replay → 直播画面/导播台（消费侧待切到 sentences 格式）
-└── live/                 # 未做：直播平台接入
+├── core/
+│   ├── runtime/          # 对局运行时（原 core/sr）：types/rules/loop/journal/actor/
+│   │                     #   opencode_backend/console/tts/files/messages +
+│   │                     #   registry/setup/threads/parsing/models/opencode_runtime + tests
+│   └── stage/            # 演出壳：protocol(信封基类)/stagecast(契约+registry)/media/
+│                         #   engine(单局播放头)/playplan/server/record/cover/bgm/sfx/hub + tests
+├── avalon/               # 玩法包：rules_engine/rules/state/view/prompts/validation/settings/run
+│                         #   + stagecast(演出投影)/protocol(指令形状)/plan.yaml(节奏)/data/tests
+├── werewolf/             # 同构
+├── brawl/cli.py          # 组合根：子命令路由 + StageGame 登记（core 不 import 玩法包）
+├── web/                  # 舞台前端（React/Vite）：stage/ 渲染页 + games/<game>.ts 协议类型
+└── voicelab/             # 音色铸造工具
 ```
 
-## games 分层
+## 分层
 
-- `core.sr.types`：游戏盲类型——`Delivery`（一段话 + channels 路由）/ `Sentence`（日志原子单位）/ `Expectation` / `ParseResult` / `HostEmit`。channel = 席位号 | broadcast | audience。
-- `core.sr.rules`：玩法插件协议（Protocol）。`initial_state/expected/view/parse/apply/advance/pending/turn_id/pack/unpack`。语义唯一落脚点。
-- `core.sr.loop`：驱动循环。并发收齐同时行动的座位，speak+parse 同单元重试（坏 JSON/非法目标重调 actor），按座位序确定性落日志/apply；resume = snapshot（可选）+ 重放 sentences。host 串场走 `rules.pending` 纯函数，loop 不对 host 调 actor。
-- `core.sr.journal`：replay 三件套——`sentences.jsonl`（句子日志即 checkpoint）、`meta.json`、`_snapshot.json`（加速快照，非正确性承重墙）+ avatars。不给 `--replay` 走 NullJournal。
-- `core.sr.actor` / `opencode_backend`：`OpenCodeActor`（每座位一个 opencode session，失败轮自动清理）、`RandomActor`（零网络 sampler，由玩法 rules.random_action 供料）、`OpenCodeBackend`（HTTP 协议、逐座位模型映射）。
-- `core.sr.console` / `tts`：`brawl console` / `brawl tts`，跨玩法，只消费 sentences.jsonl + meta.json。
-- `core.registry` / `setup`：模型/人设/流派/主持人注册表与边界解析（人设唯一/可重复双模式）。
-- `core.threads` / `parsing` / `models` / `opencode_runtime`：席位线程、稳健 JSON 抽取、模型规格、opencode 托管生命周期（bwrap 沙盒、固定版本 1.17.20）。
+**生成路径**（core/runtime + 玩法 rules）：
 
-玩法包（`avalon/`、`werewolf/` 同构）：
+- `core.runtime.types`：游戏盲类型——`Delivery`（一段话 + channels 路由）/ `Sentence`（日志原子单位）/ `Expectation` / `ParseResult` / `HostEmit`。channel = 席位号 | broadcast | audience。
+- `core.runtime.rules`：玩法插件协议（Protocol）。`initial_state/expected/view/parse/apply/advance/pending/turn_id/pack/unpack`。语义唯一落脚点。
+- `core.runtime.loop`：驱动循环。并发收齐同时行动的座位，speak+parse 同单元重试，按座位序确定性落日志/apply；resume = 从头严格重放。host 串场走 `rules.pending` 纯函数。
+- `core.runtime.journal`：replay 三件套——`sentences.jsonl`（句子日志即 checkpoint）、`meta.json`、`_snapshot.json`（加速快照）+ avatars。
+- `core.runtime.actor` / `opencode_backend` / `opencode_runtime`：OpenCode 托管（每座位独立 server + bwrap 隔离）、RandomActor（零网络 sampler）。
+- `core.runtime.console` / `tts`：`brawl console` / `brawl tts`，跨玩法，只消费 sentences.jsonl + meta.json。
 
-- `rules_engine.py`：玩法全部语义——阶段机、计票/判负、信息隔离、prompt 构造、JSON 解析校验。
-- `rules.py`：规则表（阵营/角色/板子/纯函数）。
-- `state.py` / `view.py` / `prompts.py`：状态与结构化决策、actor 视图、全部文案。
-- `validation.py` / `settings.py` / `registry.py` / `run.py` / `data/` / `tests/`：配置边界、CLI 参数面、数据加载、入口装配、各自数据与测试。
+**演出路径**（core/stage + 玩法 stagecast）：
+
+- `<game>/stagecast.py`：演出投影——存档（sentences+meta）经 MediaResolver 重放成指令流。
+  规则事实只取自 action payload（生成时冻结的 god-view 真相），绝不重新计票、绝不反解
+  turn_id；展示上下文（quest/attempt/day、当轮独白）随流累积。同文件交付 StageGame
+  bundle（reducer/summary/is_opening_anchor/terminal/plan_path）。
+- `core.stage.stagecast`：Stagecast/MediaResolver 契约 + StageGame + registry（按 meta.game 派发）。
+- `core.stage.engine`：单局播放头——stagecast → playplan 编译 → 逐拍 emit（折 Scene、
+  publish 全量状态、按时长停留）→ 演完返回。频道调度（直播回归时）是它之上的另一层。
+- `core.stage.playplan`：plan YAML → 确定性 StageBeat/AudioTrack（节奏/主持贴靠/音效 cue）。
+- `core.stage.record` / `cover`：`brawl record`（Xvfb+Chromium+ffmpeg 单趟硬编，音轨按拍
+  离线拼接）与 `brawl cover`。record 内部一次性服务见 `core.stage.server`（127.0.0.1，无 token）。
+
+**玩法包**（avalon/ werewolf/ 同构）：`rules_engine.py`（玩法全部语义）、`rules.py`（规则表）、
+`state.py`/`view.py`/`prompts.py`、`validation.py`/`settings.py`/`registry.py`/`run.py`、
+`stagecast.py`/`protocol.py`/`plan.yaml`、`data/`、`tests/`。
 
 ## 核心不变量
 
-1. **core 搜不到任何玩法名词**。core 不解析句子内容；路由（谁听得到）由 rules 在 parse 里用 channels 声明，信息隔离压在纯代码拓扑上，不压在模型行为上。
-2. 私密信息只进该席位 view 和观众流（channels 含 audience 的 Delivery），绝不进非授权席位 inbox；内心独白（monologue）只给观众。
-3. prompt 文本由 rules.view 生成，core 原样发给 actor，不套通用模板。
-4. 开局随机前置到 `validation.resolve_and_validate`；对局过程没有裁判侧随机（回放确定性：重放 apply 必须与实时一致）。
-5. 裁判全在 rules：AI 只决定说什么/选谁/投什么，不决定流程推进、计票、胜负。非法产出 parse 抛 ValueError → loop 重试，绝不静默上桌。
-6. replay 是完整快照：`sentences.jsonl`、`meta.json`、`_snapshot.json`，目录存在即拒绝覆盖。模型调用审计保留在 OpenCode 会话库（`<replay>/_opencode/storage/opencode.db`），本地不再落 llm_calls.jsonl。
-7. Stage 的 `engine/hub/overlay` 游戏无关；stage 消费侧当前仍读旧 events.jsonl，切到 audience 句子流是设计文档阶段 6 的待办。
+1. **core 搜不到任何玩法名词**；玩法分发经 registry，装配只在 brawl/cli.py。
+2. **"懂规则"只发生在玩法包**。聚合（票型/任务牌/狼刀结果）只能出自 rules 的 state 或
+   action payload；stagecast 不得重新计数，不得反解 turn_id。
+3. 路由（谁听得到）由 rules 在 parse 里用 channels 声明；私密信息只进授权席位 inbox 和
+   观众流；内心独白只给观众。
+4. prompt 文本由 rules.view 生成，core 原样发给 actor，不套通用模板。
+5. 开局随机前置到 `validation.resolve_and_validate`；对局过程没有裁判侧随机（回放确定性）。
+6. 裁判全在 rules：非法产出 parse 抛 ValueError → loop 重试，绝不静默上桌。
+7. replay 是完整存档：`sentences.jsonl` + `meta.json`（冻结配置，续跑只读它）。
+8. 指令词表（Directive.kind / host beat）归玩法包；core/stage 对 kind 不硬枚举
+   （plan.yaml 按键查找，缺键 = 玩法包自洽 bug，PlanError）。
+9. TTS 与演出同源：指令的 call_id（`{seq}.{speaker}`）即 manifest 键；audio_url 由壳的
+   MediaResolver 解析填充，玩法不构造 URL。
 
 ## 跑起来
 
 ```bash
-cd games && uv sync
+uv sync && (cd web && npm install)
 uv run brawl avalon --player random --players 10 --percival --morgana --mordred --oberon --replay /tmp/avalon1
 uv run brawl werewolf --player random --replay /tmp/ww1
 uv run brawl console /tmp/avalon1
+uv run brawl record /tmp/avalon1 --limit-seconds 30   # 出片段试看
 uv run pytest -q
 ```
 
 ## 阅读顺序
 
-1. `design/sentence-runtime.md`：运行时设计（为什么丢 LangGraph、边界红线、resume 模型）。
-2. `games/core/sr/types.py` → `rules.py` → `loop.py` → `journal.py`：跨玩法运行时边界。
-3. `games/avalon/rules_engine.py` 或 `games/werewolf/rules_engine.py`：一个完整 Rules 实现长什么样。
-4. 玩法的 `prompts.py` + `view.py`：prompt 构造与信息隔离落点。
-5. 玩法的 `validation.py` + `settings.py` + `registry.py`：配置、开局摇定、数据加载。
-6. 玩法的 `tests/`：不变量如何被测试守住。
-
+1. `design/one-brawl.md`：定档（存档即游戏、stagecast 机制、死亡清单、施工与回归条件）。
+2. `design/sentence-runtime.md`：运行时设计（边界红线、resume 模型）。
+3. `core/runtime/types.py` → `rules.py` → `loop.py` → `journal.py`：对局运行时边界。
+4. `core/stage/stagecast.py` → `engine.py`：演出壳边界。
+5. `avalon/rules_engine.py` + `avalon/stagecast.py`：一个完整玩法包长什么样（规则 + 演出）。
+6. 玩法的 `tests/`：不变量如何被测试守住（投影测试 = random 整局真存档 + 自洽断言）。
