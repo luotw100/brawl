@@ -91,7 +91,7 @@ def fake_registry(monkeypatch):
 
 async def test_plays_full_game_and_folds_scene(tmp_path, fake_registry) -> None:
     rec = Recorder()
-    engine = Engine(EngineKnobs(speed=1000.0), publish=lambda: rec.publish(engine))
+    engine = Engine(EngineKnobs(speed=16.0), publish=lambda: rec.publish(engine))
     await engine.play(_replay(tmp_path))
 
     assert rec.kinds() == ["game_open", "deal", "speech", "game_over"]
@@ -117,7 +117,7 @@ async def test_opening_anchor_gate_holds_clock_until_first_frame(tmp_path, fake_
         if feed:
             published_clock.append((feed[-1].directive.kind, feed[-1].clock_running, feed[-1].started_at))
 
-    engine = Engine(EngineKnobs(speed=1000.0), publish=publish, playback_gate=Gate())
+    engine = Engine(EngineKnobs(speed=16.0), publish=publish, playback_gate=Gate())
     await engine.play(_replay(tmp_path))
 
     deal_frames = [f for f in published_clock if f[0] == "deal"]
