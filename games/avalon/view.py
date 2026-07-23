@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from avalon.state import ProposalRecord, Role
 from core.threads import ThreadMessage
@@ -12,8 +13,11 @@ from core.threads import ThreadMessage
 class PlayerView:
     """某席位在当前行动点能看到的全部信息。
 
-    这是一个 opaque 视图对象：core.sr.loop 不读字段，OpenCodeActor 只读 `.prompt` 和
-    `.seat_no`；AvalonRandomActor 读 `.phase` 等字段生成合法 JSON。
+    这是一个 opaque 视图对象：core.sr.loop 不读字段，OpenCodeActor 只读 `.prompt`、
+    `.seat_no` 和 `.schema`；AvalonRandomActor 读 `.phase` 等字段生成合法 JSON。
+
+    `.schema` 是本阶段动作模型的 JSON Schema（由 rules 在构造时挂上），OpenCode
+    后端用它请求 StructuredOutput；为 None 时后端退回纯文本协议。
     """
 
     seat_no: int
@@ -40,6 +44,7 @@ class PlayerView:
     prompt: str = ""
     phase: str = ""
     evil_team: list[int] = field(default_factory=list)
+    schema: dict[str, Any] | None = None
 
     def others(self) -> list[int]:
         return [no for no in range(1, self.players + 1) if no != self.seat_no]

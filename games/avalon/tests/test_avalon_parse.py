@@ -337,7 +337,17 @@ def test_prompt_only_requests_exact_json_without_freeform_escape_hatch() -> None
     assert "自由思考" not in prompts.RULES
     assert "JSON 外" not in prompts.RULES
     assert "自检" not in view.prompt
-    assert "只输出上面这个 JSON 对象" in view.prompt
+    assert "StructuredOutput 工具" in view.prompt
+
+
+def test_view_attaches_phase_schema_for_structured_output() -> None:
+    r = _rules()
+    st = _state(phase="propose", leader=1)
+    view = r.view(1, st, SeatThread(), first_speak=True)
+    schema = view.schema
+    assert schema is not None
+    assert schema["properties"]["phase"] == {"const": "propose"}
+    assert set(schema["required"]) == {"phase", "team", "speech", "monologue"}
 
 
 def test_oberon_final_prompt_uses_revealed_team_not_opening_isolation() -> None:

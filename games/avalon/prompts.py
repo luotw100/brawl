@@ -6,8 +6,9 @@
 消息结构：普通后端用 system 装"发牌时刻就固定的全部"（规则、阵容、人数座次、自己座号、角色+夜晚
 情报），此后每次行动是一条 human（自上次行动以来的公开事件 + 当前局面 + 提问）；OpenCode 后端每座位
 session 首次用自然主持人私信 seed 全量上下文，后续只发当前增量。
-模型按阶段输出恰好一个 JSON 对象（参见下方 opencode_ask），首尾空白之外不能有推理文字、
-代码围栏或第二个对象。公开/私密边界靠 JSON 键：speech 键的内容会一字不差公布上桌；
+模型按阶段产出恰好一个 JSON 对象（参见下方 opencode_ask）：OpenCode 会话带有 StructuredOutput
+工具，模型把 JSON 作为工具入参提交（服务端按阶段 schema 强制校验形状），而不是写普通文本。
+公开/私密边界靠 JSON 键：speech 键的内容会一字不差公布上桌；
 monologue 键只在自己线程与观众侧，绝不上桌。结构化解析由 Rules.parse 严格完成。
 
 人设(persona)与流派(strategy)都已接线，分管两件事：
@@ -46,7 +47,7 @@ RULES = """\
 
 对局方式：
 - 接下来我会持续把桌面上公开发生的事播报给你，并在轮到你行动时向你提问。
-- 每次行动只按主持人当轮给出的格式输出一个 JSON 对象；首尾空白之外不要输出任何其他文字。
+- 每次行动按主持人当轮给出的格式构造一个 JSON 对象，并通过 StructuredOutput 工具提交；不要用普通文本回复。
 - JSON 里的 `speech` 字段内容会被一字不差地公布上桌，全场可见，所以身份、夜晚情报和真实计划只有在你明确判断收益大于风险时才公开；不想暴露时，用公开证据包装你的判断。
 - JSON 里的 `monologue` 字段是说给观众听的一句短话，场上玩家看不到。
 
@@ -443,9 +444,10 @@ def human_message(events: list[str], context: str, ask: str, tone: str = "", mim
 
 # ---------------------------------------------------------------- OpenCode agent 专用提问
 #
-# OpenCode agent 直接返回 JSON。每个阶段给出对应的精确格式。
+# OpenCode 会话按阶段 schema 强制 StructuredOutput：模型把 JSON 作为工具入参提交。
+# 每个阶段给出对应的精确格式。
 
-_EXACT_JSON = "只输出上面这个 JSON 对象，首尾空白之外不要输出任何其他文字。"
+_EXACT_JSON = "你的回答就是上面这个 JSON 对象：把它作为 StructuredOutput 工具的入参提交，不要用普通文本回复。"
 
 
 def _private_transcript(view: PlayerView) -> str:

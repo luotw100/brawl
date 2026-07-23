@@ -40,6 +40,34 @@ class LadyTransfer(BaseModel):
     target: int
 
 
+def _phase_schema(model: type[BaseModel], phase: str) -> dict[str, Any]:
+    """action model → OpenCode StructuredOutput JSON Schema。
+
+    `phase` 字段收窄为当前阶段常量：模型不可能填出串号的阶段值，直接消灭一类
+    重抽。其余字段形状与 rules.parse 的严格校验共享同一份 model 定义。
+    """
+    schema = model.model_json_schema()
+    schema["properties"]["phase"] = {"const": phase}
+    return schema
+
+
+# 每个行动阶段的 StructuredOutput schema，模块加载时一次性冻结。
+_PHASE_SCHEMAS: dict[str, dict[str, Any]] = {
+    phase: _phase_schema(model, phase)
+    for phase, model in {
+        "propose": Proposal,
+        "discuss": Statement,
+        "team_vote": TeamVote,
+        "quest": QuestCard,
+        "lady_choose": LadyChoice,
+        "lady_announce": Statement,
+        "evil_chat": Statement,
+        "assassinate": Assassination,
+        "banter": Statement,
+    }.items()
+}
+
+
 class AvalonState(BaseModel):
     """对局状态：对 core 不透明，仅由 AvalonRules 管理。"""
 
@@ -232,6 +260,7 @@ class AvalonRules(Rules):
         )
         view.prompt = view.turn_prompt
         view.prompt = prompts.opencode_prompt(view, include_context=first_speak)
+        view.schema = _PHASE_SCHEMAS[state.phase]
         return view
 
     def parse(self, seat: int, raw: str, state: AvalonState) -> ParseResult:

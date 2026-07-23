@@ -1,9 +1,14 @@
-"""OpenCode backend 的失败轮事务边界。"""
+"""OpenCode backend 的失败轮事务边界（同步 message 端点版）。
+
+同步 POST /session/{id}/message 直接返回 assistant 消息（含 id/parentID/structured），
+回滚只靠本地记账 id 的 DELETE；backend 不允许触碰 GET message 列表（format 会话上
+该端点永远 400，见 opencode_backend 模块 docstring）。
+"""
 
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,50 +16,42 @@ import httpx
 import pytest
 
 from core.opencode_runtime import OpenCodeConnection
-from core.sr.errors import FatalActorError
+from core.sr.errors import FatalActorError, RetryableActorError
 from core.sr.messages import ChatMessage
 from core.sr.opencode_backend import OpenCodeBackend, OpenCodeSessionPoisoned
 
+_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"answer": {"type": "number"}},
+    "required": ["answer"],
+}
 
-def _message(
-    msg_id: str,
-    role: str,
-    text: str,
-    *,
-    parent_id: str | None = None,
-) -> dict[str, Any]:
-    info: dict[str, Any] = {"id": msg_id, "role": role}
-    if parent_id is not None:
-        info.update({"parentID": parent_id, "finish": "stop"})
-    return {"info": info, "parts": [{"type": "text", "text": text}]}
+
+def _http_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://opencode/session/x/message")
+    return httpx.HTTPStatusError(
+        f"status {status}", request=request, response=httpx.Response(status, request=request)
+    )
 
 
 class _FakeOpenCode:
-    """只实现这些测试需要的 session message 协议。"""
+    """只实现这些测试需要的同步 session message 协议。"""
 
     def __init__(self) -> None:
-        self.baseline = [
-            _message("base-user", "user", "old prompt"),
-            _message(
-                "base-assistant",
-                "assistant",
-                "old response",
-                parent_id="base-user",
-            ),
-        ]
-        self.messages = deepcopy(self.baseline)
-        self.prompt_posts = 0
+        self.turns = 0
         self.abort_posts = 0
-        self.fail_discovery_once = False
+        self.deleted: list[str] = []
         self.fail_delete_id: str | None = None
-        self.fail_confirmation = False
-        self.malformed_message_list_after_post = False
-        self._fail_next_message_get = False
-        self._cleanup_deleted_all = False
-
-    @property
-    def ids(self) -> tuple[str, ...]:
-        return tuple(str(item["info"]["id"]) for item in self.messages)
+        self.fail_post: str | None = None  # "timeout" / "http500" / "http429"
+        self.error_payload: dict[str, Any] | None = None
+        self.error_on_format: dict[str, Any] | None = None  # 仅当请求带 format 时报错
+        self.structured: Any = {"answer": 1}
+        self.text = "response"
+        self.malformed = False
+        self.last_payload: dict[str, Any] | None = None
+        self.block_post = False
+        self.started = asyncio.Event()
+        self.session_payload: dict[str, Any] | None = None
 
     async def request(
         self,
@@ -65,27 +62,41 @@ class _FakeOpenCode:
         **kwargs: Any,
     ) -> Any:
         assert directory.endswith("/seat-01")
-        if method == "POST" and path.endswith("/prompt_async"):
-            self.prompt_posts += 1
-            prompt_no = self.prompt_posts
-            text = kwargs["json"]["parts"][0]["text"]
-            user_id = f"user-{prompt_no}"
-            self.messages.extend(
-                [
-                    _message(user_id, "user", text),
-                    _message(
-                        f"assistant-{prompt_no}",
-                        "assistant",
-                        f"response-{prompt_no}",
-                        parent_id=user_id,
-                    ),
-                ]
-            )
-            self._cleanup_deleted_all = False
-            if self.fail_discovery_once:
-                self.fail_discovery_once = False
-                self._fail_next_message_get = True
-            return None
+        if method == "POST" and path.endswith("/session"):
+            self.session_payload = kwargs.get("json")
+            return {"id": "session-1"}
+        if method == "POST" and path.endswith("/message"):
+            if self.block_post:
+                self.started.set()
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+            self.turns += 1
+            self.last_payload = kwargs.get("json")
+            if self.fail_post == "timeout":
+                raise httpx.ReadTimeout("sync post timed out")
+            if self.fail_post == "http500":
+                raise _http_error(500)
+            if self.fail_post == "http429":
+                raise _http_error(429)
+            if self.malformed:
+                return {"info": {"role": "assistant"}, "parts": []}
+            turn = self.turns
+            info: dict[str, Any] = {
+                "id": f"assistant-{turn}",
+                "role": "assistant",
+                "parentID": f"user-{turn}",
+                "finish": "stop",
+            }
+            has_format = self.last_payload.get("format") is not None
+            if self.error_on_format is not None and has_format:
+                info["error"] = self.error_on_format
+                return {"info": info, "parts": []}
+            if self.error_payload is not None:
+                info["error"] = self.error_payload
+                return {"info": info, "parts": []}
+            if has_format:
+                info["structured"] = self.structured
+            return {"info": info, "parts": [{"type": "text", "text": self.text}]}
 
         if method == "POST" and path.endswith("/abort"):
             self.abort_posts += 1
@@ -94,26 +105,9 @@ class _FakeOpenCode:
         if method == "DELETE" and "/message/" in path:
             msg_id = path.rsplit("/", 1)[-1]
             if msg_id == self.fail_delete_id:
-                raise httpx.HTTPStatusError(
-                    "delete failed",
-                    request=httpx.Request(method, f"http://opencode{path}"),
-                    response=httpx.Response(500),
-                )
-            self.messages = [item for item in self.messages if item["info"]["id"] != msg_id]
-            self._cleanup_deleted_all = self.ids == tuple(
-                item["info"]["id"] for item in self.baseline
-            )
+                raise _http_error(500)
+            self.deleted.append(msg_id)
             return None
-
-        if method == "GET" and path.endswith("/message"):
-            if self._fail_next_message_get:
-                self._fail_next_message_get = False
-                raise httpx.ReadTimeout("message polling timed out")
-            if self.malformed_message_list_after_post and self.prompt_posts:
-                return {}
-            if self.fail_confirmation and self._cleanup_deleted_all:
-                raise httpx.ReadTimeout("rollback confirmation timed out")
-            return deepcopy(self.messages)
 
         raise AssertionError(f"unexpected request: {method} {path}")
 
@@ -126,74 +120,178 @@ def _backend(server: _FakeOpenCode) -> OpenCodeBackend:
             password="test",
             workspace_root="/workspace",
         ),
-        poll_interval=0,
     )
     backend._sessions[1] = "session-1"
     backend._request = server.request  # type: ignore[method-assign]
     return backend
 
 
-async def _call(backend: OpenCodeBackend) -> ChatMessage:
+async def _call(backend: OpenCodeBackend, view: Any = None) -> ChatMessage:
     return await backend.call(
         "test-turn",
-        SimpleNamespace(seat_no=1),
+        view if view is not None else SimpleNamespace(seat_no=1),
         [ChatMessage(role="human", content="new prompt")],
     )
 
 
 @pytest.mark.asyncio
-async def test_post_accepted_then_get_timeout_is_rolled_back_before_retry() -> None:
+async def test_schema_view_sends_format_and_returns_structured_json() -> None:
     server = _FakeOpenCode()
-    server.fail_discovery_once = True
     backend = _backend(server)
     try:
-        with pytest.raises(httpx.ReadTimeout, match="message polling timed out"):
-            await _call(backend)
-
-        assert server.ids == ("base-user", "base-assistant")
+        resp = await _call(backend, SimpleNamespace(seat_no=1, schema=_SCHEMA))
+        assert server.last_payload is not None
+        assert server.last_payload["format"] == {"type": "json_schema", "schema": _SCHEMA}
+        assert resp.content == json.dumps({"answer": 1}, ensure_ascii=False)
+        assert 1 in backend._pending_turns
+        backend.commit_turn(1)
         assert 1 not in backend._pending_turns
-        assert 1 not in backend._poisoned_sessions
+        assert server.deleted == []
+    finally:
+        await backend.close()
 
-        response = await _call(backend)
-        assert response.content == "response-2"
-        assert server.prompt_posts == 2
-        assert server.ids == (
-            "base-user",
-            "base-assistant",
-            "user-2",
-            "assistant-2",
-        )
+
+@pytest.mark.asyncio
+async def test_plain_view_falls_back_to_text_protocol() -> None:
+    server = _FakeOpenCode()
+    backend = _backend(server)
+    try:
+        resp = await _call(backend)
+        assert server.last_payload is not None
+        assert "format" not in server.last_payload
+        assert resp.content == "response"
         backend.commit_turn(1)
     finally:
         await backend.close()
 
 
 @pytest.mark.asyncio
-async def test_parse_rejection_restores_full_baseline_before_resubmit() -> None:
+async def test_parse_rejection_rollback_deletes_turn_messages() -> None:
     server = _FakeOpenCode()
     backend = _backend(server)
     try:
         await _call(backend)
         await backend.rollback(1)
 
-        assert server.ids == ("base-user", "base-assistant")
+        assert server.deleted == ["assistant-1", "user-1"]
         assert 1 not in backend._pending_turns
 
-        response = await _call(backend)
-        assert response.content == "response-2"
-        assert server.ids == (
-            "base-user",
-            "base-assistant",
-            "user-2",
-            "assistant-2",
-        )
+        resp = await _call(backend)
+        assert resp.content == "response"
+        assert server.turns == 2
         backend.commit_turn(1)
     finally:
         await backend.close()
 
 
 @pytest.mark.asyncio
-async def test_delete_failure_poison_session_and_preserves_pending_marker() -> None:
+async def test_structured_output_error_is_retryable_and_rolls_back_cleanly() -> None:
+    server = _FakeOpenCode()
+    server.error_on_format = {
+        "name": "StructuredOutputError",
+        "data": {"message": "Model did not produce structured output", "retries": 0},
+    }
+    backend = _backend(server)
+    try:
+        view = SimpleNamespace(seat_no=1, schema=_SCHEMA)
+        with pytest.raises(RetryableActorError, match="structured output"):
+            await _call(backend, view)
+
+        await backend.rollback(1)
+        assert server.deleted == ["assistant-1", "user-1"]
+
+        server.error_on_format = None
+        resp = await _call(backend, view)
+        assert json.loads(resp.content) == {"answer": 1}
+        backend.commit_turn(1)
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_structured_output_is_retryable() -> None:
+    server = _FakeOpenCode()
+    server.structured = None
+    backend = _backend(server)
+    try:
+        with pytest.raises(RetryableActorError, match="缺少 structured output"):
+            await _call(backend, SimpleNamespace(seat_no=1, schema=_SCHEMA))
+        await backend.rollback(1)
+        assert server.deleted == ["assistant-1", "user-1"]
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_other_agent_error_stays_fatal() -> None:
+    server = _FakeOpenCode()
+    server.error_payload = {"name": "APIError", "data": {"message": "provider boom"}}
+    backend = _backend(server)
+    try:
+        with pytest.raises(RuntimeError, match="OpenCode agent error"):
+            await _call(backend)
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_poisons_session_and_blocks_retry() -> None:
+    server = _FakeOpenCode()
+    server.fail_post = "timeout"
+    backend = _backend(server)
+    try:
+        with pytest.raises(OpenCodeSessionPoisoned, match="无法确认干净"):
+            await _call(backend)
+
+        assert server.abort_posts == 1
+        assert 1 in backend._poisoned_sessions
+        with pytest.raises(OpenCodeSessionPoisoned, match="已被毒化"):
+            await _call(backend)
+        with pytest.raises(OpenCodeSessionPoisoned, match="已被毒化"):
+            backend.commit_turn(1)
+        with pytest.raises(OpenCodeSessionPoisoned, match="已被毒化"):
+            await backend.rollback(1)
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_http_500_poisons_session() -> None:
+    server = _FakeOpenCode()
+    server.fail_post = "http500"
+    backend = _backend(server)
+    try:
+        with pytest.raises(OpenCodeSessionPoisoned):
+            await _call(backend)
+        assert server.abort_posts == 1
+        assert 1 in backend._poisoned_sessions
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_http_4xx_is_rejected_before_turn_and_not_poisoned() -> None:
+    server = _FakeOpenCode()
+    server.fail_post = "http429"
+    backend = _backend(server)
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await _call(backend)
+
+        assert 1 not in backend._poisoned_sessions
+        assert 1 not in backend._pending_turns
+        assert server.abort_posts == 0
+
+        server.fail_post = None
+        resp = await _call(backend)
+        assert resp.content == "response"
+        backend.commit_turn(1)
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_failure_poisons_session_and_preserves_pending_marker() -> None:
     server = _FakeOpenCode()
     backend = _backend(server)
     try:
@@ -201,69 +299,32 @@ async def test_delete_failure_poison_session_and_preserves_pending_marker() -> N
         marker = backend._pending_turns[1]
         server.fail_delete_id = "user-1"
 
-        with pytest.raises(OpenCodeSessionPoisoned, match="无法确认已恢复事务基线") as exc_info:
+        with pytest.raises(OpenCodeSessionPoisoned, match="无法确认干净") as exc_info:
             await backend.rollback(1)
 
         assert isinstance(exc_info.value, FatalActorError)
         assert backend._pending_turns[1] == marker
         assert 1 in backend._poisoned_sessions
-        prompt_posts = server.prompt_posts
         with pytest.raises(OpenCodeSessionPoisoned, match="已被毒化"):
             await _call(backend)
-        assert server.prompt_posts == prompt_posts
     finally:
         await backend.close()
 
 
 @pytest.mark.asyncio
-async def test_confirmation_failure_poison_session_even_if_messages_look_clean() -> None:
+async def test_cancellation_during_sync_post_aborts_and_poisons() -> None:
     server = _FakeOpenCode()
+    server.block_post = True
     backend = _backend(server)
-    try:
-        await _call(backend)
-        marker = backend._pending_turns[1]
-        server.fail_confirmation = True
-
-        with pytest.raises(OpenCodeSessionPoisoned, match="rollback confirmation timed out"):
-            await backend.rollback(1)
-
-        assert server.ids == ("base-user", "base-assistant")
-        assert backend._pending_turns[1] == marker
-        assert 1 in backend._poisoned_sessions
-        with pytest.raises(OpenCodeSessionPoisoned, match="已被毒化"):
-            backend.commit_turn(1)
-    finally:
-        await backend.close()
-
-
-@pytest.mark.asyncio
-async def test_cancellation_waits_for_transactional_cleanup() -> None:
-    server = _FakeOpenCode()
-    backend = _backend(server)
-    waiting = asyncio.Event()
-
-    async def wait_forever(
-        session_id: str,
-        seat_no: int,
-        user_id: str,
-    ) -> tuple[str, str]:
-        assert (session_id, seat_no, user_id) == ("session-1", 1, "user-1")
-        waiting.set()
-        await asyncio.Event().wait()
-        raise AssertionError("unreachable")
-
-    backend._wait_for_response = wait_forever  # type: ignore[method-assign]
     task = asyncio.create_task(_call(backend))
     try:
-        await waiting.wait()
+        await server.started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
         assert server.abort_posts == 1
-        assert server.ids == ("base-user", "base-assistant")
-        assert 1 not in backend._pending_turns
-        assert 1 not in backend._poisoned_sessions
+        assert 1 in backend._poisoned_sessions
     finally:
         if not task.done():
             task.cancel()
@@ -271,46 +332,33 @@ async def test_cancellation_waits_for_transactional_cleanup() -> None:
         await backend.close()
 
 
-@pytest.mark.parametrize(
-    "data",
-    [
-        None,
-        {},
-        {"data": {}},
-        {"messages": []},
-        [None],
-        [{}],
-        [{"info": None}],
-        [{"info": {"id": 1}}],
-        [{"info": {"id": ""}}],
-    ],
-)
-def test_transaction_message_ids_reject_malformed_success_bodies(data: Any) -> None:
-    with pytest.raises(RuntimeError):
-        OpenCodeBackend._message_ids(data)
-
-
-def test_transaction_message_ids_accept_only_explicit_complete_lists() -> None:
-    rows = [_message("user-1", "user", "prompt")]
-    assert OpenCodeBackend._message_ids(rows) == ("user-1",)
-    assert OpenCodeBackend._message_ids({"data": rows}) == ("user-1",)
-    assert OpenCodeBackend._message_ids([]) == ()
-
-
 @pytest.mark.asyncio
-async def test_malformed_200_message_list_after_post_poison_session() -> None:
+async def test_malformed_response_poisons_session() -> None:
     server = _FakeOpenCode()
-    server.malformed_message_list_after_post = True
+    server.malformed = True
     backend = _backend(server)
     try:
-        with pytest.raises(OpenCodeSessionPoisoned, match="无法确认已恢复事务基线"):
+        with pytest.raises(OpenCodeSessionPoisoned, match="无法确认干净"):
             await _call(backend)
-
-        assert server.prompt_posts == 1
-        assert 1 in backend._pending_turns
         assert 1 in backend._poisoned_sessions
         with pytest.raises(OpenCodeSessionPoisoned, match="已被毒化"):
             await _call(backend)
-        assert server.prompt_posts == 1
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_session_creation_denies_all_but_structured_output() -> None:
+    """通配 deny 会连 StructuredOutput 工具一起拒掉（1.17.20 实测），必须精确放行。"""
+    server = _FakeOpenCode()
+    backend = _backend(server)
+    backend._sessions.clear()  # 触发真实 _create_session
+    try:
+        await _call(backend)
+        assert server.session_payload is not None
+        assert server.session_payload["permission"] == [
+            {"permission": "*", "pattern": "*", "action": "deny"},
+            {"permission": "StructuredOutput", "pattern": "*", "action": "allow"},
+        ]
     finally:
         await backend.close()
