@@ -1,1 +1,0 @@
-"""Werewolf stage plugin package."""

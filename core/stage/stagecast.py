@@ -31,10 +31,8 @@ class MediaResolver(Protocol):
         ...
 
 
-class Stagecast(Protocol):
-    """一个玩法的演出投影：存档 → 舞台指令流。纯函数；不写盘、不碰节奏。"""
-
-    def stagecast(self, sentences: list[Sentence], meta: dict[str, Any], media: MediaResolver) -> list[Directive]: ...
+# 一个玩法的演出投影：存档 → 舞台指令流。纯函数；不写盘、不碰节奏。
+Stagecast = Callable[[list[Sentence], dict[str, Any], MediaResolver], list[Directive]]
 
 
 @dataclass(frozen=True)
