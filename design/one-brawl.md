@@ -171,7 +171,7 @@ async def play_replay(replay_dir, *, gate: PlaybackGate, publish, knobs) -> None
 **P0 — 定档（本文档）**。出口：评审通过，协议冻结。
 
 **P1 — games 合并（纯机械，stage/ 不动）**
-- 根 pyproject 落成；`games/core/sr` + 平级模块 → `core/runtime/`（`core.sr.*` import 全量改写 `core.runtime.*`）；`games/{avalon,werewolf,voicelab}` → 根；`games/brawl/cli.py` → `brawl/cli.py`。
+- 根 pyproject 落成；`games/core/sr` + 平级模块 → `core/runtime/`（`core.runtime.*` import 全量改写 `core.runtime.*`）；`games/{avalon,werewolf,voicelab}` → 根；`games/brawl/cli.py` → `brawl/cli.py`。
 - stage/ 保持独立子项目原地可用（桥还活着，record 还能录旧路径）。
 - 出口：`uv run pytest -q`（games 侧）全绿；`uv run brawl avalon --player random --replay /tmp/x` 生成正常；stage 测试原地全绿。
 
