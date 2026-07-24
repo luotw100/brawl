@@ -268,14 +268,24 @@ def _draw_avatar_rows(
     title_bottom: int,
     target_width: int,
 ) -> None:
+    """头像分两排夹住标题：上排 ceil(N/2) 个贴标题上沿、其余贴下沿。
+
+    每排按实际个数定尺寸与步距——10 人局与旧版 2×5 布局逐像素一致，其它人数自然收放。
+    """
     gap_ratio = 0.45
-    size = round(target_width / (5 + 4 * gap_ratio))
-    x0 = round((canvas.width - target_width) / 2)
-    step = (target_width - size) / 4
-    avatar_gap = round(size * 0.28)
-    top_y = title_top - avatar_gap - size
-    bottom_y = title_bottom + avatar_gap
-    for row, y in ((avatars[:5], top_y), (avatars[5:], bottom_y)):
+    top_count = (len(avatars) + 1) // 2
+    for row, edge, above in (
+        (avatars[:top_count], title_top, True),
+        (avatars[top_count:], title_bottom, False),
+    ):
+        if not row:
+            continue
+        n = len(row)
+        size = round(target_width / (n + (n - 1) * gap_ratio))
+        x0 = round((canvas.width - target_width) / 2)
+        step = (target_width - size) / max(n - 1, 1)
+        avatar_gap = round(size * 0.28)
+        y = edge - avatar_gap - size if above else edge + avatar_gap
         for idx, avatar in enumerate(row):
             _draw_avatar(canvas, avatar, round(x0 + idx * step), y, size)
 
@@ -287,8 +297,6 @@ def _draw_avatar(canvas: Image.Image, path: Path, x: int, y: int, size: int) -> 
     img = Image.open(path).convert("RGBA")
     fitted = ImageOps.contain(img, (round(size * 0.70), round(size * 0.70)), Image.Resampling.LANCZOS)
     tile.alpha_composite(fitted, ((size - fitted.width) // 2, (size - fitted.height) // 2))
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
     canvas.alpha_composite(tile, (x, y))
 
 

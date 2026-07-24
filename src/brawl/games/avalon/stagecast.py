@@ -319,6 +319,7 @@ def summary(directive: Directive, scene: BaseScene) -> tuple[str, str, str]:
 
 STAGE_GAME = StageGame(
     id="avalon",
+    title="阿瓦隆",
     stagecast=stagecast,
     new_scene=new_scene,
     apply=apply,

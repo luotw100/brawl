@@ -14,6 +14,7 @@ CoverJob 列表和节目期数文案，不再猜路径、不再挑字体。
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -28,6 +29,7 @@ from pydantic_settings import (
 )
 
 from brawl.paths import REPO_ROOT
+from brawl.stage.stagecast import title_for
 
 DEFAULT_BACKGROUND = REPO_ROOT / "web" / "public" / "scene.png"
 
@@ -85,12 +87,11 @@ class CoverSettings(BaseSettings):
 
     _cli_args: ClassVar[list[str] | None] = None
 
-    dir: CliPositionalArg[Path]  # 发布资源 / replay 目录（含 title.txt）
+    dir: CliPositionalArg[Path]  # 发布资源 / replay 目录（含 title.txt 与 meta.json）
     output_dir: Path | None = None  # 输出目录；默认 <dir>/covers
     background: Path = DEFAULT_BACKGROUND  # stage 当前背景图
     style: StyleChoice = "serif-gold"  # 最终选定方案后固定默认值
-    episode: str = "001"  # 节目期号；只填中间内容，封面显示为 AI 阿瓦隆{episode}期
-    episod: str = ""  # 兼容 --episod 拼写；同样只填中间内容
+    episode: str = "001"  # 节目期号；只填中间内容，封面显示为 AI {节目名}{episode}期
     force: bool = False  # 覆盖已存在输出
 
     _line1: str = PrivateAttr("")
@@ -120,7 +121,7 @@ class CoverSettings(BaseSettings):
             names = ", ".join(str(path) for path in existing)
             raise ValueError(f"封面已存在：{names}（加 --force 覆盖）")
         self._line1, self._line2 = lines
-        self._episode_text = f"AI 阿瓦隆{self.episod or self.episode}期"
+        self._episode_text = f"AI {_show_title(self.dir)}{self.episode}期"
         self._font = font
         self._avatars = avatars
         self._jobs = jobs
@@ -182,6 +183,21 @@ class CoverSettings(BaseSettings):
             cls._cli_args = None
 
 
+def _show_title(replay_dir: Path) -> str:
+    """节目名从 replay 的 meta.game 派生（StageGame bundle 注册的显示名），不在壳里硬编码。"""
+    meta_path = replay_dir / "meta.json"
+    if not meta_path.is_file():
+        raise ValueError(f"缺 meta.json：{meta_path}")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"meta.json 不是合法 JSON：{meta_path}") from exc
+    game = meta.get("game")
+    if not isinstance(game, str) or not game:
+        raise ValueError(f"meta.json 缺少 game 字段：{meta_path}")
+    return title_for(game)
+
+
 def _resolve_font(style: StyleChoice) -> Path:
     for path in STYLE_FONTS[style]:
         if path.is_file():
@@ -190,19 +206,18 @@ def _resolve_font(style: StyleChoice) -> Path:
 
 
 def _resolve_avatars(replay_dir: Path) -> tuple[Path, ...]:
+    """头像集由 replay 实际内容驱动：avatars/ 里所有 <座位号>.<图片后缀>，按座位号排序。
+
+    不假设人数——几人的局就出几个头像（个别座位无烧入头像时自然缺席，布局按实际个数排）。
+    """
     avatars_dir = replay_dir / "avatars"
     if not avatars_dir.is_dir():
         raise ValueError(f"缺 avatars 目录：{avatars_dir}")
-    avatars = tuple(_resolve_avatar(avatars_dir, no) for no in range(1, 11))
-    missing = [str(path) for path in avatars if not path.is_file()]
-    if missing:
-        raise ValueError(f"缺 1-10 号头像：{', '.join(missing)}")
-    return avatars
-
-
-def _resolve_avatar(avatars_dir: Path, no: int) -> Path:
-    for ext in AVATAR_EXTS:
-        path = avatars_dir / f"{no}{ext}"
-        if path.is_file():
-            return path
-    return avatars_dir / f"{no}.png"
+    found = [
+        (int(path.stem), path)
+        for path in avatars_dir.iterdir()
+        if path.is_file() and path.stem.isdigit() and path.suffix.lower() in AVATAR_EXTS
+    ]
+    if not found:
+        raise ValueError(f"avatars 目录没有座位头像（<座位号>.png 等）：{avatars_dir}")
+    return tuple(path for _, path in sorted(found))

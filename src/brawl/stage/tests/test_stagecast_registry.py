@@ -12,7 +12,7 @@ from brawl.stage.stagecast import StageGame, game_for, register
 
 def _bundle(game_id: str) -> StageGame:
     return StageGame(
-        id=game_id, stagecast=lambda s, m, md: [], new_scene=lambda: None,
+        id=game_id, title=game_id, stagecast=lambda s, m, md: [], new_scene=lambda: None,
         apply=lambda sc, it: None, summary=lambda d, sc: ("", "", ""),
         is_opening_anchor=lambda d: False, terminal=lambda d: False,
         plan_path=Path("x.yaml"),

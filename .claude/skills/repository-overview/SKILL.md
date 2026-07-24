@@ -67,7 +67,10 @@ brawl/
 `stagecast.py`/`protocol.py`/`plan.yaml`、`data/`、`tests/`。
 
 词汇归属约定：Role/Side 等玩法词汇定义在 `state.py`，`rules.py` 只放规则常数与纯函数
-（import state）。host 串场词有两种已认可的产出范式，新玩法按局面复杂度二选一：
+（import state）。指令 kind 命名约定：**新玩法的 Directive/TimelineEntry kind 一律带玩法短名
+前缀**（如 `ww_*`）——前端协议类型是各玩法的联合类型，裸名会撞判别字段；avalon 的裸名
+（`speech`/`deal`/...）是既成事实，不再回头改。host 串场词有两种已认可的产出范式，
+新玩法按局面复杂度二选一：
 **pending 纯查询**（avalon——串场词是 state 的纯函数，`pending()` 现场算）与
 **host_outbox**（werewolf——一次结算产生多条播报，`apply/advance` 显式重写 outbox、
 `pending()` 原样读出，绝不跨轮携带）。

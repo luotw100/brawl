@@ -74,8 +74,8 @@ class Timeline:
 
 # ---------------------------------------------------------------- 进度（节拍渲染）
 
-# 一拍 → (标签, 颜色, 详情) 的映射是玩法专属的，在各玩法插件的 summary 里（engine._plugin.summary）；
-# 这里只留与玩法无关的时间格式化。
+# 一拍 → (标签, 颜色, 详情) 的映射是玩法专属的，在各玩法 StageGame bundle 的 summary 里
+# （engine._game.summary 委托）；这里只留与玩法无关的时间格式化。
 
 
 def _mmss(seconds: float) -> str:

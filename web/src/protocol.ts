@@ -1,6 +1,6 @@
-// 舞台协议信封（与 core/stage/protocol.py 对应）：客户端是纯渲染函数，
+// 舞台协议信封（与 src/brawl/stage/protocol.py 对应）：客户端是纯渲染函数，
 // 没有 reducer、没有本地状态折叠，收到 StateMsg 画什么是什么。
-// 玩法指令/Scene 形状在 ./games/<game>.ts（与 <game>/protocol.py 对应）。
+// 玩法指令/Scene 形状在 ./games/<game>.ts（与 src/brawl/games/<game>/protocol.py 对应）。
 
 import type { AvalonDirective, AvalonScene } from "./games/avalon";
 import type { WerewolfDirective, WerewolfScene } from "./games/werewolf";

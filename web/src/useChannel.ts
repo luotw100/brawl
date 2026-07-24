@@ -28,11 +28,9 @@ export function useChannel(): Channel {
     let closed = false;
     let timer: number;
 
-    const token = new URLSearchParams(location.search).get("token") ?? "";
-
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
       ws.onopen = () => { retry.current = 0; };
       ws.onmessage = (e) => {
         setCh({ connected: true, state: JSON.parse(e.data), receivedAt: Date.now() });

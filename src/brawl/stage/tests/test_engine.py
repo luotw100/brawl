@@ -48,6 +48,7 @@ _DIRECTIVES = [
 def _fake_game() -> StageGame:
     return StageGame(
         id="fake",
+        title="假玩法",
         stagecast=lambda sentences, meta, media: list(_DIRECTIVES),
         new_scene=AVALON.new_scene,
         apply=AVALON.apply,

@@ -7,17 +7,31 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+import brawl.stage.stagecast as registry_mod
+from brawl.games.avalon.stagecast import STAGE_GAME as AVALON_STAGE
+from brawl.games.werewolf.stagecast import STAGE_GAME as WEREWOLF_STAGE
 from brawl.stage.cover import render_covers
 from brawl.stage.cover_settings import CoverSettings
 
 
-def _write_resource_dir(tmp_path: Path, title: str = "梅林全程装死\n刺客一刀砍偏\n") -> Path:
+@pytest.fixture(autouse=True)
+def _stage_registry(monkeypatch):
+    """隔离全局 registry：CLI 装配是否已发生不影响本文件（收集期 import 顺序无关）。"""
+    monkeypatch.setattr(
+        registry_mod,
+        "_REGISTRY",
+        {"avalon": AVALON_STAGE, "werewolf": WEREWOLF_STAGE},
+    )
+
+
+def _write_resource_dir(tmp_path: Path, title: str = "梅林全程装死\n刺客一刀砍偏\n", seats: int = 10) -> Path:
     replay = tmp_path / "game1"
     replay.mkdir()
     (replay / "title.txt").write_text(title, encoding="utf-8")
+    (replay / "meta.json").write_text('{"game": "avalon"}', encoding="utf-8")
     avatars = replay / "avatars"
     avatars.mkdir()
-    for no in range(1, 11):
+    for no in range(1, seats + 1):
         img = Image.new("RGBA", (96, 96), (30 + no * 12, 40 + no * 9, 90 + no * 7, 255))
         img.save(avatars / f"{no}.png")
     return replay
@@ -49,12 +63,34 @@ def test_cover_settings_fills_episode_number_into_label(tmp_path):
     assert settings.episode_text == "AI 阿瓦隆005期"
 
 
-def test_cover_settings_accepts_episod_spelling(tmp_path):
+def test_cover_settings_derives_show_title_and_avatars_from_replay(tmp_path):
+    """节目名从 meta 派生；头像集按 avatars/ 实际内容，不假设 10 人局。"""
+    replay = _write_resource_dir(tmp_path, seats=12)
+    (replay / "meta.json").write_text('{"game": "werewolf"}', encoding="utf-8")
+
+    settings = CoverSettings.load([str(replay)])
+
+    assert settings.episode_text == "AI 狼人杀001期"
+    assert len(settings.avatars) == 12
+
+
+def test_cover_settings_falls_back_to_raw_game_id_when_unregistered(tmp_path):
     replay = _write_resource_dir(tmp_path)
+    (replay / "meta.json").write_text('{"game": "no-such-game"}', encoding="utf-8")
 
-    settings = CoverSettings.load([str(replay), "--episod", "第五局观察"])
+    settings = CoverSettings.load([str(replay)])
 
-    assert settings.episode_text == "AI 阿瓦隆第五局观察期"
+    assert settings.episode_text == "AI no-such-game001期"
+
+
+def test_cover_settings_rejects_dir_without_avatars(tmp_path):
+    replay = tmp_path / "game1"
+    replay.mkdir()
+    (replay / "title.txt").write_text("一行\n两行\n", encoding="utf-8")
+    (replay / "meta.json").write_text('{"game": "avalon"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="缺 avatars 目录"):
+        CoverSettings.load([str(replay)])
 
 
 def test_cover_settings_rejects_bad_title_lines(tmp_path):

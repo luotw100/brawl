@@ -1,7 +1,7 @@
-"""Replay directives -> deterministic stage play plan.
+"""Replay 指令流 → 确定性舞台播放计划（playplan compiler）。
 
-The compiler is intentionally game-agnostic. Game-specific timing, host
-placement, and sound cues live in YAML plan files in each game package (``<game>/plan.yaml``).
+编译器刻意游戏盲：玩法专属的节奏、主持贴靠与音效 cue 全部活在各玩法包的
+YAML 配方里（``games/<game>/plan.yaml``），这里只认 plan DSL 与指令基类。
 """
 
 from __future__ import annotations

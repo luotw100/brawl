@@ -40,6 +40,7 @@ class StageGame:
     """一个玩法向演出壳交付的全部能力。无状态：随局数据经入参传入。"""
 
     id: str  # 玩法标识，与 meta.game 对齐（registry 据此派发）
+    title: str  # 节目显示名（封面等对外文案用，如"阿瓦隆"）
     stagecast: Stagecast
     new_scene: Callable[[], BaseScene]
     apply: Callable[[BaseScene, FeedItem], None]  # 展示态 reducer（feed 入队由引擎统一做）
@@ -64,3 +65,9 @@ def game_for(game_id: str) -> StageGame:
         return _REGISTRY[game_id]
     except KeyError:
         raise ValueError(f"未登记的玩法：{game_id}（已登记：{sorted(_REGISTRY)}）") from None
+
+
+def title_for(game_id: str) -> str:
+    """玩法节目显示名。未登记（测试绕过 CLI 装配直用）退回裸 id——封面文案错得显眼，不静默。"""
+    game = _REGISTRY.get(game_id)
+    return game.title if game is not None else game_id
