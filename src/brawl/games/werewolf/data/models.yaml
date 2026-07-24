@@ -21,10 +21,6 @@ models:
   display: Kimi K2.6
   avatar: kimi
   opencode_model: opencode-go/kimi-k2.6
-- name: oc-kimi-for-coding-k2p7
-  display: Kimi for Coding K2.7
-  avatar: kimi
-  opencode_model: kimi-for-coding/k2p7
 - name: oc-glm-5.2
   display: GLM-5.2
   avatar: zhipu
@@ -33,26 +29,6 @@ models:
   display: GLM-5.1
   avatar: zhipu
   opencode_model: opencode-go/glm-5.1
-- name: oc-deepseek-v4-pro
-  display: DeepSeek v4 Pro
-  avatar: deepseek
-  opencode_model: opencode-go/deepseek-v4-pro
-- name: oc-deepseek-v4-flash
-  display: DeepSeek v4 Flash
-  avatar: deepseek
-  opencode_model: opencode-go/deepseek-v4-flash
-- name: oc-qwen3.7-plus
-  display: Qwen3.7 Plus
-  avatar: qwen
-  opencode_model: opencode-go/qwen3.7-plus
-- name: oc-qwen3.7-max
-  display: Qwen3.7 Max
-  avatar: qwen
-  opencode_model: opencode-go/qwen3.7-max
-- name: oc-qwen3.6-plus
-  display: Qwen3.6 Plus
-  avatar: qwen
-  opencode_model: opencode-go/qwen3.6-plus
 - name: oc-mimo-v2.5-pro
   display: MiMo v2.5 Pro
   avatar: mimo
