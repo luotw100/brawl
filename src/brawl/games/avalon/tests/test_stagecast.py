@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 import yaml
@@ -23,8 +22,9 @@ from brawl.games.avalon.protocol import (
     Speech,
     VoteReveal,
 )
-from brawl.games.avalon.settings import AvalonSettings
+from brawl.games.avalon.rules import DEFAULT_BOARD
 from brawl.games.avalon.stagecast import apply, stagecast
+from brawl.games.run import RunSettings
 from brawl.runtime.journal import load_replay_sentences
 from brawl.stage.protocol import Directive, HostSpeech
 
@@ -42,8 +42,8 @@ class FakeMedia:
 _PLAN_KINDS = set(yaml.safe_load((Path(__file__).parents[1] / "plan.yaml").read_text(encoding="utf-8"))["directives"])
 
 
-async def _run(replay: Path, **over: Any) -> list[Directive]:
-    settings = AvalonSettings(players=over.pop("players", 6), seed=over.pop("seed", 42), player="random", replay=replay, render=False, **over)
+async def _run(replay: Path, seed: int = 42) -> list[Directive]:
+    settings = RunSettings(board=DEFAULT_BOARD, seed=seed, backend="random", replay=replay, render=False)
     await avalon_run.run_game(settings)
     sentences = load_replay_sentences(replay)
     meta = json.loads((replay / "meta.json").read_text(encoding="utf-8"))
@@ -88,14 +88,14 @@ def _feed_item(seq: int, directive: Directive):
 
 
 @pytest.mark.asyncio
-async def test_six_player_game_invariants(tmp_path) -> None:
-    _assert_invariants(await _run(tmp_path / "g", players=6, seed=7))
+async def test_ten_player_game_invariants(tmp_path) -> None:
+    _assert_invariants(await _run(tmp_path / "g", seed=7))
 
 
 @pytest.mark.asyncio
 async def test_lady_flow_projected(tmp_path) -> None:
-    """7 人带仙女：任务 3/4/5 后必有选验/揭牌/仙女发言/令牌交接。"""
-    directives = await _run(tmp_path / "g", players=7, seed=11, lady=True)
+    """板子固定带湖中仙女：任务 3/4/5 后必有选验/揭牌/仙女发言/令牌交接。"""
+    directives = await _run(tmp_path / "g", seed=11)
     _assert_invariants(directives)
     kinds = [d.kind for d in directives]
     assert "lady_choose" in kinds and "lady_check" in kinds
@@ -104,18 +104,18 @@ async def test_lady_flow_projected(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_evil_chat_and_assassination_covered_across_boards(tmp_path) -> None:
-    """蓝方三任务胜 → 红方密谋 + 刺杀。随机 sampler 按 (seat,quest,attempt,phase) 定死，
-    换 seed 不改票型、换人数才改——这组人数/seed 组合实测覆盖刺杀路径。"""
+async def test_evil_chat_and_assassination_covered_across_seeds(tmp_path) -> None:
+    """蓝方三任务胜 → 红方密谋 + 刺杀。板子定死 10 人后只能靠 seed 换牌型——
+    这组 seed 实测覆盖红方任务胜（1）与蓝方胜触发刺杀（5）两条路径。"""
     kinds_seen: set[str] = set()
     phases_seen: set[str] = set()
     beats_seen: set[str] = set()
-    for i, (players, seed) in enumerate(((5, 1), (8, 7), (9, 7))):
-        directives = await _run(tmp_path / f"g{i}", players=players, seed=seed)
+    for i, seed in enumerate((1, 5)):
+        directives = await _run(tmp_path / f"g{i}", seed=seed)
         _assert_invariants(directives)
         kinds_seen |= {d.kind for d in directives}
         phases_seen |= {d.phase for d in directives if isinstance(d, Speech)}
         beats_seen |= {d.beat for d in directives if isinstance(d, HostSpeech)}
-    assert "assassination" in kinds_seen, f"选定板子没跑出刺杀局：{kinds_seen}"
+    assert "assassination" in kinds_seen, f"选定 seed 没跑出刺杀局：{kinds_seen}"
     assert "evil_chat" in phases_seen
     assert "evil_chat_opening" in beats_seen

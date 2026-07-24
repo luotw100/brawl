@@ -7,6 +7,8 @@ settings 的形状校验（players 是否在 5..10）、提案的队伍人数、
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from brawl.games.avalon.state import Role, Side
 
 QUESTS = 5  # 一局共 5 个任务
@@ -28,6 +30,52 @@ EVIL_COUNT: dict[int, int] = {5: 2, 6: 2, 7: 3, 8: 3, 9: 3, 10: 4}
 
 # 湖中仙女（可选模块）：第 2、3、4 个任务结束后各触发一次查验
 LADY_QUESTS = (2, 3, 4)
+
+
+@dataclass(frozen=True)
+class BoardSpec:
+    """一个板子：固定人数与角色构成 + 湖中仙女开关。
+
+    角色构成在此定死（线上只打 10 人全角色带湖仙局）；人数相关的规则表
+    （TEAM_SIZES/EVIL_COUNT/fails_required）仍按 players 查，板子只决定发哪副牌。
+    """
+
+    id: str
+    name: str
+    roles: tuple[Role, ...]
+    lady: bool
+
+    @property
+    def players(self) -> int:
+        return len(self.roles)
+
+
+MERLIN_ASSASSIN_PERCIVAL_MORGANA_MORDRED_OBERON_LADY_10 = BoardSpec(
+    id="merlin-assassin-percival-morgana-mordred-oberon-lady-10",
+    name="阿瓦隆10人全角色（带湖中仙女）",
+    roles=(
+        Role.MERLIN,
+        Role.PERCIVAL,
+        Role.SERVANT,
+        Role.SERVANT,
+        Role.SERVANT,
+        Role.SERVANT,
+        Role.ASSASSIN,
+        Role.MORGANA,
+        Role.MORDRED,
+        Role.OBERON,
+    ),
+    lady=True,
+)
+
+BOARDS: dict[str, BoardSpec] = {
+    MERLIN_ASSASSIN_PERCIVAL_MORGANA_MORDRED_OBERON_LADY_10.id: MERLIN_ASSASSIN_PERCIVAL_MORGANA_MORDRED_OBERON_LADY_10
+}
+DEFAULT_BOARD = MERLIN_ASSASSIN_PERCIVAL_MORGANA_MORDRED_OBERON_LADY_10.id
+
+
+def board_by_id(board_id: str) -> BoardSpec:
+    return BOARDS[board_id]
 
 
 def team_size(players: int, quest_no: int) -> int:

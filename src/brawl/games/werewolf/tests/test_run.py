@@ -10,9 +10,10 @@ from typing import Any
 
 import pytest
 
+from brawl.games.run import RunSettings, SettingsError
 from brawl.games.werewolf import run as werewolf_run
 from brawl.games.werewolf.registry import load_registry
-from brawl.games.werewolf.settings import SettingsError, WerewolfResumeSettings, WerewolfSettings
+from brawl.games.werewolf.rules import DEFAULT_BOARD
 from brawl.games.werewolf.validation import (
     build_replay_meta,
     load_replay_meta,
@@ -20,9 +21,9 @@ from brawl.games.werewolf.validation import (
 )
 
 
-def _meta_dict() -> dict[str, Any]:
+def _meta_dict(tmp_path) -> dict[str, Any]:
     registry = load_registry()
-    settings = WerewolfSettings(seed=7, player="random", render=False)
+    settings = RunSettings(board=DEFAULT_BOARD, replay=tmp_path / "fresh", seed=7, backend="random", render=False)
     setup = resolve_and_validate(settings, registry, random.Random(settings.seed))
     return build_replay_meta(
         settings,
@@ -37,26 +38,6 @@ def _write_replay_envelope(run_dir: Path, meta: dict[str, Any] | str) -> None:
     (run_dir / "sentences.jsonl").write_text("", encoding="utf-8")
     raw = meta if isinstance(meta, str) else json.dumps(meta, ensure_ascii=False)
     (run_dir / "meta.json").write_text(raw, encoding="utf-8")
-
-
-def test_resume_cli_accepts_only_exact_replay_shape(tmp_path) -> None:
-    replay = tmp_path / "replay"
-    parsed = WerewolfResumeSettings.from_cli(
-        ["--resume", "--replay", str(replay)]
-    )
-    assert parsed == WerewolfResumeSettings(replay=replay)
-
-    invalid = (
-        ["--replay", str(replay), "--resume"],
-        ["--resume", f"--replay={replay}"],
-        ["--resume", "--replay", "--player"],
-        ["--resume", "--replay", str(replay), "--player", "random"],
-        ["--config", "x.json", "--resume", "--replay", str(replay)],
-        ["--resume", "--replay", str(replay), "--no-render"],
-    )
-    for argv in invalid:
-        with pytest.raises(SettingsError, match="续跑只允许"):
-            WerewolfResumeSettings.from_cli(argv)
 
 
 @pytest.mark.parametrize(
@@ -78,7 +59,7 @@ def test_resume_meta_rejects_wrong_game_version_shape_and_board(
     mutation,
     message,
 ) -> None:
-    meta = _meta_dict()
+    meta = _meta_dict(tmp_path)
     mutation(meta)
     run_dir = tmp_path / "replay"
     _write_replay_envelope(run_dir, meta)
@@ -97,7 +78,7 @@ def test_resume_meta_wraps_malformed_json_as_settings_error(tmp_path) -> None:
 
 def test_resume_wraps_corrupt_sentence_log_as_settings_error(tmp_path) -> None:
     run_dir = tmp_path / "replay"
-    _write_replay_envelope(run_dir, _meta_dict())
+    _write_replay_envelope(run_dir, _meta_dict(tmp_path))
     (run_dir / "sentences.jsonl").write_text("{}", encoding="utf-8")
 
     with pytest.raises(SettingsError, match="Sentence Runtime 日志"):
@@ -114,7 +95,7 @@ def test_resume_wraps_corrupt_sentence_log_as_settings_error(tmp_path) -> None:
 )
 def test_resume_rejects_symlinked_inputs(tmp_path, entry: str, message: str) -> None:
     real_replay = tmp_path / "real-replay"
-    _write_replay_envelope(real_replay, _meta_dict())
+    _write_replay_envelope(real_replay, _meta_dict(tmp_path))
     if entry == "replay":
         replay = tmp_path / "linked-replay"
         replay.symlink_to(real_replay, target_is_directory=True)
@@ -143,7 +124,7 @@ def test_resume_rejects_non_regular_inputs(tmp_path, entry: str, message: str) -
         replay.write_text("not a directory", encoding="utf-8")
     else:
         replay = tmp_path / "replay"
-        _write_replay_envelope(replay, _meta_dict())
+        _write_replay_envelope(replay, _meta_dict(tmp_path))
         path = replay / entry
         path.unlink()
         path.mkdir()
@@ -157,9 +138,9 @@ def test_resume_wraps_missing_replay_as_settings_error(tmp_path) -> None:
         load_replay_meta(tmp_path / "missing")
 
 
-def test_meta_freezes_every_prompt_model_and_aliyun_voice_input() -> None:
+def test_meta_freezes_every_prompt_model_and_aliyun_voice_input(tmp_path) -> None:
     registry = load_registry()
-    settings = WerewolfSettings(seed=11, player="random", render=False)
+    settings = RunSettings(board=DEFAULT_BOARD, replay=tmp_path / "fresh", seed=11, backend="random", render=False)
     setup = resolve_and_validate(settings, registry, random.Random(settings.seed))
 
     assert setup.tones == tuple(registry.personas[pid].tone for pid in setup.cast)
@@ -167,8 +148,7 @@ def test_meta_freezes_every_prompt_model_and_aliyun_voice_input() -> None:
         registry.strategies[sid].system for sid in setup.strategies
     )
     assert setup.opencode_models == tuple(
-        registry.models[name].opencode_model or settings.opencode_model
-        for name in setup.models
+        registry.models[name].opencode_model or "" for name in setup.models
     )
     assert setup.names == tuple(registry.personas[pid].name for pid in setup.cast)
     assert setup.voices == tuple(registry.personas[pid].voice_id for pid in setup.cast)
@@ -183,22 +163,21 @@ async def test_production_run_game_writes_versioned_meta_and_resume_restores(
     tmp_path,
 ) -> None:
     replay = tmp_path / "replay"
-    settings = WerewolfSettings(
+    settings = RunSettings(
+        board=DEFAULT_BOARD,
         seed=19,
-        player="random",
+        backend="random",
         replay=replay,
         render=False,
     )
 
     final = await werewolf_run.run_game(settings)
     meta = load_replay_meta(replay)
-    restored = await werewolf_run.resume_game(
-        WerewolfResumeSettings(replay=replay)
-    )
+    restored = await werewolf_run.resume_game(replay)
 
     assert meta.schema_version == 1
     assert meta.game == "werewolf"
-    assert meta.player == "random"
+    assert meta.backend == "random"
     assert restored.model_dump_json() == final.model_dump_json()
 
 
@@ -209,9 +188,10 @@ async def test_production_resume_continues_without_live_registry(
 ) -> None:
     replay = tmp_path / "complete"
     final = await werewolf_run.run_game(
-        WerewolfSettings(
+        RunSettings(
+            board=DEFAULT_BOARD,
             seed=23,
-            player="random",
+            backend="random",
             replay=replay,
             render=False,
         )
@@ -241,9 +221,7 @@ async def test_production_resume_continues_without_live_registry(
         raise AssertionError("resume 不得加载活 registry/YAML")
 
     monkeypatch.setattr(werewolf_run, "load_registry", registry_must_not_be_loaded)
-    resumed = await werewolf_run.resume_game(
-        WerewolfResumeSettings(replay=interrupted)
-    )
+    resumed = await werewolf_run.resume_game(interrupted)
 
     resumed_lines = (interrupted / "sentences.jsonl").read_text(
         encoding="utf-8"

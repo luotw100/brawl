@@ -6,7 +6,6 @@ DashScope 后端，不再暴露会改变 replay 解释方式的 backend / voice 
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import fcntl
 import hashlib
@@ -24,10 +23,12 @@ import httpx
 import soundfile as sf
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic_settings import CliPositionalArg, SettingsConfigDict
 from rich.console import Console
 from rich.progress import Progress, TaskID
 
 from brawl.paths import REPO_ROOT
+from brawl.runtime.cli_settings import CliSettings
 from brawl.runtime.files import UnsafePathError, atomic_write, read_regular_bytes
 from brawl.runtime.journal import JournalCorruptionError, load_replay_sentences
 from brawl.runtime.types import Sentence
@@ -517,10 +518,17 @@ async def _run(replay: Path) -> None:
 
 
 def main(argv: list[str]) -> None:
-    parser = argparse.ArgumentParser(
-        prog="brawl tts",
-        description="按 replay/meta.json 冻结的阿里云音色增量生成 TTS",
+    asyncio.run(_run(TTSSettings.load(argv).replay))
+
+
+class TTSSettings(CliSettings):
+    """按 meta.json 冻结的音色，为这一局增量生成配音（tts/*.opus）。"""
+
+    CLI_PROG: ClassVar[str] = "brawl tts"
+    model_config = SettingsConfigDict(
+        env_prefix="BRAWL_TTS_",
+        cli_kebab_case=True,
+        extra="forbid",
     )
-    parser.add_argument("replay", type=Path, help="不可变 replay 目录")
-    args = parser.parse_args(argv)
-    asyncio.run(_run(args.replay))
+
+    replay: CliPositionalArg[Path] = Field(description="replay 目录（含 meta.json）")

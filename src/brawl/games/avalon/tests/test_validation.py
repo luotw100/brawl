@@ -8,22 +8,22 @@ import random
 import pytest
 
 from brawl.games.avalon.registry import load_registry
-from brawl.games.avalon.settings import AvalonSettings, SettingsError
+from brawl.games.avalon.rules import DEFAULT_BOARD
 from brawl.games.avalon.validation import (
     AvalonReplayMeta,
-    ResumeRequest,
     load_replay,
     resolve_and_validate,
 )
+from brawl.games.run import RunSettings, SettingsError
 
 
-def _meta() -> AvalonReplayMeta:
+def _meta(tmp_path) -> AvalonReplayMeta:
     registry = load_registry()
-    settings = AvalonSettings(players=5, seed=7, opencode_model="fallback/model")
+    settings = RunSettings(board=DEFAULT_BOARD, replay=tmp_path / "fresh", seed=7, backend="random")
     setup = resolve_and_validate(settings, registry, random.Random(settings.seed))
     return AvalonReplayMeta(
         started_at="2026-07-18T12:00:00+00:00",
-        player=settings.player,
+        backend=settings.backend,
         concurrency=settings.concurrency,
         render=settings.render,
         seed=settings.seed,
@@ -32,22 +32,22 @@ def _meta() -> AvalonReplayMeta:
     )
 
 
-def _write_replay_at(replay, payload: dict) -> ResumeRequest:
+def _write_replay_at(replay, payload: dict):
     replay.mkdir()
     (replay / "sentences.jsonl").write_text("", encoding="utf-8")
     (replay / "meta.json").write_text(
         json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
     )
-    return ResumeRequest(replay=replay)
+    return replay
 
 
-def _write_replay(tmp_path, payload: dict) -> ResumeRequest:
+def _write_replay(tmp_path, payload: dict):
     return _write_replay_at(tmp_path / "replay", payload)
 
 
-def test_meta_freezes_all_prompt_model_and_aliyun_voice_inputs() -> None:
-    meta = _meta()
+def test_meta_freezes_all_prompt_model_and_aliyun_voice_inputs(tmp_path) -> None:
+    meta = _meta(tmp_path)
     setup = meta.setup
     assert meta.seed == 7
     players = setup.players
@@ -78,7 +78,7 @@ def test_resume_rejects_wrong_game_version_or_malformed_setup(
     mutation,
     message: str,
 ) -> None:
-    raw = _meta().model_dump(mode="json")
+    raw = _meta(tmp_path).model_dump(mode="json")
     mutation(raw)
     request = _write_replay(tmp_path, raw)
     with pytest.raises(SettingsError, match=message):
@@ -91,14 +91,14 @@ def test_resume_wraps_broken_json_as_settings_error(tmp_path) -> None:
     (replay / "sentences.jsonl").write_text("", encoding="utf-8")
     (replay / "meta.json").write_text("{broken", encoding="utf-8")
     with pytest.raises(SettingsError, match="Avalon schema v1"):
-        load_replay(ResumeRequest(replay=replay))
+        load_replay(replay)
 
 
 def test_resume_wraps_corrupt_sentence_log_as_settings_error(tmp_path) -> None:
-    request = _write_replay(tmp_path, _meta().model_dump(mode="json"))
-    (request.replay / "sentences.jsonl").write_text("{}", encoding="utf-8")
+    replay = _write_replay(tmp_path, _meta(tmp_path).model_dump(mode="json"))
+    (replay / "sentences.jsonl").write_text("{}", encoding="utf-8")
     with pytest.raises(SettingsError, match="Sentence Runtime 日志"):
-        load_replay(request)
+        load_replay(replay)
 
 
 @pytest.mark.parametrize(
@@ -112,14 +112,14 @@ def test_resume_wraps_corrupt_sentence_log_as_settings_error(tmp_path) -> None:
 def test_resume_rejects_symlinked_inputs(tmp_path, entry: str, message: str) -> None:
     request = _write_replay_at(
         tmp_path / "real-replay",
-        _meta().model_dump(mode="json"),
+        _meta(tmp_path).model_dump(mode="json"),
     )
     if entry == "replay":
         linked_replay = tmp_path / "linked-replay"
-        linked_replay.symlink_to(request.replay, target_is_directory=True)
-        request = ResumeRequest(replay=linked_replay)
+        linked_replay.symlink_to(request, target_is_directory=True)
+        request = linked_replay
     else:
-        path = request.replay / entry
+        path = request / entry
         target = tmp_path / f"real-{entry}"
         path.rename(target)
         path.symlink_to(target)
@@ -140,10 +140,10 @@ def test_resume_rejects_non_regular_inputs(tmp_path, entry: str, message: str) -
     if entry == "replay":
         replay = tmp_path / "replay-file"
         replay.write_text("not a directory", encoding="utf-8")
-        request = ResumeRequest(replay=replay)
+        request = replay
     else:
-        request = _write_replay(tmp_path, _meta().model_dump(mode="json"))
-        path = request.replay / entry
+        request = _write_replay(tmp_path, _meta(tmp_path).model_dump(mode="json"))
+        path = request / entry
         path.unlink()
         path.mkdir()
 
@@ -152,6 +152,5 @@ def test_resume_rejects_non_regular_inputs(tmp_path, entry: str, message: str) -
 
 
 def test_resume_wraps_missing_replay_as_settings_error(tmp_path) -> None:
-    request = ResumeRequest(replay=tmp_path / "missing")
     with pytest.raises(SettingsError, match="Sentence Runtime 日志"):
-        load_replay(request)
+        load_replay(tmp_path / "missing")

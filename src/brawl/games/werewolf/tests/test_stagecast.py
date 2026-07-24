@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from brawl.games.run import RunSettings
 from brawl.games.werewolf import run as werewolf_run
 from brawl.games.werewolf.protocol import (
     Deal,
@@ -23,7 +24,7 @@ from brawl.games.werewolf.protocol import (
     WerewolfScene,
     WolfKill,
 )
-from brawl.games.werewolf.settings import WerewolfSettings
+from brawl.games.werewolf.rules import DEFAULT_BOARD
 from brawl.games.werewolf.stagecast import apply, stagecast
 from brawl.runtime.journal import load_replay_sentences
 from brawl.stage.protocol import Directive, FeedItem, HostSpeech
@@ -41,7 +42,7 @@ _PLAN_KINDS = set(yaml.safe_load((Path(__file__).parents[1] / "plan.yaml").read_
 
 
 async def _run(replay: Path, seed: int) -> list[Directive]:
-    await werewolf_run.run_game(WerewolfSettings(seed=seed, player="random", replay=replay, render=False))
+    await werewolf_run.run_game(RunSettings(board=DEFAULT_BOARD, seed=seed, backend="random", replay=replay, render=False))
     sentences = load_replay_sentences(replay)
     meta = json.loads((replay / "meta.json").read_text(encoding="utf-8"))
     return stagecast(sentences, meta, FakeMedia())

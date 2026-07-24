@@ -13,7 +13,7 @@ from typing import ClassVar
 
 import httpx
 from dotenv import dotenv_values
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     CliPositionalArg,
@@ -46,7 +46,7 @@ class SettingsError(Exception):
 
 
 class ForgeSettings(BaseSettings):
-    """`brawl voice-forge` 的参数面(settings 即 CLI,flag 自动派生)。"""
+    """用阿里云 Qwen3-TTS 铸造音色并生成试听。"""
 
     model_config = SettingsConfigDict(
         env_prefix="BRAWL_VOICE_FORGE_",
@@ -57,11 +57,21 @@ class ForgeSettings(BaseSettings):
 
     _cli_args: ClassVar[list[str] | None] = None
 
-    voice_prompt: CliPositionalArg[str]  # 嗓音描述(VD prompt),≤2048 字符
-    name: str = "voice"  # 一两个单词的短描述,拼上日期做云端 preferred_name(便于辨认/清理)
-    preview_text: str = "我跳梅林？哥们，我要是梅林这局早就赢了好吧。"  # 用 cast 将来真会说的话来听
-    emotion_samples: bool = True  # 铸完追加合成两个语气样本(急了/阴阳),验收 instructions 响应度
-    out_dir: Path | None = None  # 试听产物目录;None = /tmp 下自动建临时目录
+    # 嗓音描述（VD prompt），≤2048 字符
+    voice_prompt: CliPositionalArg[str] = Field(
+        description="嗓音描述（给谁听的戏、什么质感，≤2048 字符）"
+    )
+    # 一两个单词的短描述，拼上日期做云端 preferred_name（便于辨认/清理）
+    name: str = Field(default="voice", description="音色短名（字母数字下划线）：拼日期做云端名，便于日后清理")
+    # 用 cast 将来真会说的话来听
+    preview_text: str = Field(
+        default="我跳梅林？哥们，我要是梅林这局早就赢了好吧。",
+        description="试听文案：用角色真会说的话来听才准",
+    )
+    # 铸完追加合成两个语气样本（急了/阴阳），验收 instructions 响应度
+    emotion_samples: bool = Field(default=True, description="铸完追加两个语气样本（急了/阴阳），验收语气指令响应度")
+    # 试听产物目录；None = /tmp 下自动建临时目录
+    out_dir: Path | None = Field(default=None, description="试听产物目录；缺省落 /tmp 临时目录（重启即丢，满意请显式指定）")
 
     @model_validator(mode="after")
     def _check(self) -> ForgeSettings:

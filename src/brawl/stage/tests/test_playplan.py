@@ -89,7 +89,6 @@ def test_record_audio_segments_use_compiled_tracks_without_reinterpretation(tmp_
         ],
         media=media,
         sfx_dir=Path("/sfx"),
-        shift=0.0,
         origin=99.0,
     )
 

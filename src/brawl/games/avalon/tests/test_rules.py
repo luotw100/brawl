@@ -9,18 +9,19 @@ from typing import Any
 import pytest
 
 from brawl.games.avalon import run as avalon_run
+from brawl.games.avalon.rules import DEFAULT_BOARD
 from brawl.games.avalon.run import resume_game, run_game
-from brawl.games.avalon.settings import AvalonSettings
 from brawl.games.avalon.state import Role, Side
-from brawl.games.avalon.validation import ResumeRequest, load_replay
+from brawl.games.avalon.validation import load_replay
+from brawl.games.run import RunSettings
 from brawl.runtime.errors import FatalActorError
 
 
-def _settings(replay: Path, **over: Any) -> AvalonSettings:
-    return AvalonSettings(
-        players=over.pop("players", 5),
+def _settings(replay: Path, **over: Any) -> RunSettings:
+    return RunSettings(
+        board=DEFAULT_BOARD,
         seed=over.pop("seed", 42),
-        player="random",
+        backend="random",
         replay=replay,
         render=False,
         **over,
@@ -36,12 +37,12 @@ async def test_production_random_game_finishes_and_terminal_resume_is_identical(
     assert final.winner in ("good", "evil")
     assert final.win_reason in ("quests", "rejections", "assassination")
 
-    meta = load_replay(ResumeRequest(replay=replay))
+    meta = load_replay(replay)
     assert meta.schema_version == 1
     assert meta.game == "avalon"
-    assert meta.player == "random"
+    assert meta.backend == "random"
     before = (replay / "sentences.jsonl").read_bytes()
-    restored = await resume_game(ResumeRequest(replay=replay))
+    restored = await resume_game(replay)
     assert restored.model_dump_json() == final.model_dump_json()
     assert (replay / "sentences.jsonl").read_bytes() == before
 
@@ -55,7 +56,7 @@ async def test_resume_never_reads_live_registry(tmp_path, monkeypatch) -> None:
         raise AssertionError("resume must use frozen meta, not YAML registry")
 
     monkeypatch.setattr(avalon_run, "load_registry", fail_registry_load)
-    restored = await resume_game(ResumeRequest(replay=replay))
+    restored = await resume_game(replay)
     assert restored.model_dump_json() == final.model_dump_json()
 
 
@@ -65,14 +66,14 @@ async def test_terminal_opencode_replay_does_not_require_runtime_installation(tm
     final = await run_game(_settings(replay))
     meta_path = replay / "meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["player"] = "opencode"
+    meta["backend"] = "opencode"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
     def fail_prepare(_meta) -> None:
         raise AssertionError("终局 replay 不应准备 OpenCode runtime")
 
     monkeypatch.setattr(avalon_run, "_prepare_runtime", fail_prepare)
-    restored = await resume_game(ResumeRequest(replay=replay))
+    restored = await resume_game(replay)
 
     assert restored.model_dump_json() == final.model_dump_json()
 
@@ -112,7 +113,7 @@ async def test_real_actor_crash_then_production_resume_matches_clean_run(tmp_pat
     assert (crashed_replay / "sentences.jsonl").stat().st_size > 0
 
     monkeypatch.setattr(avalon_run, "RandomActor", real_actor)
-    resumed = await resume_game(ResumeRequest(replay=crashed_replay))
+    resumed = await resume_game(crashed_replay)
     clean = await run_game(_settings(clean_replay, concurrency=1))
 
     assert resumed.model_dump_json() == clean.model_dump_json()
@@ -122,20 +123,11 @@ async def test_real_actor_crash_then_production_resume_matches_clean_run(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_ten_player_full_role_game_reaches_evil_chat_and_stabs_only_good(tmp_path) -> None:
+async def test_full_role_board_reaches_evil_chat_and_stabs_only_good(tmp_path) -> None:
+    """板子定死 10 人全角色带湖仙：红方密谋四人、湖仙在场、刺杀只落蓝方。"""
     replay = tmp_path / "full-role"
-    await run_game(
-        _settings(
-            replay,
-            players=10,
-            seed=16,
-            percival=True,
-            morgana=True,
-            mordred=True,
-            oberon=True,
-        )
-    )
-    meta = load_replay(ResumeRequest(replay=replay))
+    await run_game(_settings(replay, seed=16))
+    meta = load_replay(replay)
     assert set(meta.setup.roles) == {
         Role.MERLIN,
         Role.PERCIVAL,
@@ -145,6 +137,7 @@ async def test_ten_player_full_role_game_reaches_evil_chat_and_stabs_only_good(t
         Role.MORDRED,
         Role.OBERON,
     }
+    assert meta.setup.lady_holder is not None  # 板子带湖中仙女，令牌必有主
 
     rows = [
         json.loads(line)
@@ -190,11 +183,3 @@ async def test_ten_player_full_role_game_reaches_evil_chat_and_stabs_only_good(t
     )
     target = assassination["target_no"]
     assert meta.setup.roles[target - 1].side is Side.GOOD
-
-
-@pytest.mark.asyncio
-async def test_production_random_game_with_lady_finishes(tmp_path) -> None:
-    final = await run_game(
-        _settings(tmp_path / "lady", players=7, seed=42, lady=True)
-    )
-    assert final.phase == "done"

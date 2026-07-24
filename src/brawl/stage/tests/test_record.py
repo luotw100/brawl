@@ -73,20 +73,20 @@ def test_audio_segments_offsets_relative_to_origin(media):
         Beat(seq=1, started_at=100.0, tracks=[track("main", "/replay/tts/a.opus", 0.0)]),
         Beat(seq=2, started_at=103.5, tracks=[track("main", "/replay/tts/b.opus", 0.0)]),
     ]
-    segs = audio_segments(beats, media, SFX, shift=0.0, origin=99.0)
+    segs = audio_segments(beats, media, SFX, origin=99.0)
     assert segs == [
         (media.audio_path("/replay/tts/a.opus"), 1.0, 1.0),  # 100−99
         (media.audio_path("/replay/tts/b.opus"), 4.5, 1.0),  # 103.5−99
     ]
 
 
-def test_audio_segments_skips_silent_and_applies_shift_clamped(media):
+def test_audio_segments_skips_silent_and_clamps_negative_offset(media):
     beats = [
         Beat(seq=1, started_at=100.0),  # 无声拍跳过
-        Beat(seq=2, started_at=101.0, tracks=[track("main", "/replay/tts/b.opus", 0.0)]),
+        Beat(seq=2, started_at=98.0, tracks=[track("main", "/replay/tts/b.opus", 0.0)]),
     ]
-    # origin=100 → b 在 1.0s；shift=-2 推到负，下钳到 0
-    segs = audio_segments(beats, media, SFX, shift=-2.0, origin=100.0)
+    # origin=100 → b 在 −2s，下钳到 0
+    segs = audio_segments(beats, media, SFX, origin=100.0)
     assert segs == [(media.audio_path("/replay/tts/b.opus"), 0.0, 1.0)]
 
 
@@ -101,7 +101,7 @@ def test_audio_segments_sfx_tracks_offset_on_top_of_beat(media):
             track("sfx", "/sfx/vote-pass.opus", 1.0, SFX_VOLUME),
         ]),
     ]
-    segs = audio_segments(beats, media, SFX, shift=0.0, origin=100.0)
+    segs = audio_segments(beats, media, SFX, origin=100.0)
     assert segs == [
         (media.audio_path("/replay/tts/b.opus"), 2.0, 1.0),  # 人声在拍起点（102−100）
         (SFX / "stamp.opus", 2.0, SFX_VOLUME),
@@ -121,7 +121,7 @@ def test_audio_segments_narrations_offset_inside_beat(media):
             ],
         ),
     ]
-    segs = audio_segments(beats, media, SFX, shift=0.5, origin=99.0)
+    segs = audio_segments(beats, media, SFX, origin=98.5)
     assert segs == [
         (media.audio_path("/replay/tts/main.opus"), 1.5, 1.0),
         (media.audio_path("/replay/tts/host.opus"), 2.75, 1.0),
@@ -129,13 +129,13 @@ def test_audio_segments_narrations_offset_inside_beat(media):
 
 
 def test_audio_segments_empty(media):
-    assert audio_segments([], media, SFX, shift=0.0, origin=0.0) == []
+    assert audio_segments([], media, SFX, origin=0.0) == []
 
 
 def test_audio_segments_rejects_foreign_url(media):
     beats = [Beat(seq=1, started_at=100.0, tracks=[track("main", "/replay/tts/ghost.opus", 0.0)])]
     with pytest.raises(ValueError, match="不是本 replay 的媒体"):
-        audio_segments(beats, media, SFX, shift=0.0, origin=0.0)
+        audio_segments(beats, media, SFX, origin=0.0)
 
 
 def test_recorded_beats_drop_preroll_before_capture_origin(media):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from brawl.runtime.console import ConsoleError, main
 
@@ -26,13 +27,13 @@ def test_console_rejects_symlinked_sentence_log(tmp_path) -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        ["replay", "--no-audience"],
         ["replay", "--pace", "0"],
         ["replay", "--pace", "nan"],
         ["replay", "--pace", "inf"],
         ["replay", "--pace", "-inf"],
     ],
 )
-def test_console_rejects_removed_or_invalid_render_flags(argv) -> None:
-    with pytest.raises(SystemExit):
+def test_console_rejects_invalid_pace(argv) -> None:
+    """非法 --pace：pydantic-settings 解析失败（SystemExit）或形状校验拒绝（ValidationError）。"""
+    with pytest.raises((SystemExit, ValidationError)):
         main(argv)

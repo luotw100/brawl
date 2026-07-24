@@ -12,7 +12,6 @@ from brawl.games.avalon.stagecast import STAGE_GAME as AVALON
 from brawl.stage import stagecast as registry_mod
 from brawl.stage.engine import Engine, _upcoming_audio
 from brawl.stage.playplan import StageBeat
-from brawl.stage.settings import EngineKnobs
 from brawl.stage.stagecast import StageGame
 
 
@@ -33,9 +32,7 @@ def test_upcoming_audio_collects_next_urls_skipping_silent():
     assert _upcoming_audio(beats, 4, 2) == []  # 末拍后面没有了
     assert _upcoming_audio(beats, 0, 0) == []  # factor=0 不预取
 
-
 # ---------------------------------------------------------------- 假玩法整局
-
 
 _DIRECTIVES = [
     GameOpen(players=5, good=3, evil=2),
@@ -43,7 +40,6 @@ _DIRECTIVES = [
     Speech(phase="discuss", seat_no=1, text="过。", monologue="", audio_url="/replay/tts/3.1.opus"),
     GameOver(winner="good", win_reason="quests", seats=[]),
 ]
-
 
 def _fake_game() -> StageGame:
     return StageGame(
@@ -58,14 +54,12 @@ def _fake_game() -> StageGame:
         plan_path=AVALON.plan_path,
     )
 
-
 def _replay(tmp_path: Path) -> Path:
     d = tmp_path / "game"
     d.mkdir()
     (d / "meta.json").write_text(json.dumps({"game": "fake"}), encoding="utf-8")
     (d / "sentences.jsonl").write_text("", encoding="utf-8")
     return d
-
 
 class Recorder:
     def __init__(self) -> None:
@@ -84,15 +78,13 @@ class Recorder:
                     out.append(item.directive.kind)
         return out
 
-
 @pytest.fixture
 def fake_registry(monkeypatch):
     monkeypatch.setattr(registry_mod, "_REGISTRY", {"fake": _fake_game()})
 
-
 async def test_plays_full_game_and_folds_scene(tmp_path, fake_registry) -> None:
     rec = Recorder()
-    engine = Engine(EngineKnobs(speed=16.0), publish=lambda: rec.publish(engine))
+    engine = Engine(16.0, publish=lambda: rec.publish(engine))
     await engine.play(_replay(tmp_path))
 
     assert rec.kinds() == ["game_open", "deal", "speech", "game_over"]
@@ -100,7 +92,6 @@ async def test_plays_full_game_and_folds_scene(tmp_path, fake_registry) -> None:
     assert final.winner == "good" and final.dealt
     assert engine.prefetch == []
     assert engine.summary(_DIRECTIVES[-1])[0] == "终局"
-
 
 async def test_opening_anchor_gate_holds_clock_until_first_frame(tmp_path, fake_registry) -> None:
     class Gate:
@@ -118,7 +109,7 @@ async def test_opening_anchor_gate_holds_clock_until_first_frame(tmp_path, fake_
         if feed:
             published_clock.append((feed[-1].directive.kind, feed[-1].clock_running, feed[-1].started_at))
 
-    engine = Engine(EngineKnobs(speed=16.0), publish=publish, playback_gate=Gate())
+    engine = Engine(16.0, publish=publish, playback_gate=Gate())
     await engine.play(_replay(tmp_path))
 
     deal_frames = [f for f in published_clock if f[0] == "deal"]
@@ -126,13 +117,12 @@ async def test_opening_anchor_gate_holds_clock_until_first_frame(tmp_path, fake_
     assert deal_frames[0][1] is False
     assert deal_frames[-1][1:] == (True, 123.0)
 
-
 async def test_unknown_game_fails_loudly(tmp_path, fake_registry) -> None:
     d = tmp_path / "ghost"
     d.mkdir()
     (d / "meta.json").write_text(json.dumps({"game": "ghost"}), encoding="utf-8")
     (d / "sentences.jsonl").write_text("", encoding="utf-8")
 
-    engine = Engine(EngineKnobs(), publish=lambda: None)
+    engine = Engine(1.0, publish=lambda: None)
     with pytest.raises(ValueError, match="未登记的玩法"):
         await engine.play(d)

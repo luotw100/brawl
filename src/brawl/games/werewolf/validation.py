@@ -15,10 +15,10 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
+from brawl.games.run import RunSettings, SettingsError
 from brawl.games.werewolf import rules
 from brawl.games.werewolf.registry import Registry
 from brawl.games.werewolf.rules import Role
-from brawl.games.werewolf.settings import SettingsError, WerewolfSettings
 from brawl.runtime import setup as core_setup
 from brawl.runtime.files import UnsafePathError, read_regular_bytes
 from brawl.runtime.journal import JournalCorruptionError, load_replay_sentences
@@ -102,7 +102,7 @@ class ReplayMeta(BaseModel):
     schema_version: Literal[1] = 1
     game: Literal["werewolf"] = "werewolf"
     started_at: datetime
-    player: Literal["random", "opencode"]
+    backend: Literal["random", "opencode"]
     concurrency: int = Field(ge=1)
     render: bool
     seed: int | None
@@ -122,7 +122,7 @@ class ReplayMeta(BaseModel):
         unknown_labels = sorted(set(self.model_labels) - set(self.setup.models))
         if unknown_labels:
             raise ValueError(f"model_labels 包含本局未使用的模型: {unknown_labels}")
-        if self.player == "opencode":
+        if self.backend == "opencode":
             missing = [
                 seat
                 for seat, model_ref in enumerate(self.setup.opencode_models, start=1)
@@ -133,7 +133,7 @@ class ReplayMeta(BaseModel):
         return self
 
 def resolve_and_validate(
-    settings: WerewolfSettings,
+    settings: RunSettings,
     registry: Registry,
     rng: random.Random,
 ) -> GameSetup:
@@ -172,8 +172,7 @@ def resolve_and_validate(
     roles = list(board.roles)
     rng.shuffle(roles)
     effective_models = tuple(
-        registry.models[name].opencode_model or settings.opencode_model
-        for name in models
+        registry.models[name].opencode_model or "" for name in models
     )
     try:
         setup = GameSetup(
@@ -195,19 +194,19 @@ def resolve_and_validate(
         )
     except ValidationError as exc:
         raise SettingsError(f"无效的狼人杀开局配置: {exc}") from exc
-    if settings.player == "opencode":
-        missing = [
-            seat
-            for seat, model_ref in enumerate(setup.opencode_models, start=1)
-            if not model_ref
+    if settings.backend == "opencode":
+        unmapped = [
+            name
+            for name, ref in zip(setup.models, setup.opencode_models, strict=True)
+            if not ref
         ]
-        if missing:
-            raise SettingsError(f"OpenCode 对局缺少座位模型引用: {missing}")
+        if unmapped:
+            raise SettingsError(f"模型缺 opencode_model 映射: {unmapped}（在 models.yaml 补上 providerID/modelID）")
     return setup
 
 
 def build_replay_meta(
-    settings: WerewolfSettings,
+    settings: RunSettings,
     registry: Registry,
     setup: GameSetup,
     *,
@@ -218,7 +217,7 @@ def build_replay_meta(
     try:
         return ReplayMeta(
             started_at=started_at,
-            player=settings.player,
+            backend=settings.backend,
             concurrency=settings.concurrency,
             render=settings.render,
             seed=settings.seed,

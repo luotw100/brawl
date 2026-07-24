@@ -62,9 +62,10 @@ brawl/
 - `brawl.stage.record` / `cover`：`brawl record`（Xvfb+Chromium+ffmpeg 单趟硬编，音轨按拍
   离线拼接）与 `brawl cover`。record 内部一次性服务见 `brawl.stage.server`（127.0.0.1，无 token）。
 
-**玩法包**（games/avalon/ games/werewolf/ 同构）：`rules_engine.py`（玩法全部语义）、`rules.py`（规则表）、
-`state.py`/`view.py`/`prompts.py`、`validation.py`/`settings.py`/`registry.py`/`run.py`、
-`stagecast.py`/`protocol.py`/`plan.yaml`、`data/`、`tests/`。
+**玩法包**（games/avalon/ games/werewolf/ 同构）：`rules_engine.py`（玩法全部语义）、`rules.py`（规则表
+与板子表）、`state.py`/`view.py`/`prompts.py`、`validation.py`/`registry.py`/`run.py`、
+`stagecast.py`/`protocol.py`/`plan.yaml`、`data/`、`tests/`。CLI 参数面不在玩法包里——
+`brawl run`/`brawl resume` 的统一 settings 与板子注册表在 `brawl.games.run`。
 
 词汇归属约定：Role/Side 等玩法词汇定义在 `state.py`，`rules.py` 只放规则常数与纯函数
 （import state）。指令 kind 命名约定：**新玩法的 Directive/TimelineEntry kind 一律带玩法短名
@@ -95,8 +96,8 @@ brawl/
 
 ```bash
 uv sync && (cd web && npm install)
-uv run brawl avalon --player random --players 10 --percival --morgana --mordred --oberon --replay /tmp/avalon1
-uv run brawl werewolf --player random --replay /tmp/ww1
+uv run brawl run --board merlin-assassin-percival-morgana-mordred-oberon-lady-10 --backend random --replay /tmp/avalon1
+uv run brawl run --board pre-witch-hunter-idiot-12 --backend random --replay /tmp/ww1
 uv run brawl console /tmp/avalon1
 uv run brawl record /tmp/avalon1 --limit-seconds 30   # 出片段试看
 uv run pytest -q

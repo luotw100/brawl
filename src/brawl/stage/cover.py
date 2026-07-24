@@ -7,10 +7,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pydantic import ValidationError
 from rich.console import Console
 
+from brawl.runtime.confirm import confirm_overwrite
 from brawl.stage.cover_settings import CoverSettings
 
 WHITE = (255, 250, 238, 255)
@@ -41,11 +42,8 @@ class CoverLayout:
     episode_stroke_scale: float
 
 
-THEMES: dict[str, CoverTheme] = {
-    "serif-gold": CoverTheme(0.18, 0.055, lambda canvas: None),
-    "sans-frame": CoverTheme(0.20, 0.050, lambda canvas: _decorate_frame(canvas)),
-    "bold-ribbon": CoverTheme(0.14, 0.060, lambda canvas: _decorate_ribbon(canvas)),
-}
+# 封面主题三案审结定稿 serif-gold（无装饰层）；落选方案随 --style 一并退役。
+THEME = CoverTheme(0.18, 0.055, lambda canvas: None)
 
 LAYOUTS: dict[str, CoverLayout] = {
     "3-4": CoverLayout(0.068, 0.76, 0.39, 0.096, 0.74, 0.785, 0.081, 0.088),
@@ -58,7 +56,7 @@ def render_covers(settings: CoverSettings) -> list[Path]:
     paths = []
     for job in settings.jobs:
         canvas = _cover_background(settings.background, job.size.width, job.size.height)
-        theme = THEMES[settings.style]
+        theme = THEME
         layout = LAYOUTS[job.size.slug]
         theme.decorate(canvas)
         _draw_brand_label(canvas, settings.font, layout)
@@ -85,43 +83,6 @@ def _cover_background(path: Path, width: int, height: int) -> Image.Image:
     canvas = bg.crop(box).resize((width, height), Image.Resampling.LANCZOS).convert("RGBA")
     canvas.alpha_composite(Image.new("RGBA", canvas.size, (0, 0, 0, 54)))
     return canvas
-
-
-def _decorate_frame(canvas: Image.Image) -> None:
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    w, h = canvas.size
-    inset = round(min(w, h) * 0.055)
-    width = max(3, min(w, h) // 260)
-    draw.rounded_rectangle(
-        (inset, inset, w - inset, h - inset),
-        radius=round(min(w, h) * 0.028),
-        outline=(244, 208, 125, 170),
-        width=width,
-    )
-    panel = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    pdraw = ImageDraw.Draw(panel, "RGBA")
-    pdraw.rounded_rectangle(
-        (round(w * 0.08), round(h * 0.24), round(w * 0.92), round(h * 0.86)),
-        radius=round(min(w, h) * 0.025),
-        fill=(8, 6, 3, 82),
-        outline=(244, 208, 125, 95),
-        width=max(2, width - 1),
-    )
-    canvas.alpha_composite(panel.filter(ImageFilter.GaussianBlur(radius=max(1, min(w, h) * 0.003))))
-
-
-def _decorate_ribbon(canvas: Image.Image) -> None:
-    draw = ImageDraw.Draw(canvas, "RGBA")
-    w, h = canvas.size
-    top = round(h * 0.26)
-    bottom = round(h * 0.84)
-    slant = round(w * 0.045)
-    draw.polygon(
-        ((0, top + slant), (w, top), (w, bottom - slant), (0, bottom)),
-        fill=(6, 4, 2, 118),
-    )
-    draw.line((0, top + slant, w, top), fill=(244, 208, 125, 150), width=max(3, h // 260))
-    draw.line((0, bottom, w, bottom - slant), fill=(244, 208, 125, 130), width=max(3, h // 300))
 
 
 def _draw_brand_label(canvas: Image.Image, font_path: Path, layout: CoverLayout) -> None:
@@ -345,6 +306,18 @@ def main(argv: list[str]) -> int:
     except ValidationError as e:
         msg = "；".join(err["msg"].removeprefix("Value error, ") for err in e.errors())
         _console.print(f"[red]配置错误:[/red] {msg}")
+        return 1
+    existing = [job.path for job in settings.jobs if job.path.exists()]
+    if existing and not confirm_overwrite(
+        _console,
+        title="确认覆盖",
+        lines=[
+            f"[bold yellow]{len(existing)} 张封面已存在[/bold yellow]",
+            *(f"[dim]{path}[/dim]" for path in existing),
+            "继续生成会覆盖这些文件。",
+        ],
+    ):
+        _console.print("[yellow]已取消，原封面保留。[/yellow]")
         return 1
     paths = render_covers(settings)
     _console.print(f"[bold green]✓ 已生成[/bold green] {len(paths)} 张封面")

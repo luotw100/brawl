@@ -1,8 +1,7 @@
-"""Avalon production 入口：新局与恢复拥有互斥的参数边界。"""
+"""Avalon production 入口：开一局与续跑。CLI 路由在 brawl.games.run（板子注册表）。"""
 
 from __future__ import annotations
 
-import argparse
 import random
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,18 +11,17 @@ from typing import Any
 
 from brawl.games.avalon.registry import Registry, load_registry
 from brawl.games.avalon.rules_engine import AvalonRules, AvalonState
-from brawl.games.avalon.settings import AvalonSettings
 from brawl.games.avalon.validation import (
     AvalonReplayMeta,
     GameSetup,
-    ResumeRequest,
     load_replay,
     resolve_and_validate,
 )
+from brawl.games.run import RunSettings
 from brawl.runtime.actor import OpenCodeActor, RandomActor
 from brawl.runtime.console import ConsoleRenderer, InstantTypist
 from brawl.runtime.journal import Journal, open_journal
-from brawl.runtime.loop import resume, run, run_async_main
+from brawl.runtime.loop import resume, run
 from brawl.runtime.opencode_backend import OpenCodeBackend
 from brawl.runtime.opencode_runtime import (
     OpenCodeInstallation,
@@ -33,7 +31,7 @@ from brawl.runtime.opencode_runtime import (
 from brawl.runtime.threads import SeatThread
 
 
-async def run_game(settings: AvalonSettings) -> AvalonState:
+async def run_game(settings: RunSettings) -> AvalonState:
     """按新局 settings 创建 replay；本入口从不恢复既有目录。"""
     registry = load_registry()
     setup = resolve_and_validate(settings, registry, random.Random(settings.seed))
@@ -60,10 +58,10 @@ async def run_game(settings: AvalonSettings) -> AvalonState:
         journal.close()
 
 
-async def resume_game(request: ResumeRequest) -> AvalonState:
+async def resume_game(replay: Path) -> AvalonState:
     """仅依据 replay meta 恢复；不会读取 settings、registry 或任何活 YAML。"""
-    meta = load_replay(request)
-    journal = open_journal(request.replay, resume=True)
+    meta = load_replay(replay)
+    journal = open_journal(replay, resume=True)
     try:
         rules = AvalonRules()
         threads = _threads(meta.setup)
@@ -73,7 +71,7 @@ async def resume_game(request: ResumeRequest) -> AvalonState:
 
         installation = _prepare_runtime(meta)
         renderer = _build_renderer(meta)
-        async with _open_actors(meta, request.replay, installation, rules) as actors:
+        async with _open_actors(meta, replay, installation, rules) as actors:
             return await run(
                 rules,
                 meta.setup,
@@ -90,18 +88,18 @@ async def resume_game(request: ResumeRequest) -> AvalonState:
 @asynccontextmanager
 async def _open_actors(
     meta: AvalonReplayMeta,
-    replay: Path | None,
+    replay: Path,
     installation: OpenCodeInstallation | None,
     rules: AvalonRules,
 ) -> AsyncIterator[dict[int, Any]]:
-    if meta.player == "random":
+    if meta.backend == "random":
         yield {
             no: RandomActor(rules.random_action)
             for no in range(1, meta.setup.players + 1)
         }
         return
 
-    assert installation is not None and replay is not None
+    assert installation is not None
     async with open_opencode_runtime(installation, replay, meta.setup.players) as connection:
         seat_models = {
             no: ref
@@ -122,11 +120,11 @@ async def _open_actors(
 def _build_meta(
     registry: Registry,
     setup: GameSetup,
-    settings: AvalonSettings,
+    settings: RunSettings,
 ) -> AvalonReplayMeta:
     return AvalonReplayMeta(
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
-        player=settings.player,
+        backend=settings.backend,
         concurrency=settings.concurrency,
         render=settings.render,
         seed=settings.seed,
@@ -156,7 +154,7 @@ def _build_renderer(meta: AvalonReplayMeta) -> ConsoleRenderer | None:
 
 
 def _prepare_runtime(meta: AvalonReplayMeta) -> OpenCodeInstallation | None:
-    return prepare_opencode_installation() if meta.player == "opencode" else None
+    return prepare_opencode_installation() if meta.backend == "opencode" else None
 
 
 def _threads(setup: GameSetup) -> dict[int, SeatThread]:
@@ -164,23 +162,3 @@ def _threads(setup: GameSetup) -> dict[int, SeatThread]:
         no: SeatThread()
         for no in range(1, setup.players + 1)
     }
-
-
-def main(argv: list[str]) -> None:
-    if "--resume" in argv:
-        request = ResumeRequest.from_cli(argv)
-        run_async_main(resume_game(request))
-        return
-
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument(
-        "--config",
-        dest="config",
-        type=Path,
-        default=None,
-        metavar="PATH",
-        help="JSON 配置文件路径",
-    )
-    args, rest = pre.parse_known_args(argv)
-    settings = AvalonSettings.load(cli_args=rest, config_file=args.config)
-    run_async_main(run_game(settings))

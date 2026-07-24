@@ -100,19 +100,10 @@ def test_cover_settings_rejects_bad_title_lines(tmp_path):
         CoverSettings.load([str(replay)])
 
 
-def test_cover_settings_rejects_existing_output_without_force(tmp_path):
-    replay = _write_resource_dir(tmp_path)
-    (replay / "covers").mkdir()
-    (replay / "covers" / "4-3.png").write_bytes(b"old")
-
-    with pytest.raises(ValueError, match="加 --force 覆盖"):
-        CoverSettings.load([str(replay)])
-
-
 def test_render_covers_writes_three_images_with_title_pixels(tmp_path):
     replay = _write_resource_dir(tmp_path)
-    out = tmp_path / "covers"
-    settings = CoverSettings.load([str(replay), "--output-dir", str(out), "--episode", "005"])
+    out = replay / "covers"
+    settings = CoverSettings.load([str(replay), "--episode", "005"])
 
     paths = render_covers(settings)
 

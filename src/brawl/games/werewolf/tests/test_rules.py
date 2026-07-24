@@ -9,11 +9,11 @@ from typing import Any
 
 import pytest
 
+from brawl.games.run import RunSettings
 from brawl.games.werewolf import prompts, rules
 from brawl.games.werewolf.registry import load_registry
 from brawl.games.werewolf.rules import Role, Side
 from brawl.games.werewolf.rules_engine import WerewolfRules, WerewolfState
-from brawl.games.werewolf.settings import WerewolfSettings
 from brawl.games.werewolf.state import DeathRecord, SeerCheck
 from brawl.games.werewolf.validation import GameSetup, resolve_and_validate
 from brawl.games.werewolf.view import PlayerView
@@ -27,9 +27,9 @@ from brawl.runtime.threads import SeatThread, ThreadMessage
 _ROLES = list(rules.PRE_WITCH_HUNTER_IDIOT_12.roles)
 
 
-def _setup(seed: int = 42) -> tuple[WerewolfSettings, Any, Any]:
+def _setup(seed: int = 42) -> tuple[RunSettings, Any, Any]:
     registry = load_registry()
-    settings = WerewolfSettings(seed=seed, player="random")
+    settings = RunSettings(board=rules.DEFAULT_BOARD, replay="/tmp/nonexistent-ww-rules-setup", seed=seed, backend="random")
     rng = random.Random(settings.seed)
     setup = resolve_and_validate(settings, registry, rng)
     return settings, registry, setup
@@ -75,7 +75,7 @@ def _kill_all(state: WerewolfState, nos: list[int]) -> WerewolfState:
     return state.model_copy(deep=True, update={"seats": seats})
 
 
-async def _run(settings: WerewolfSettings, registry: Any, setup: Any, rep: Path) -> WerewolfState:
+async def _run(settings: RunSettings, registry: Any, setup: Any, rep: Path) -> WerewolfState:
     rules = WerewolfRules()
     actors = {no: RandomActor(rules.random_action) for no in range(1, len(setup.roles) + 1)}
     journal = DirJournal(rep, resume=False)

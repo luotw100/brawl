@@ -25,10 +25,12 @@ from brawl.runtime.journal import load_replay_sentences
 from brawl.stage.media import ReplayMediaResolver
 from brawl.stage.playplan import StageBeat, compile_stage_beats, load_plan
 from brawl.stage.protocol import BaseScene, Directive, FeedItem
-from brawl.stage.settings import EngineKnobs
 from brawl.stage.stagecast import StageGame, game_for
 
-FEED_CAP = 5  # 服务端只留最近几拍（窗口旋钮 1~3 再从中裁剪下发）
+FEED_CAP = 5  # 服务端只留最近几拍（下发窗口再从中裁剪）
+FEED_WINDOW = 2  # 对话区显示最近几拍（当前发言为主角）；画面美学常数，不是用户旋钮
+PREFETCH_FACTOR = 2  # 提前几拍把待播音频 URL 露给页面预热（起拍即出声、尾巴不被截）
+MAX_SPEED = 16  # 页面 playbackRate 上限（Chrome 超界抛 NotSupportedError 会打断整页渲染）
 
 
 class PlaybackGate(Protocol):
@@ -75,11 +77,15 @@ class Engine:
 
     def __init__(
         self,
-        knobs: EngineKnobs,
+        speed: float,
         publish: Callable[[], Awaitable[None]],
         playback_gate: PlaybackGate | None = None,
     ) -> None:
-        self._knobs = knobs
+        # speed：时间轴倍速（每拍时长含音频地板 ÷speed → 少 sleep、原生快录/快播；
+        # 音频按 speed 提速贴合压缩后的拍）。范围护栏与 CLI 校验同口径。
+        if not 0 < speed <= MAX_SPEED:
+            raise ValueError(f"speed 必须在 (0, {MAX_SPEED}]，收到 {speed}（页面 playbackRate 上限 {MAX_SPEED}）")
+        self._speed = speed
         self._publish = publish
         self._gate = playback_gate or NullPlaybackGate()
         self.scene: BaseScene | None = None
@@ -92,7 +98,7 @@ class Engine:
     def public_scene(self) -> BaseScene:
         """下发给页面的 Scene：feed 按窗口旋钮裁剪（服务端硬上限只是内部护栏）。"""
         assert self.scene is not None, "play 尚未开始，没有 scene"
-        return self.scene.model_copy(update={"feed": self.scene.feed[-self._knobs.feed_window:]})
+        return self.scene.model_copy(update={"feed": self.scene.feed[-FEED_WINDOW:]})
 
     def summary(self, directive: Directive) -> tuple[str, str, str]:
         """一拍 → 录制进度行（委托当前玩法 bundle；record 的节拍日志用）。"""
@@ -111,12 +117,12 @@ class Engine:
         media = ReplayMediaResolver(replay_dir)
         directives = game.stagecast(sentences, meta, media)
         plan = load_plan(game.plan_path)
-        beats = compile_stage_beats(directives, plan, media.durations(), speed=self._knobs.speed)
+        beats = compile_stage_beats(directives, plan, media.durations(), speed=self._speed)
 
         self.scene = game.new_scene()
         for i, beat in enumerate(beats):
             directive = beat.directive
-            self.prefetch = _upcoming_audio(beats, i, self._knobs.prefetch_factor)
+            self.prefetch = _upcoming_audio(beats, i, PREFETCH_FACTOR)
             opening_anchor = game.is_opening_anchor(directive)
             hold_clock = opening_anchor and self._gate.hold_opening_frame
             await self._emit(beat, clock_running=not hold_clock)
@@ -140,7 +146,7 @@ class Engine:
             started_at=time.time(),
             duration=beat.duration,
             clock_running=clock_running,
-            speed=self._knobs.speed,
+            speed=self._speed,
             content_at=beat.content_at,
             narrations=beat.narrations,
             tracks=beat.tracks,

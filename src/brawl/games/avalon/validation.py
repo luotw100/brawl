@@ -16,8 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from brawl.games.avalon import rules
 from brawl.games.avalon.registry import Registry
-from brawl.games.avalon.settings import AvalonSettings, SettingsError
 from brawl.games.avalon.state import Role, Side
+from brawl.games.run import RunSettings, SettingsError
 from brawl.runtime import setup as core_setup
 from brawl.runtime.files import UnsafePathError, read_regular_bytes
 from brawl.runtime.journal import JournalCorruptionError, load_replay_sentences
@@ -110,7 +110,7 @@ class AvalonReplayMeta(BaseModel):
     schema_version: Literal[1] = 1
     game: Literal["avalon"] = "avalon"
     started_at: str
-    player: Literal["random", "opencode"]
+    backend: Literal["random", "opencode"]
     concurrency: int = Field(ge=1)
     render: bool
     seed: int | None
@@ -128,42 +128,27 @@ class AvalonReplayMeta(BaseModel):
         unknown = set(self.model_labels) - set(self.setup.models)
         if unknown:
             raise ValueError(f"model_labels 包含未入座模型：{sorted(unknown)}")
-        if self.player == "opencode" and any(
+        if self.backend == "opencode" and any(
             not ref for ref in self.setup.opencode_models
         ):
             raise ValueError("opencode 对局的每个座位都必须冻结有效模型引用")
         return self
 
 
-class ResumeRequest(BaseModel):
-    """恢复命令唯一允许携带的输入。"""
-
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
-
-    replay: Path
-
-    @classmethod
-    def from_cli(cls, argv: list[str]) -> ResumeRequest:
-        if (
-            len(argv) != 3
-            or argv[0] != "--resume"
-            or argv[1] != "--replay"
-            or not argv[2]
-            or argv[2].startswith("-")
-        ):
-            raise SettingsError("续跑只允许：brawl avalon --resume --replay PATH；不能再指定任何新局参数或 --config")
-        return cls(replay=Path(argv[2]))
-
-
 def resolve_and_validate(
-    settings: AvalonSettings,
+    settings: RunSettings,
     registry: Registry,
     rng: random.Random,
 ) -> GameSetup:
     """把新局配置解析成无缺项 setup；所有活数据读取到此为止。"""
+    try:
+        board = rules.board_by_id(settings.board)
+    except KeyError:
+        raise SettingsError(f"未知阿瓦隆板子：{settings.board}（可用：{sorted(rules.BOARDS)}）") from None
+    players = board.players
     cast = core_setup.resolve_personas(
         settings.cast,
-        players=settings.players,
+        players=players,
         registry=registry,
         rng=rng,
         error=SettingsError,
@@ -176,25 +161,27 @@ def resolve_and_validate(
     )
     strategies = core_setup.resolve_strategies(
         settings.strategies,
-        players=settings.players,
+        players=players,
         registry=registry,
         rng=rng,
         error=SettingsError,
     )
     models = core_setup.resolve_models(
         settings.models,
-        players=settings.players,
+        players=players,
         registry=registry,
         rng=rng,
         error=SettingsError,
     )
     core_setup.check_new_replay(settings.replay, error=SettingsError)
-    first_leader = rng.randint(1, settings.players)
-    roles = tuple(_resolve_roles(settings, rng))
-    opencode_models = tuple(
-        registry.models[name].opencode_model or settings.opencode_model
-        for name in models
-    )
+    first_leader = rng.randint(1, players)
+    roles = list(board.roles)
+    rng.shuffle(roles)
+    opencode_models = tuple(registry.models[name].opencode_model or "" for name in models)
+    if settings.backend == "opencode":
+        unmapped = [name for name, ref in zip(models, opencode_models, strict=True) if not ref]
+        if unmapped:
+            raise SettingsError(f"模型缺 opencode_model 映射：{unmapped}（在 models.yaml 补上 providerID/modelID）")
     return GameSetup(
         cast=tuple(cast),
         host_cast=host_cast,
@@ -209,48 +196,26 @@ def resolve_and_validate(
         strategy_systems=tuple(registry.strategies[sid].system for sid in strategies),
         models=tuple(models),
         opencode_models=opencode_models,
-        roles=roles,
+        roles=tuple(roles),
         first_leader=first_leader,
-        lady_holder=(first_leader - 2) % settings.players + 1 if settings.lady else None,
+        lady_holder=(first_leader - 2) % players + 1 if board.lady else None,
     )
 
 
-def load_replay(request: ResumeRequest) -> AvalonReplayMeta:
+def load_replay(replay: Path) -> AvalonReplayMeta:
     """在恢复开工前一次性验证目录、日志与 meta，错误统一成 SettingsError。"""
-    run_dir = request.replay
-    sentences_path = run_dir / "sentences.jsonl"
+    sentences_path = replay / "sentences.jsonl"
     try:
-        load_replay_sentences(run_dir)
+        load_replay_sentences(replay)
     except (OSError, UnsafePathError, JournalCorruptionError) as exc:
         raise SettingsError(f"{sentences_path} 不是有效的 Sentence Runtime 日志：{exc}") from exc
 
-    meta_path = run_dir / "meta.json"
+    meta_path = replay / "meta.json"
     try:
         raw = read_regular_bytes(meta_path)
         return AvalonReplayMeta.model_validate_json(raw, strict=True)
     except (OSError, UnsafePathError, ValidationError, ValueError) as exc:
         raise SettingsError(f"{meta_path} 不是有效的 Avalon schema v1 meta：{exc}") from exc
-
-
-def _resolve_roles(settings: AvalonSettings, rng: random.Random) -> list[Role]:
-    good = [Role.MERLIN] + ([Role.PERCIVAL] if settings.percival else [])
-    evil = [Role.ASSASSIN] + [
-        role
-        for role, enabled in (
-            (Role.MORGANA, settings.morgana),
-            (Role.MORDRED, settings.mordred),
-            (Role.OBERON, settings.oberon),
-        )
-        if enabled
-    ]
-    pool = (
-        good
-        + [Role.SERVANT] * (settings.good - len(good))
-        + evil
-        + [Role.MINION] * (settings.evil - len(evil))
-    )
-    rng.shuffle(pool)
-    return pool
 
 
 def _validate_role_pool(roles: tuple[Role, ...]) -> None:

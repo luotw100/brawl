@@ -7,18 +7,20 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
+from pydantic import Field, model_validator
+from pydantic_settings import CliPositionalArg, SettingsConfigDict
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from brawl.runtime.cli_settings import CliSettings
 from brawl.runtime.files import UnsafePathError, read_regular_bytes
 from brawl.runtime.journal import JournalCorruptionError, load_replay_sentences
 from brawl.runtime.types import Channel, Sentence
@@ -139,13 +141,29 @@ class ConsoleRenderer:
         self.typist.panel(self.console, body, title, border_style=border)
 
 
-def main(argv: list[str]) -> None:
-    parser = argparse.ArgumentParser(prog="brawl console", description="渲染 replay 的 sentences.jsonl 到终端")
-    parser.add_argument("replay_dir", type=Path, help="replay 目录（含 sentences.jsonl）")
-    parser.add_argument("--pace", type=_positive_float, default=None, metavar="SEC", help="打字机每字延迟秒数")
-    args = parser.parse_args(argv)
+class ConsoleSettings(CliSettings):
+    """在终端回放一局。默认整段瞬出；--pace 开启打字机效果。"""
 
-    replay_dir = Path(args.replay_dir)
+    CLI_PROG: ClassVar[str] = "brawl console"
+    model_config = SettingsConfigDict(
+        env_prefix="BRAWL_CONSOLE_",
+        cli_kebab_case=True,
+        extra="forbid",
+    )
+
+    replay_dir: CliPositionalArg[Path] = Field(description="replay 目录（含 sentences.jsonl）")
+    pace: float | None = Field(default=None, description="打字机每字间隔秒数（如 0.03）；缺省整段瞬出")
+
+    @model_validator(mode="after")
+    def _check(self) -> ConsoleSettings:
+        if self.pace is not None and (not math.isfinite(self.pace) or self.pace <= 0):
+            raise ValueError(f"--pace 必须是正数秒数，收到 {self.pace}")
+        return self
+
+
+def main(argv: list[str]) -> None:
+    settings = ConsoleSettings.load(argv)
+    replay_dir = settings.replay_dir
     try:
         sentences = load_replay_sentences(replay_dir)
     except (OSError, UnsafePathError, JournalCorruptionError) as exc:
@@ -154,19 +172,9 @@ def main(argv: list[str]) -> None:
     if meta is not None and not isinstance(meta, dict):
         raise ConsoleError("meta.json 顶层必须是对象")
 
-    typist: Typist = PacedTypist(args.pace) if args.pace is not None else InstantTypist()
+    typist: Typist = PacedTypist(settings.pace) if settings.pace is not None else InstantTypist()
     renderer = ConsoleRenderer(typist=typist)
     renderer.render(sentences, meta)
-
-
-def _positive_float(raw: str) -> float:
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("必须是数字") from exc
-    if not math.isfinite(value) or value <= 0:
-        raise argparse.ArgumentTypeError("必须是有限正数")
-    return value
 
 
 def _load_optional_meta(path: Path) -> dict[str, Any] | None:

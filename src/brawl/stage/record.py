@@ -10,7 +10,7 @@ Xvfb 造一块虚拟屏（无需物理显示器，SSH 里照跑）→
 
 音画对齐靠引擎的确定性 + 抓屏的挂钟 PTS：x11grab 的帧 PTS 以"开抓那一刻"为零点，首帧抓稳后
 引擎释放第一拍时间轴并实时 sleep 出每拍，所以"按 started_at 减开抓时刻折算的音频偏移"与"画面里这拍实际出现的 PTS"
-天然对齐（origin = 开抓时刻 = 视频零点）；残余的常数延迟用 --audio-shift 微调。
+天然对齐（origin = 开抓时刻 = 视频零点），无需人工矫正。
 """
 
 from __future__ import annotations
@@ -34,18 +34,16 @@ import uvicorn
 from playwright.async_api import async_playwright
 from pydantic import ValidationError
 from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Confirm
 
 from brawl.paths import REPO_ROOT
+from brawl.runtime.confirm import confirm_overwrite
 from brawl.stage.bgm import BGM_PLAYLIST, BGM_VOLUME
 from brawl.stage.engine import Engine
 from brawl.stage.hub import Hub
 from brawl.stage.media import ReplayMediaResolver
 from brawl.stage.protocol import AudioTrack, BaseScene, StateMsg
-from brawl.stage.record_settings import RENDER_DEVICE, RecordSettings
+from brawl.stage.record_settings import FPS, HEIGHT, RENDER_DEVICE, WIDTH, RecordSettings
 from brawl.stage.server import create_record_app
-from brawl.stage.settings import EngineKnobs
 
 _WEB_SRC = REPO_ROOT / "web"  # 前端源码目录（仓库根 web/）：每次录制现构建
 
@@ -87,17 +85,17 @@ def _mmss(seconds: float) -> str:
 
 
 def audio_segments(
-    beats: list[Beat], media: ReplayMediaResolver, sfx_dir: Path, shift: float, origin: float
+    beats: list[Beat], media: ReplayMediaResolver, sfx_dir: Path, origin: float
 ) -> list[tuple[Path, float, float]]:
     """各拍 → (opus 文件路径, 在视频里的起始秒, 增益)。人声增益 1.0；音效压在 SFX_VOLUME。
-    以 origin（= x11grab 开抓时刻 = 视频零点）为零点折算偏移：base = started_at − origin + shift，
+    以 origin（= x11grab 开抓时刻 = 视频零点）为零点折算偏移：base = started_at − origin，
     下钳到 0。所有拍内偏移来自 PlayPlan tracks。
 
     人声路径由 resolver 的正向映射给出（url 必须是它产出的），不做 URL 字符串反解；
     音效在 sfx_dir/<name>.opus（/sfx/ 是 web 构建产物里的固定一层）。"""
     segs: list[tuple[Path, float, float]] = []
     for b in beats:
-        base = b.started_at - origin + shift
+        base = b.started_at - origin
         for track in b.tracks:
             if not track.audio_url:
                 continue
@@ -374,9 +372,9 @@ class RecordPlaybackGate:
             self._proc = subprocess.Popen(
                 ffmpeg_capture_cmd(
                     self._display,
-                    self._settings.width,
-                    self._settings.height,
-                    self._settings.fps,
+                    WIDTH,
+                    HEIGHT,
+                    FPS,
                     self._settings.encoder,
                     self._out,
                     progress=True,
@@ -409,9 +407,6 @@ class RecordPlaybackGate:
 async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tuple[list[Beat], float, Path]:
     """起一次性播放栈（单局引擎 + uvicorn）+ Xvfb 虚拟屏 + 带头 Chromium，x11grab 实时抓屏单趟编码。
     返回 (时间线, origin=开抓时刻=视频零点, 视频 mp4 路径)。"""
-    # 引擎旋钮按 EngineKnobs 字段名机械转移（speed/feed_window/prefetch_factor）——
-    # 共享基类是唯一真源，新旋钮在那加一次这里自动带上，不再逐字段手抄（收分叉）。
-    knobs = EngineKnobs(**{k: getattr(settings, k) for k in EngineKnobs.model_fields})
     hub = Hub()
 
     def state_for() -> StateMsg:
@@ -423,29 +418,23 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
     async def publish() -> None:
         await hub.broadcast(state_for())
 
-    # 显示源在边界一次定下：默认起一块 Xvfb 虚拟屏（无头服务器照跑）；--headed 复用现有 $DISPLAY
-    # （带屏机本地调试）。下游统一拿一个 display 号；xvfb 进程为 None 即"无需收尾"的空对象。
-    if settings.headed:
-        display = os.environ["DISPLAY"].lstrip(":").split(".")[0]
-        xvfb: subprocess.Popen | None = None
-    else:
-        dnum = _free_display()
-        xvfb = subprocess.Popen(
-            ["Xvfb", f":{dnum}", "-screen", "0", f"{settings.width}x{settings.height}x24", "-nolisten", "tcp"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        display = str(dnum)
+    # 显示源固定起一块 Xvfb 虚拟屏（无头服务器照跑，不依赖物理显示器）。
+    dnum = _free_display()
+    xvfb = subprocess.Popen(
+        ["Xvfb", f":{dnum}", "-screen", "0", f"{WIDTH}x{HEIGHT}x24", "-nolisten", "tcp"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    display = str(dnum)
 
     gate = RecordPlaybackGate(settings, display, tmpdir)
-    engine = Engine(knobs, publish, playback_gate=gate)
+    engine = Engine(settings.speed, publish, playback_gate=gate)
     app = create_record_app(settings.dir, web_dist, hub, state_for)
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
     server_task = asyncio.create_task(server.serve())
 
     try:
         await _wait(lambda: server.started, timeout=30, what="服务启动")
-        if xvfb is not None:
-            await _wait(lambda: Path(f"/tmp/.X11-unix/X{display}").exists(), timeout=10, what="Xvfb 启动")
+        await _wait(lambda: Path(f"/tmp/.X11-unix/X{display}").exists(), timeout=10, what="Xvfb 启动")
         port = server.servers[0].sockets[0].getsockname()[1]
         timeline = _tap_engine(engine)
         url = f"http://127.0.0.1:{port}/#/stage"
@@ -465,7 +454,7 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
                 env={**os.environ, "DISPLAY": f":{display}"},
                 no_viewport=True,  # 用真窗口尺寸（kiosk 占满 = 屏尺寸），不套 Playwright 默认视口
                 ignore_default_args=["--enable-automation"],  # 去掉"自动化控制"信息条
-                args=["--kiosk", "--window-position=0,0", f"--window-size={settings.width},{settings.height}",
+                args=["--kiosk", "--window-position=0,0", f"--window-size={WIDTH},{HEIGHT}",
                       "--force-device-scale-factor=1", "--hide-scrollbars", "--disable-infobars",
                       "--lang=zh-CN",  # UI 语言对齐中文页，进一步压住翻译提示
                       "--mute-audio", "--autoplay-policy=no-user-gesture-required"],
@@ -539,7 +528,7 @@ def _build_bgm(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> Path |
 
     缺失常见于 clone 时没装 git-lfs：bgm/*.opus 会是 LFS 指针文本而非真音频，concat 会报错，
     这里兜住并提示。"""
-    if not settings.bgm or not BGM_PLAYLIST:
+    if not BGM_PLAYLIST:
         return None
     tracks = [web_dist / "bgm" / f"{n}.opus" for n in BGM_PLAYLIST]
     missing = [t for t in tracks if not t.is_file()]
@@ -556,32 +545,33 @@ def _build_bgm(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> Path |
 
 
 def _confirm_overwrite(settings: RecordSettings, console: Console) -> bool:
-    """录制入口的人机边界：video.mp4 已存在时，开工前明确询问是否覆盖。"""
+    """录制入口的人机边界：video.mp4 已存在时，开工前要随机冷静码。"""
     video = settings.video_path
     if not video.exists():
         return True
     size_mb = video.stat().st_size / 1e6
-    console.print(Panel.fit(
-        f"[bold yellow]{video.name} 已存在[/bold yellow]\n\n"
-        f"[dim]{video}[/dim]\n"
-        f"当前大小：[cyan]{size_mb:.1f} MB[/cyan]\n\n"
-        "继续录制会覆盖这个文件。",
+    return confirm_overwrite(
+        console,
         title="确认覆盖",
-        border_style="yellow",
-    ))
-    return Confirm.ask("要覆盖并重新生成视频吗？", default=False, console=console)
+        lines=[
+            f"[bold yellow]{video.name} 已存在[/bold yellow]",
+            f"[dim]{video}[/dim]",
+            f"当前大小：[cyan]{size_mb:.1f} MB[/cyan]",
+            "继续录制会覆盖这个文件。",
+        ],
+    )
 
 
 async def _record(settings: RecordSettings) -> None:
     limit = f" · 上限 {settings.limit_seconds:g}s" if settings.limit_seconds else ""
     _console.rule(f"[bold]录制 {settings.dir.name}[/bold]")
     speed = f" · speed {settings.speed:g}×" if settings.speed != 1.0 else ""
-    _console.print(f"[dim]→ {settings.video_path} · {settings.width}×{settings.height} · 编码 {settings.encoder}{speed}{limit}[/dim]")
+    _console.print(f"[dim]→ {settings.video_path} · {WIDTH}×{HEIGHT} · 编码 {settings.encoder}{speed}{limit}[/dim]")
     with tempfile.TemporaryDirectory(prefix="brawl-record-") as tmp:
         tmpdir = Path(tmp)
         web_dist = _build_web(tmpdir)  # 每局现构建前端，永远录最新（无 --web-dist、无旧 dist 地雷）
         beats, origin, video = await _capture(settings, web_dist, tmpdir)  # 视频已是成品 H.264/HEVC（边播边编）
-        segs = audio_segments(beats, ReplayMediaResolver(settings.dir), web_dist / "sfx", settings.audio_shift, origin)
+        segs = audio_segments(beats, ReplayMediaResolver(settings.dir), web_dist / "sfx", origin)
         audio: Path | None = None
         if segs:
             audio = tmpdir / "audio.m4a"

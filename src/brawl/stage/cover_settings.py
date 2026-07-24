@@ -8,7 +8,10 @@
 <replay>/covers/16-9.png
 ```
 
-边界一次性查清：目录、标题两行、期号、背景图、字体、输出覆盖策略；绘制函数拿到的是已解析好的
+样式已三案审结定稿 serif-gold，输出固定落 `<dir>/covers`——都不是用户旋钮。
+已存在封面的覆盖确认在命令入口做人机边界（随机冷静码，见 cover.main），不在此校验。
+
+边界一次性查清：目录、标题两行、期号、背景图、字体；绘制函数拿到的是已解析好的
 CoverJob 列表和节目期数文案，不再猜路径、不再挑字体。
 """
 
@@ -17,23 +20,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar
 
-from pydantic import PrivateAttr, model_validator
-from pydantic_settings import (
-    BaseSettings,
-    CliPositionalArg,
-    CliSettingsSource,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-)
+from pydantic import Field, PrivateAttr, model_validator
+from pydantic_settings import CliPositionalArg, SettingsConfigDict
 
 from brawl.paths import REPO_ROOT
+from brawl.runtime.cli_settings import CliSettings
 from brawl.stage.stagecast import title_for
 
 DEFAULT_BACKGROUND = REPO_ROOT / "web" / "public" / "scene.png"
-
-StyleChoice = Literal["serif-gold", "sans-frame", "bold-ribbon"]
 
 
 @dataclass(frozen=True)
@@ -55,44 +51,28 @@ COVER_SIZES = (
     CoverSize("16-9", 1920, 1080),
 )
 
-STYLE_FONTS: dict[StyleChoice, tuple[Path, ...]] = {
-    "serif-gold": (
-        Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"),
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
-        Path("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
-    ),
-    "sans-frame": (
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
-        Path("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
-        Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"),
-    ),
-    "bold-ribbon": (
-        Path("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
-        Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"),
-    ),
-}
+# serif-gold 定稿字体的回退链（按可得性取第一个）。
+FONT_CANDIDATES: tuple[Path, ...] = (
+    Path("/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc"),
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+    Path("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
+)
 AVATAR_EXTS = (".png", ".webp", ".jpg", ".jpeg")
 
 
-class CoverSettings(BaseSettings):
-    """`brawl cover <replay_dir>`：把 `title.txt` 烧进舞台背景图生成三张封面。"""
+class CoverSettings(CliSettings):
+    """把 title.txt 烧进舞台背景图，生成 4:3 / 3:4 / 16:9 三张封面到 <dir>/covers/。"""
 
+    CLI_PROG: ClassVar[str] = "brawl cover"
     model_config = SettingsConfigDict(
-        env_prefix="BRAWL_STAGE_COVER_",
+        env_prefix="BRAWL_COVER_",
         cli_kebab_case=True,
-        cli_implicit_flags=True,
         extra="forbid",
     )
 
-    _cli_args: ClassVar[list[str] | None] = None
-
-    dir: CliPositionalArg[Path]  # 发布资源 / replay 目录（含 title.txt 与 meta.json）
-    output_dir: Path | None = None  # 输出目录；默认 <dir>/covers
-    background: Path = DEFAULT_BACKGROUND  # stage 当前背景图
-    style: StyleChoice = "serif-gold"  # 最终选定方案后固定默认值
-    episode: str = "001"  # 节目期号；只填中间内容，封面显示为 AI {节目名}{episode}期
-    force: bool = False  # 覆盖已存在输出
+    dir: CliPositionalArg[Path] = Field(description="发布资源 / replay 目录（含 title.txt 与 meta.json）")
+    episode: str = Field(default="001", description="期号：封面显示为 AI <节目名>第 N 期，每期记得递增")
+    background: Path = Field(default=DEFAULT_BACKGROUND, description="舞台背景图，一般不用动")
 
     _line1: str = PrivateAttr("")
     _line2: str = PrivateAttr("")
@@ -113,18 +93,11 @@ class CoverSettings(BaseSettings):
             raise ValueError(f"title.txt 必须正好两行非空文本，当前 {len(lines)} 行：{title}")
         if not self.background.is_file():
             raise ValueError(f"背景图不存在：{self.background}")
-        font = _resolve_font(self.style)
-        avatars = _resolve_avatars(self.dir)
-        jobs = tuple(CoverJob(size=size, path=self.cover_dir / f"{size.slug}.png") for size in COVER_SIZES)
-        existing = [job.path for job in jobs if job.path.exists()]
-        if existing and not self.force:
-            names = ", ".join(str(path) for path in existing)
-            raise ValueError(f"封面已存在：{names}（加 --force 覆盖）")
         self._line1, self._line2 = lines
         self._episode_text = f"AI {_show_title(self.dir)}{self.episode}期"
-        self._font = font
-        self._avatars = avatars
-        self._jobs = jobs
+        self._font = _resolve_font()
+        self._avatars = _resolve_avatars(self.dir)
+        self._jobs = tuple(CoverJob(size=size, path=self.cover_dir / f"{size.slug}.png") for size in COVER_SIZES)
         return self
 
     @property
@@ -149,38 +122,12 @@ class CoverSettings(BaseSettings):
 
     @property
     def cover_dir(self) -> Path:
-        return self.output_dir if self.output_dir is not None else self.dir / "covers"
+        """输出固定落 <dir>/covers（发布资源包约定），不开 --output-dir 旋钮。"""
+        return self.dir / "covers"
 
     @property
     def jobs(self) -> tuple[CoverJob, ...]:
         return self._jobs
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (
-            init_settings,
-            CliSettingsSource(
-                settings_cls,
-                cli_parse_args=cls._cli_args if cls._cli_args is not None else [],
-                cli_prog_name="brawl cover",
-            ),
-            env_settings,
-        )
-
-    @classmethod
-    def load(cls, cli_args: list[str]) -> CoverSettings:
-        cls._cli_args = cli_args
-        try:
-            return cls()
-        finally:
-            cls._cli_args = None
 
 
 def _show_title(replay_dir: Path) -> str:
@@ -198,11 +145,11 @@ def _show_title(replay_dir: Path) -> str:
     return title_for(game)
 
 
-def _resolve_font(style: StyleChoice) -> Path:
-    for path in STYLE_FONTS[style]:
+def _resolve_font() -> Path:
+    for path in FONT_CANDIDATES:
         if path.is_file():
             return path
-    raise ValueError(f"{style} 没有可用字体：{', '.join(str(path) for path in STYLE_FONTS[style])}")
+    raise ValueError(f"没有可用字体：{', '.join(str(path) for path in FONT_CANDIDATES)}")
 
 
 def _resolve_avatars(replay_dir: Path) -> tuple[Path, ...]:
