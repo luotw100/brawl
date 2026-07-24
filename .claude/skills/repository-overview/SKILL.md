@@ -43,7 +43,7 @@ brawl/
 **生成路径**（brawl.runtime + 玩法 rules）：
 
 - `brawl.runtime.types`：游戏盲类型——`Delivery`（一段话 + channels 路由）/ `Sentence`（日志原子单位）/ `Expectation` / `ParseResult` / `HostEmit`。channel = 席位号 | broadcast | audience。
-- `brawl.runtime.rules`：玩法插件协议（Protocol）。`initial_state/expected/view/parse/apply/advance/pending/turn_id/pack/unpack`。语义唯一落脚点。
+- `brawl.runtime.rules`：玩法插件协议（Protocol）。`initial_state/is_terminal/expected/view/parse/apply/advance/pending`。语义唯一落脚点。
 - `brawl.runtime.loop`：驱动循环。并发收齐同时行动的座位，speak+parse 同单元重试，按座位序确定性落日志/apply；resume = 从头严格重放。host 串场走 `rules.pending` 纯函数。
 - `brawl.runtime.journal`：replay 三件套——`sentences.jsonl`（句子日志即 checkpoint）、`meta.json`、`_snapshot.json`（加速快照）+ avatars。
 - `brawl.runtime.actor` / `opencode_backend` / `opencode_runtime`：OpenCode 托管（每座位独立 server + bwrap 隔离）、RandomActor（零网络 sampler）。
@@ -65,6 +65,12 @@ brawl/
 **玩法包**（games/avalon/ games/werewolf/ 同构）：`rules_engine.py`（玩法全部语义）、`rules.py`（规则表）、
 `state.py`/`view.py`/`prompts.py`、`validation.py`/`settings.py`/`registry.py`/`run.py`、
 `stagecast.py`/`protocol.py`/`plan.yaml`、`data/`、`tests/`。
+
+词汇归属约定：Role/Side 等玩法词汇定义在 `state.py`，`rules.py` 只放规则常数与纯函数
+（import state）。host 串场词有两种已认可的产出范式，新玩法按局面复杂度二选一：
+**pending 纯查询**（avalon——串场词是 state 的纯函数，`pending()` 现场算）与
+**host_outbox**（werewolf——一次结算产生多条播报，`apply/advance` 显式重写 outbox、
+`pending()` 原样读出，绝不跨轮携带）。
 
 ## 核心不变量
 

@@ -142,8 +142,9 @@ async def _open_actors(
 
 def _build_seat_models(setup: GameSetup) -> dict[int, str]:
     return {
-        seat: setup.opencode_models[seat - 1]
-        for seat in range(1, len(setup.opencode_models) + 1)
+        seat: ref
+        for seat, ref in enumerate(setup.opencode_models, start=1)
+        if ref
     }
 
 

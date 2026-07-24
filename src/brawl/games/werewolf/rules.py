@@ -1,36 +1,10 @@
-"""狼人杀角色与板子的唯一静态定义。"""
+"""狼人杀板子与规则常数的唯一静态定义。角色/阵营词汇定义在 state.py。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
-from typing import Literal
 
-
-class Side(StrEnum):
-    GOOD = "good"  # 好人阵营：神职 + 平民
-    WEREWOLF = "werewolf"  # 狼人阵营
-
-
-class Role(StrEnum):
-    WEREWOLF = "werewolf"  # 狼人，夜里同伴互认、共商刀口
-    SEER = "seer"  # 预言家（神），每夜验一人阵营
-    WITCH = "witch"  # 女巫（神），一瓶解药一瓶毒药
-    HUNTER = "hunter"  # 猎人（神），被刀/被放逐时可开枪带走一人（被毒不可）
-    IDIOT = "idiot"  # 白痴（神），被放逐时翻牌免死、此后失去投票权
-    VILLAGER = "villager"  # 平民
-
-    @property
-    def side(self) -> Side:
-        return Side.WEREWOLF if self is Role.WEREWOLF else Side.GOOD
-
-    @property
-    def team_kind(self) -> Literal["wolf", "god", "villager"]:
-        if self is Role.WEREWOLF:
-            return "wolf"
-        if self is Role.VILLAGER:
-            return "villager"
-        return "god"
+from brawl.games.werewolf.state import Role, Side
 
 
 @dataclass(frozen=True)

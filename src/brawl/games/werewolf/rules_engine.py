@@ -38,9 +38,24 @@ from brawl.games.werewolf.state import (
 )
 from brawl.games.werewolf.validation import GameSetup
 from brawl.games.werewolf.view import PlayerView, PublicDeath
-from brawl.runtime.parsing import JsonParseError, parse_json
+from brawl.runtime.parsing import JsonParseError, action_schema, parse_json
 from brawl.runtime.threads import SeatThread
 from brawl.runtime.types import Delivery, Expectation, HostEmit, ParseResult
+
+# 每个行动阶段的 StructuredOutput schema（阶段 → 动作 model 与 phase 常量），模块加载时一次冻结。
+_PHASE_SCHEMAS: dict[str, dict[str, Any]] = {
+    phase: action_schema(model, action_kind)
+    for phase, (model, action_kind) in {
+        "night_wolf": (WolfKill, "wolf_kill"),
+        "night_seer": (SeerAction, "seer_check"),
+        "night_witch": (WitchAction, "witch_action"),
+        "last_words": (Statement, "last_words"),
+        "day_discuss": (Statement, "discuss"),
+        "day_vote": (VoteAction, "vote"),
+        "hunter_shot": (HunterShot, "hunter_shot"),
+        "banter": (Statement, "banter"),
+    }.items()
+}
 
 
 def _emit(turn_id: str, text: str, channels: list, action: dict) -> HostEmit:
@@ -126,7 +141,7 @@ class WerewolfRules:
                 persona_id=setup.cast[i],
                 strategy_id=setup.strategies[i],
                 tone=setup.tones[i],
-                strategy_system=setup.strategy_systems[i],
+                strategy=setup.strategy_systems[i],
                 model=setup.models[i],
                 role=role,
             )
@@ -159,7 +174,7 @@ class WerewolfRules:
     def is_terminal(self, state: WerewolfState) -> bool:
         return state.phase == "done"
 
-    def turn_id(self, state: WerewolfState) -> str:
+    def _turn_id(self, state: WerewolfState) -> str:
         d = state.day
         if state.phase == "night_wolf":
             return f"day{d}.wolf.{state.wolf_index}"
@@ -183,26 +198,26 @@ class WerewolfRules:
         phase = state.phase
         if phase == "night_wolf":
             wolves = state.living_wolves()
-            return Expectation(seats=[wolves[state.wolf_index].no], turn_id=self.turn_id(state))
+            return Expectation(seats=[wolves[state.wolf_index].no], turn_id=self._turn_id(state))
         if phase == "night_seer":
             seer = next(s for s in state.living() if s.role is rules.Role.SEER)
-            return Expectation(seats=[seer.no], turn_id=self.turn_id(state))
+            return Expectation(seats=[seer.no], turn_id=self._turn_id(state))
         if phase == "night_witch":
             witch = next(s for s in state.living() if s.role is rules.Role.WITCH)
-            return Expectation(seats=[witch.no], turn_id=self.turn_id(state))
+            return Expectation(seats=[witch.no], turn_id=self._turn_id(state))
         if phase == "last_words":
-            return Expectation(seats=[state.lw_queue[state.lw_index]], turn_id=self.turn_id(state))
+            return Expectation(seats=[state.lw_queue[state.lw_index]], turn_id=self._turn_id(state))
         if phase == "hunter_shot":
             assert state.pending_hunter is not None
-            return Expectation(seats=[state.pending_hunter], turn_id=self.turn_id(state))
+            return Expectation(seats=[state.pending_hunter], turn_id=self._turn_id(state))
         if phase == "day_discuss":
             order = state.living_nos()
-            return Expectation(seats=[order[state.discuss_index]], turn_id=self.turn_id(state))
+            return Expectation(seats=[order[state.discuss_index]], turn_id=self._turn_id(state))
         if phase == "day_vote":
             voters = [s.no for s in state.living() if s.can_vote]
-            return Expectation(seats=voters, turn_id=self.turn_id(state))
+            return Expectation(seats=voters, turn_id=self._turn_id(state))
         if phase == "banter":
-            return Expectation(seats=[state._banter_order[state.banter_index]], turn_id=self.turn_id(state))
+            return Expectation(seats=[state._banter_order[state.banter_index]], turn_id=self._turn_id(state))
         raise RuntimeError(f"unexpected phase for expected(): {phase}")
 
     # ---------------------------------------------------------------- view（私密信息隔离的唯一闸口）
@@ -236,7 +251,7 @@ class WerewolfRules:
             ],
             votes_history=list(state.votes_history),
             tone=s.tone,
-            strategy=s.strategy_system,
+            strategy=s.strategy,
             messages=list(thread.messages),
         )
         with_situation = phase != "banter"
@@ -249,8 +264,8 @@ class WerewolfRules:
         view.turn_prompt = prompts.human_message(
             thread.inbox, context, ask, view.tone, mimicry_guard=mimicry_guard
         )
-        view.prompt = view.turn_prompt
         view.prompt = prompts.opencode_prompt(view, include_context=first_speak)
+        view.schema = _PHASE_SCHEMAS[phase]
         return view
 
     def _wolf_allies(self, state: WerewolfState, seat: Seat) -> list[int]:

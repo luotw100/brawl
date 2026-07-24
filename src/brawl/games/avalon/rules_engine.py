@@ -27,7 +27,7 @@ from brawl.games.avalon.state import (
 )
 from brawl.games.avalon.validation import GameSetup
 from brawl.games.avalon.view import PlayerView
-from brawl.runtime.parsing import JsonParseError, parse_json
+from brawl.runtime.parsing import JsonParseError, action_schema, parse_json
 from brawl.runtime.rules import Rules
 from brawl.runtime.threads import SeatThread
 from brawl.runtime.types import Delivery, Expectation, HostEmit, ParseResult
@@ -40,20 +40,9 @@ class LadyTransfer(BaseModel):
     target: int
 
 
-def _phase_schema(model: type[BaseModel], phase: str) -> dict[str, Any]:
-    """action model → OpenCode StructuredOutput JSON Schema。
-
-    `phase` 字段收窄为当前阶段常量：模型不可能填出串号的阶段值，直接消灭一类
-    重抽。其余字段形状与 rules.parse 的严格校验共享同一份 model 定义。
-    """
-    schema = model.model_json_schema()
-    schema["properties"]["phase"] = {"const": phase}
-    return schema
-
-
 # 每个行动阶段的 StructuredOutput schema，模块加载时一次性冻结。
 _PHASE_SCHEMAS: dict[str, dict[str, Any]] = {
-    phase: _phase_schema(model, phase)
+    phase: action_schema(model, phase)
     for phase, model in {
         "propose": Proposal,
         "discuss": Statement,
@@ -258,7 +247,6 @@ class AvalonRules(Rules):
         view.turn_prompt = prompts.human_message(
             thread.inbox, context, ask, view.tone, mimicry_guard=mimicry_guard
         )
-        view.prompt = view.turn_prompt
         view.prompt = prompts.opencode_prompt(view, include_context=first_speak)
         view.schema = _PHASE_SCHEMAS[state.phase]
         return view

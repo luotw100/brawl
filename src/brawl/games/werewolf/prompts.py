@@ -38,7 +38,7 @@ RULES = """\
 
 对局方式：
 - 我会持续把桌面上公开发生的事播报给你，并在轮到你行动时向你提问。
-- 你的每次作答必须恰好是一个 JSON 对象，首尾空白外不能有推理文字、代码围栏或第二个对象：monologue 是给观众的一句内心短话（场上玩家看不到），speech 是当前阶段要求的发言，其余字段按提问要求给出。
+- 每次行动按主持人当轮给出的格式构造一个 JSON 对象，并通过 StructuredOutput 工具提交；不要用普通文本回复：monologue 是给观众的一句内心短话（场上玩家看不到），speech 是当前阶段要求的发言，其余字段按提问要求给出。
 - speech 的可见范围由阶段决定：night_wolf 的 speech 只在狼队内部传递，可以真实讨论刀口；day_discuss、last_words、hunter_shot 的 speech 会一字不差公布上桌，可以按阵营利益策略性跳身份、报情报或伪装；banter 是赛后公开复盘。monologue 始终只给观众看，场上玩家看不到。
 
 发言要求（观众在看，桌上交锋是节目的全部看点）：
@@ -150,7 +150,7 @@ def human_message(events: list[str], context: str, ask: str, tone: str = "", mim
 
 # ---------------------------------------------------------------- OpenCode agent 专用提问（JSON schema）
 
-_OUTPUT_ONLY = "只输出上述 JSON 对象，不要输出其他文字。"
+_EXACT_JSON = "你的回答就是上面这个 JSON 对象：把它作为 StructuredOutput 工具的入参提交，不要用普通文本回复。"
 
 
 def opencode_ask(phase: str, view: PlayerView) -> str:
@@ -162,14 +162,14 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"可选刀口：{cands}。最终刀口取全体存活狼人提议里的多数（平票取最小座位号）。\n"
             f"输出 JSON：\n"
             f'{{"phase": "wolf_kill", "monologue": "说给观众的一句短话", "speech": "对狼队友说的一句话（只有狼队听得到）", "target_no": 座位号}}\n'
-            f"{_OUTPUT_ONLY}"
+            f"{_EXACT_JSON}"
         )
     if phase == "night_seer":
         return (
             f"当前阶段：夜晚预言家行动（night_seer）。选一名玩家查验真实阵营（结果只有你知道）。可选：{cands}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "seer_check", "monologue": "说给观众的一句短话", "target_no": 座位号}}\n'
-            f"{_OUTPUT_ONLY}"
+            f"{_EXACT_JSON}"
         )
     if phase == "night_witch":
         kill = f"{view.night_target}号" if view.night_target is not None else "无人（今夜空刀）"
@@ -189,42 +189,42 @@ def opencode_ask(phase: str, view: PlayerView) -> str:
             f"{antidote}\n{poison}\n"
             f"输出 JSON：\n"
             f'{{"phase": "witch_action", "monologue": "说给观众的一句短话", "save": true或false, "poison_target_no": 座位号或null}}\n'
-            f"{_OUTPUT_ONLY}"
+            f"{_EXACT_JSON}"
         )
     if phase == "last_words":
         return (
             f"当前阶段：遗言（last_words）。你已经出局，现在是你的遗言时间，全场会听到。\n"
             f"输出 JSON：\n"
             f'{{"phase": "last_words", "monologue": "说给观众的一句短话", "speech": "你的遗言，会一字不差公布上桌"}}\n'
-            f"{_OUTPUT_ONLY}"
+            f"{_EXACT_JSON}"
         )
     if phase == "day_discuss":
         return (
             "当前阶段：白天自由发言（day_discuss）。结合昨夜死讯、前面玩家的发言和票型，亮明你的立场。\n"
             f"输出 JSON：\n"
             f'{{"phase": "discuss", "monologue": "说给观众的一句短话", "speech": "你的桌面发言，会一字不差公布上桌"}}\n'
-            f"{_OUTPUT_ONLY}"
+            f"{_EXACT_JSON}"
         )
     if phase == "day_vote":
         return (
             f"当前阶段：放逐投票（day_vote）。全员同时暗投，你看不到别人这一票；开票后票型公开，平票无人出局。可选：{cands}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "vote", "monologue": "说给观众的一句短话", "target_no": 座位号}}\n'
-            f"{_OUTPUT_ONLY}"
+            f"{_EXACT_JSON}"
         )
     if phase == "hunter_shot":
         return (
             f"当前阶段：猎人开枪（hunter_shot）。你作为猎人出局，可以开枪带走场上一名玩家，也可以不开枪。可选目标：{cands}。\n"
             f"输出 JSON：\n"
             f'{{"phase": "hunter_shot", "monologue": "说给观众的一句短话", "speech": "开枪前的一句话，会一字不差公布上桌", "target_no": 座位号或null}}\n'
-            f"{_OUTPUT_ONLY}"
+            f"{_EXACT_JSON}"
         )
     if phase == "banter":
         return (
             "当前阶段：赛后复盘（banter）。游戏已结束，底牌已翻开，输赢已定，畅所欲言。\n"
             f"输出 JSON：\n"
             f'{{"phase": "banter", "monologue": "说给观众的一句短话", "speech": "你的复盘发言"}}\n'
-            f"{_OUTPUT_ONLY}"
+            f"{_EXACT_JSON}"
         )
     raise ValueError(f"未知的 OpenCode 决策阶段：{phase}")
 
@@ -235,14 +235,14 @@ def opencode_prompt(view: PlayerView, *, include_context: bool = True) -> str:
         return (
             f"主持人继续通过你的私人频道给你传话。沿用本 session 开局时给你的身份、夜晚情报、角色约束、"
             f"打法取向和私人历史；现在只处理下面的新公开事件和当前行动，不要重述旧信息。\n\n"
-            f"【现在轮到你】\n{view.prompt}"
+            f"【现在轮到你】\n{view.turn_prompt}"
         )
     return (
         f"我是这局《狼人杀》的主持人，现在通过你的私人频道给你传话。你只代表自己这个座位行动，"
         f"其他玩家看不到这条私信，也看不到你的 monologue。\n\n"
         f"【你的固定设定】\n{system_text(view)}\n\n"
         f"【你的私人历史】\n{_private_transcript(view)}\n\n"
-        f"【现在轮到你】\n{view.prompt}"
+        f"【现在轮到你】\n{view.turn_prompt}"
     )
 
 

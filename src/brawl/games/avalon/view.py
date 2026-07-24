@@ -14,7 +14,7 @@ class PlayerView:
     """某席位在当前行动点能看到的全部信息。
 
     这是一个 opaque 视图对象：brawl.runtime.loop 不读字段，OpenCodeActor 只读 `.prompt`、
-    `.seat_no` 和 `.schema`；AvalonRandomActor 读 `.phase` 等字段生成合法 JSON。
+    `.seat_no` 和 `.schema`；RandomActor 配 rules.random_action 读 `.phase` 等字段生成合法 JSON。
 
     `.schema` 是本阶段动作模型的 JSON Schema（由 rules 在构造时挂上），OpenCode
     后端用它请求 StructuredOutput；为 None 时后端退回纯文本协议。

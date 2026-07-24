@@ -359,6 +359,27 @@ def test_witch_action_is_silent_to_seats() -> None:
     assert channels == {"audience"}
 
 
+def test_view_attaches_structured_output_schema_with_const_phase() -> None:
+    """每个行动阶段的 view 都挂 StructuredOutput schema，phase 收窄为该阶段动作常量。"""
+    r = _rules()
+    cases = [
+        ("night_wolf", {}, "wolf_kill"),
+        ("night_seer", {}, "seer_check"),
+        ("night_witch", {"wolf_target": 9}, "witch_action"),
+        ("day_discuss", {"discuss_index": 0}, "discuss"),
+        ("day_vote", {}, "vote"),
+        ("hunter_shot", {"pending_hunter": 7}, "hunter_shot"),
+        ("last_words", {"lw_queue": [9], "lw_index": 0}, "last_words"),
+        ("banter", {"winner": "good"}, "banter"),
+    ]
+    for phase, extras, action_kind in cases:
+        st = _state(phase=phase, **extras)
+        seat = r.expected(st).seats[0]
+        view = r.view(seat, st, SeatThread())
+        assert view.schema is not None, phase
+        assert view.schema["properties"]["phase"] == {"const": action_kind}, phase
+
+
 def test_action_prompts_only_request_phase_json() -> None:
     view = PlayerView(
         seat_no=1,
@@ -377,7 +398,7 @@ def test_action_prompts_only_request_phase_json() -> None:
     assert '"phase": "discuss"' in day
     assert '"phase": "last_words"' in last_words
     for ask in (night, day, last_words):
-        assert ask.endswith("只输出上述 JSON 对象，不要输出其他文字。")
+        assert ask.endswith(prompts._EXACT_JSON)
         assert "自检" not in ask and "思考过程" not in ask
     assert "speech 会被一字不差地公布上桌，全场可见" not in prompts.RULES
     assert "night_wolf 的 speech 只在狼队内部传递" in prompts.RULES

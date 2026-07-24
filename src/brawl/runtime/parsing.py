@@ -3,11 +3,16 @@
 一次回答必须恰好是一个 JSON object；除首尾空白外，不允许推理文字、代码围栏、第二个
 object 或任何修复性容错。字段类型、必填项与额外字段由调用方传入的严格 Pydantic action
 model 声明。解析或校验失败统一抛 ``JsonParseError``，交给 runtime 重试。
+
+``action_schema`` 是同一份 action model 的另一面：玩法把它挂到 view 上，OpenCode
+后端据此请求 StructuredOutput——服务端按 schema 强约束形状，parse 端严格校验语义，
+生成与解析共享同一份 model 定义，永不漂移。
 """
 
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -53,3 +58,14 @@ def parse_json[T: BaseModel](text: str, model: type[T]) -> T:
         return model.model_validate(data, strict=True)
     except ValidationError as exc:
         raise JsonParseError(f"字段校验失败：{exc}") from exc
+
+
+def action_schema(model: type[BaseModel], phase: str) -> dict[str, Any]:
+    """action model → StructuredOutput JSON Schema。
+
+    `phase` 字段收窄为当前阶段常量：模型不可能填出串号的阶段值，直接消灭一类
+    重试。其余字段形状与 rules.parse 的严格校验共享同一份 model 定义。
+    """
+    schema = model.model_json_schema()
+    schema["properties"]["phase"] = {"const": phase}
+    return schema

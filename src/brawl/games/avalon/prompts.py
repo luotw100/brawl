@@ -464,20 +464,20 @@ def _private_transcript(view: PlayerView) -> str:
 def opencode_prompt(view: PlayerView, *, include_context: bool = True) -> str:
     """OpenCode 会话里发送的自然传话文本。
 
-    这只是发送层渲染，不写回 SeatThread；线程仍保存短的 `view.prompt`，避免历史膨胀。
+    这只是发送层渲染，不写回 SeatThread；线程仍保存短的 `view.turn_prompt`，避免历史膨胀。
     """
     if not include_context:
         return (
             f"主持人继续通过你的私人频道给你传话。沿用本 session 开局时给你的身份、夜晚情报、角色硬约束、"
             f"打法取向和私人历史；现在只处理下面的新公开事件和当前行动，不要重述旧信息。\n\n"
-            f"【现在轮到你】\n{view.prompt}"
+            f"【现在轮到你】\n{view.turn_prompt}"
         )
     return (
         f"我是这局《阿瓦隆》的主持人，现在通过你的私人频道给你传话。你只代表自己这个座位行动，"
         f"其他玩家看不到这条私信，也看不到你的 monologue。\n\n"
         f"【你的固定设定】\n{system_text(view)}\n\n"
         f"【你的私人历史】\n{_private_transcript(view)}\n\n"
-        f"【现在轮到你】\n{view.prompt}"
+        f"【现在轮到你】\n{view.turn_prompt}"
     )
 
 
