@@ -21,6 +21,14 @@ models:
   display: Kimi K2.6
   avatar: kimi
   opencode_model: opencode-go/kimi-k2.6
+- name: oc-kimi-k3
+  display: Kimi K3
+  avatar: kimi
+  opencode_model: opencode-go/kimi-k3
+- name: oc-kimi-k3-256k
+  display: Kimi K3 256K
+  avatar: kimi
+  opencode_model: kimi-for-coding/k3-256k
 - name: oc-glm-5.2
   display: GLM-5.2
   avatar: zhipu
@@ -37,3 +45,11 @@ models:
   display: MiMo v2.5
   avatar: mimo
   opencode_model: opencode-go/mimo-v2.5
+- name: oc-grok-4.5
+  display: Grok 4.5
+  avatar: grok
+  opencode_model: opencode-go/grok-4.5
+- name: oc-hy3
+  display: Hunyuan 3
+  avatar: hunyuan
+  opencode_model: opencode-go/hy3
