@@ -18,6 +18,10 @@
   对象。``format.retryCount`` 在 1.17.20 是死配置（收下但从不使用），不传。
   模型没产出 structured output 属于内容失败，抛 RetryableActorError 交给外层重抽；
   不支持 format 的模型会直接报错（fatal），选模型时自行避开。
+- assistant 消息 ``info.error`` 的可恢复分类：``StructuredOutputError``（内容失败）
+  与 ``APIError``（provider/网关请求失败，zen 的 isRetryable 标志不可靠，一律按瞬态
+  处理）都抛 RetryableActorError——同步响应带着消息 id，回滚精确、重抽干净；其余
+  agent 错误（鉴权、上下文溢出、未知错误等重抽无意义的）维持 fatal。
 - 同步请求没有拿到完整响应（超时/传输错误/取消）时，服务端可能已创建本回合消息，
   而上面的 400 bug 使我们无法枚举这些孤儿消息——无法证明 session 干净，只能
   尽力 abort 后毒化 session，禁止原地重试，走 journal resume 恢复。
@@ -431,11 +435,16 @@ class OpenCodeBackend:
         info = resp["info"]
         error = info.get("error")
         if error:
-            # 模型没调 StructuredOutput 工具属于内容失败：消息 id 已知，回滚后
-            # 重抽是干净的；其余 agent 错误维持旧的 fatal 语义。
+            # 同步响应已完成、消息 id 已知，回滚按 id 精确删除后重抽是干净的。
             name = error.get("name") if isinstance(error, dict) else None
             if name == "StructuredOutputError":
+                # 模型没调 StructuredOutput 工具，属内容失败，重抽。
                 raise RetryableActorError(f"模型未按 schema 产出 structured output：{error}")
+            if name == "APIError":
+                # provider/网关请求失败。zen 上报的 statusCode/isRetryable 实测不可靠
+                # （上游瞬时抖动也标 400 + isRetryable=false），一律按瞬态重抽；真是
+                # 配置错误（模型名错/鉴权失败）会在重试上限后带原始错误 fail-stop。
+                raise RetryableActorError(f"OpenCode provider 请求失败（按瞬态重试）：{error}")
             raise RuntimeError(f"OpenCode agent 错误：{error}")
         if schema is not None:
             structured = info.get("structured")

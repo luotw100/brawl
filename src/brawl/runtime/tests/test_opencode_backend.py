@@ -226,9 +226,38 @@ async def test_missing_structured_output_is_retryable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_api_error_is_retryable_and_rolls_back_cleanly() -> None:
+    server = _FakeOpenCode()
+    # 2026-07 真实事故载荷：zen 网关上游瞬时抖动也标 400 + isRetryable=false，
+    # 这两个字段不可信，APIError 一律按瞬态重抽。
+    server.error_payload = {
+        "name": "APIError",
+        "data": {
+            "message": "Error from provider (Console Go): Upstream request failed",
+            "statusCode": 400,
+            "isRetryable": False,
+        },
+    }
+    backend = _backend(server)
+    try:
+        with pytest.raises(RetryableActorError, match="provider 请求失败"):
+            await _call(backend)
+
+        await backend.rollback(1)
+        assert server.deleted == ["assistant-1", "user-1"]
+
+        server.error_payload = None
+        resp = await _call(backend)
+        assert resp.content == "response"
+        backend.commit_turn(1)
+    finally:
+        await backend.close()
+
+
+@pytest.mark.asyncio
 async def test_other_agent_error_stays_fatal() -> None:
     server = _FakeOpenCode()
-    server.error_payload = {"name": "APIError", "data": {"message": "provider boom"}}
+    server.error_payload = {"name": "ProviderAuthError", "data": {"message": "bad key"}}
     backend = _backend(server)
     try:
         with pytest.raises(RuntimeError, match="OpenCode agent 错误"):
