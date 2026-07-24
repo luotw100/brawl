@@ -2,7 +2,7 @@
 
 settings 的形状校验（players 是否在 5..10）、提案的队伍人数、任务的破坏票门槛、
 夜晚情报的可见性，全查这里——规则只此一份，节点与校验不各自硬编码。
-这里全是纯函数/常数表，输入空间有限，测试可以**穷举**（见 tests/test_avalon_rules.py）。
+这里全是纯函数/常数表，输入空间有限，测试可以**穷举**（见 tests/test_rules.py）。
 """
 
 from __future__ import annotations

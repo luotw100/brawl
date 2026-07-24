@@ -231,7 +231,7 @@ async def test_other_agent_error_stays_fatal() -> None:
     server.error_payload = {"name": "APIError", "data": {"message": "provider boom"}}
     backend = _backend(server)
     try:
-        with pytest.raises(RuntimeError, match="OpenCode agent error"):
+        with pytest.raises(RuntimeError, match="OpenCode agent 错误"):
             await _call(backend)
     finally:
         await backend.close()

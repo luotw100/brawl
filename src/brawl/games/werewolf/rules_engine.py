@@ -218,7 +218,7 @@ class WerewolfRules:
             return Expectation(seats=voters, turn_id=self._turn_id(state))
         if phase == "banter":
             return Expectation(seats=[state._banter_order[state.banter_index]], turn_id=self._turn_id(state))
-        raise RuntimeError(f"unexpected phase for expected(): {phase}")
+        raise RuntimeError(f"expected() 遇到意外阶段：{phase}")
 
     # ---------------------------------------------------------------- view（私密信息隔离的唯一闸口）
 
@@ -301,7 +301,7 @@ class WerewolfRules:
             return self._parse_vote(seat, raw, state)
         if phase == "hunter_shot":
             return self._parse_hunter(seat, raw, state)
-        raise RuntimeError(f"unexpected phase for parse(): {phase}")
+        raise RuntimeError(f"parse() 遇到意外阶段：{phase}")
 
     def _parse_wolf(self, seat: int, raw: str, state: WerewolfState) -> ParseResult:
         result = parse_json(raw, WolfKill)
@@ -454,7 +454,7 @@ class WerewolfRules:
         elif kind in ("last_words", "discuss", "banter"):
             pass  # 发言不进账本（原文已在句子日志里），只消费 outbox
         else:
-            raise RuntimeError(f"unknown action kind: {kind}")
+            raise RuntimeError(f"未知 action kind：{kind}")
         return state.model_copy(deep=True, update=out)
 
     # ---------------------------------------------------------------- advance（阶段机 + 串场词产出）
@@ -484,7 +484,7 @@ class WerewolfRules:
             return state.model_copy(deep=True, update={"phase": "done", "host_outbox": [closing]})
         if phase == "done":
             return state
-        raise RuntimeError(f"unexpected phase for advance(): {phase}")
+        raise RuntimeError(f"advance() 遇到意外阶段：{phase}")
 
     def _advance_wolf(self, state: WerewolfState) -> WerewolfState:
         wolves = state.living_wolves()

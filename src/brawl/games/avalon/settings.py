@@ -180,6 +180,3 @@ class AvalonSettings(BaseSettings):
         finally:
             cls._cli_args = None
             cls._config_file = None
-
-
-__all__ = ["AvalonSettings", "SettingsError"]

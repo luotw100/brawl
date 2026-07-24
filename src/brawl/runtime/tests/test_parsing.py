@@ -1,4 +1,4 @@
-"""core.parsing 的单一严格路径：完整 JSON object 入，任何修复或夹带都拒绝。"""
+"""brawl.runtime.parsing 的单一严格路径：完整 JSON object 入，任何修复或夹带都拒绝。"""
 
 from __future__ import annotations
 

@@ -76,6 +76,3 @@ class DummyActor:
     def commit_turn(self, seat: int) -> None: ...
 
     async def rollback(self, seat: int) -> None: ...
-
-
-__all__ = ["SEATS", "DummyActor", "DummyRules"]

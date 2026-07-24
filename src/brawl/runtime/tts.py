@@ -524,14 +524,3 @@ def main(argv: list[str]) -> None:
     parser.add_argument("replay", type=Path, help="不可变 replay 目录")
     args = parser.parse_args(argv)
     asyncio.run(_run(args.replay))
-
-
-__all__ = [
-    "DashScopeTTSBackend",
-    "Manifest",
-    "TTSError",
-    "TTSBackend",
-    "TTSRenderer",
-    "dashscope_audio_url",
-    "main",
-]

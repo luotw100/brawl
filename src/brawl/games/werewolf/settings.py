@@ -131,6 +131,3 @@ class WerewolfResumeSettings(BaseModel):
                 "玩家、模型、人设、流派、并发度等元信息不能在续跑时修改"
             )
         return cls(replay=Path(argv[2]))
-
-
-__all__ = ["SettingsError", "WerewolfResumeSettings", "WerewolfSettings"]

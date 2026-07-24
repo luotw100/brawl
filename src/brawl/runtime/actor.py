@@ -43,7 +43,7 @@ class OpenCodeActor:
     async def speak(self, seat: int, view: Any, turn_id: str) -> str:
         prompt = getattr(view, "prompt", None)
         if not isinstance(prompt, str):
-            raise TypeError(f"view.prompt must be str, got {type(prompt)}")
+            raise TypeError(f"view.prompt 必须是 str，收到 {type(prompt)}")
 
         messages = [ChatMessage(role="human", content=prompt)]
         proxy = _ViewProxy(view, seat_no=seat)
@@ -83,5 +83,3 @@ class RandomActor:
     def commit_turn(self, seat: int) -> None: ...  # 无会话可清理，空操作
 
     async def rollback(self, seat: int) -> None: ...
-
-__all__ = ["OpenCodeActor", "RandomActor"]

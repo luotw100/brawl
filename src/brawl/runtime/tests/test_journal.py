@@ -62,7 +62,7 @@ def test_seq_and_commit_continue_after_reopen(tmp_path) -> None:
     resumed.close()
 
     reopened = DirJournal(rep, resume=True)
-    assert reopened.last_seq() == 2
+    assert reopened.load_sentences()[-1]["seq"] == 2
     assert [row["commit_id"] for row in reopened.load_sentences()] == [0, 0, 1]
     reopened.close()
 
@@ -251,7 +251,6 @@ def test_null_journal_assigns_runtime_ids_without_disk() -> None:
     assert journal.append_batch(second) == 2
     assert [sentence.seq for sentence in [*first, *second]] == [0, 1, 2]
     assert [sentence.commit_id for sentence in [*first, *second]] == [0, 0, 1]
-    assert journal.last_seq() == 2
     assert journal.load_sentences() == []
     assert journal.load_batches() == []
     journal.close()

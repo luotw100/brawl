@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 from brawl.games.avalon import rules
 from brawl.games.avalon.state import Role, Side
+from brawl.runtime.prompts import human_message as human_message
 
 if TYPE_CHECKING:
     from brawl.games.avalon.view import PlayerView
@@ -420,26 +421,6 @@ def situation(view: PlayerView) -> str:
         f"{_REASONING_BASELINE}\n"
         f"{_public_history(view)}"
     )
-
-
-def human_message(events: list[str], context: str, ask: str, tone: str = "", mimicry_guard: bool = True) -> str:
-    """一条 human 消息 = 公开事件块（可空）+ 局面/私密信息（可空）+ 风格提醒 + 提问。
-
-    风格提醒每轮重申：人设在 system 开头会被长局历史稀释，放到距生成位置近的尾部对冲；
-    但提问必须压轴——标签行格式要求是最末位的锚，实测把提醒放在提问之后会顶掉格式锚，
-    模型照着提醒的括号体例回话、不出标签行。tone 为空时退化成纯风格提醒，零分叉。
-
-    mimicry_guard：对局中默认开（反从众，挡长局风格塌缩——别被前人句式带跑）；赛后复盘关掉，
-    那里恰恰要互相接话（接梗/回怼/帮腔），只保留"用自己的腔调"、不再叫人绕开前面发言者。"""
-    parts = []
-    if events:
-        parts.append("场上发生：\n" + "\n".join(events))
-    if context:
-        parts.append(context)
-    guard = "别被前面发言者的句式和开场带着走" if mimicry_guard else "该接梗接梗、该回怼回怼，别自说自话"
-    parts.append(f"（风格提醒：{tone}保持你自己的腔调，{_STYLE_DISCIPLINE}{guard}。）")
-    parts.append(ask)
-    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------- OpenCode agent 专用提问

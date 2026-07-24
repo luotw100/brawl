@@ -78,7 +78,6 @@ class Journal(Protocol):
     def write_meta(self, meta: dict[str, Any]) -> None: ...
     def write_avatar(self, seat_no: int, src: Path) -> None: ...
     def append_batch(self, sents: list[Sentence]) -> int: ...
-    def last_seq(self) -> int: ...
     def load_sentences(self) -> list[dict[str, Any]]: ...
     def load_batches(self) -> list[list[dict[str, Any]]]: ...
     def close(self) -> None: ...
@@ -156,7 +155,7 @@ def _prepare_batch(
     commit_id: int,
 ) -> list[Sentence]:
     if not sents:
-        raise ValueError("append_batch requires at least one sentence")
+        raise ValueError("append_batch 至少需要一条句子")
     prepared: list[Sentence] = []
     for offset, sent in enumerate(sents):
         try:
@@ -231,9 +230,6 @@ class DirJournal:
         self._next_commit += 1
         return self._next_seq - 1
 
-    def last_seq(self) -> int:
-        return self._next_seq - 1
-
     def load_sentences(self) -> list[dict[str, Any]]:
         """读出全部已提交句子；临时文件永远不参与读取。"""
         return [sentence.model_dump() for sentence in _decode_sentences(self._committed)]
@@ -280,9 +276,6 @@ class NullJournal:
         self._next_commit += 1
         return self._next_seq - 1
 
-    def last_seq(self) -> int:
-        return self._next_seq - 1
-
     def load_sentences(self) -> list[dict[str, Any]]:
         return []
 
@@ -295,14 +288,3 @@ class NullJournal:
 def open_journal(replay: Path | None, *, resume: bool = False) -> Journal:
     """--replay 给了就写该目录；不给返回 NullJournal。"""
     return DirJournal(replay, resume=resume) if replay is not None else NullJournal()
-
-
-__all__ = [
-    "DirJournal",
-    "Journal",
-    "JournalCorruptionError",
-    "JournalInUseError",
-    "NullJournal",
-    "load_replay_sentences",
-    "open_journal",
-]

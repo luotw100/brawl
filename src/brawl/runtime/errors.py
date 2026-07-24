@@ -7,6 +7,3 @@ class FatalActorError(RuntimeError):
 
 class RetryableActorError(RuntimeError):
     """actor 边界明确判定为瞬态失败；loop 会先回滚会话再重试。"""
-
-
-__all__ = ["FatalActorError", "RetryableActorError"]

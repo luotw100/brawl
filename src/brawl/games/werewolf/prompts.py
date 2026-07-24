@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from brawl.games.werewolf import rules
 from brawl.games.werewolf.rules import Role
+from brawl.runtime.prompts import human_message as human_message
 
 if TYPE_CHECKING:
     from brawl.games.werewolf.view import PlayerView
@@ -48,7 +49,6 @@ RULES = """\
 - monologue 是给观众的吐槽：一句话，要有情绪、可以毒舌、可以自嘲，别干巴巴复述计划。"""
 
 _REASONING_BASELINE = "推理基准：主持人播报的公开事实和你自己的私密视角才是确定事实；其他玩家的任何说法，包括身份声明、验人报料、遗言指认，都只是玩家声称，可能为真也可能为假；可以参考，但不能当作事实前提。"
-_STYLE_DISCIPLINE = "说话简短干练，只打 1~2 个重点，别写长段总结，别复述全桌。"
 
 
 def role_name(role: Role) -> str:
@@ -129,23 +129,6 @@ def private_block(view: PlayerView) -> str:
         poison = "可用" if view.witch_has_poison else "已用完"
         parts.append(f"（只有你知道）你的药瓶：解药{antidote}，毒药{poison}。")
     return "\n".join(parts)
-
-
-def human_message(events: list[str], context: str, ask: str, tone: str = "", mimicry_guard: bool = True) -> str:
-    """一条 human 消息 = 公开事件块（可空）+ 局面/私密信息（可空）+ 风格提醒 + 提问。
-
-    风格提醒每轮重申、贴近生成位置，对冲长局里开头腔调被历史发言稀释；提问必须压轴
-    （JSON 格式锚要在最末位）。mimicry_guard 对局中默认开（反从众）；赛后复盘关掉，
-    让他们接梗回怼。"""
-    parts = []
-    if events:
-        parts.append("场上发生：\n" + "\n".join(events))
-    if context:
-        parts.append(context)
-    guard = "别被前面发言者的句式和开场带着走" if mimicry_guard else "该接梗接梗、该回怼回怼，别自说自话"
-    parts.append(f"（风格提醒：{tone}保持你自己的腔调，{_STYLE_DISCIPLINE}{guard}。）")
-    parts.append(ask)
-    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------- OpenCode agent 专用提问（JSON schema）

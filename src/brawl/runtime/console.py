@@ -181,12 +181,3 @@ def _load_optional_meta(path: Path) -> dict[str, Any] | None:
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ConsoleError(f"meta.json 不是合法 JSON：{exc}") from exc
     return meta
-
-
-__all__ = [
-    "ConsoleError",
-    "ConsoleRenderer",
-    "InstantTypist",
-    "PacedTypist",
-    "main",
-]

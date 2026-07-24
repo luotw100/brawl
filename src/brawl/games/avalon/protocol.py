@@ -178,10 +178,3 @@ class AvalonScene(BaseScene):
     winner: str | None = None
     win_reason: str | None = None
     timeline: list[SerializeAsAny[TimelineEntry]] = Field(default_factory=list)  # 整局里程碑，前情回顾面板据此回放全程
-
-
-__all__ = [
-    "Assassination", "AvalonScene", "Deal", "GameOpen", "GameOver",
-    "LadyCheck", "LadyChoose", "ProposalLog", "QuestCard", "QuestLog", "QuestReveal", "SeatInfo", "SeatVote",
-    "Speech", "VoteReveal",
-]

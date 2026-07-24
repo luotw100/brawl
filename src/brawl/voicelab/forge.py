@@ -250,6 +250,3 @@ def forge(s: ForgeSettings, console: Console) -> None:
 
 def main(argv: list[str]) -> None:
     forge(ForgeSettings.load(argv), Console())
-
-
-__all__ = ["ForgeSettings", "SettingsError", "main"]

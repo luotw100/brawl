@@ -47,7 +47,7 @@ class Delivery(_StrictModel):
     @classmethod
     def _channels_are_unique(cls, channels: list[Channel]) -> list[Channel]:
         if len(channels) != len(set(channels)):
-            raise ValueError("delivery channels must be unique")
+            raise ValueError("delivery channels 不得重复")
         return channels
 
 
@@ -107,7 +107,7 @@ class Expectation(_StrictModel):
     @classmethod
     def _seats_are_unique(cls, seats: list[int]) -> list[int]:
         if len(seats) != len(set(seats)):
-            raise ValueError("expectation seats must be unique")
+            raise ValueError("expectation seats 不得重复")
         return seats
 
 

@@ -18,6 +18,3 @@ class ChatMessage(BaseModel):
     role: Literal["system", "human", "assistant"]
     content: str
     usage_metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-__all__ = ["ChatMessage"]

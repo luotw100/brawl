@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from brawl.runtime.loop import deliver
+from brawl.runtime.loop import _deliver_validated, _validated_deliveries
 from brawl.runtime.threads import SeatThread
 from brawl.runtime.types import Delivery
+
+
+def _deliver(deliveries: list[Delivery], threads: dict[int, SeatThread]) -> None:
+    """公开 deliver 删除后，测试直取校验 + 路由两段内部件（语义与原公开函数一致）。"""
+    _deliver_validated(_validated_deliveries(deliveries, threads), threads)
 
 
 def _threads(n: int = 3) -> dict[int, SeatThread]:
@@ -20,7 +25,7 @@ def _threads(n: int = 3) -> dict[int, SeatThread]:
 
 def test_int_channel_writes_only_that_seat():
     threads = _threads()
-    deliver([Delivery(text="私聊", channels=[2])], threads)
+    _deliver([Delivery(text="私聊", channels=[2])], threads)
     assert threads[1].inbox == []
     assert threads[2].inbox == ["私聊"]
     assert threads[3].inbox == []
@@ -28,7 +33,7 @@ def test_int_channel_writes_only_that_seat():
 
 def test_broadcast_writes_every_seat():
     threads = _threads()
-    deliver([Delivery(text="公开", channels=["broadcast"])], threads)
+    _deliver([Delivery(text="公开", channels=["broadcast"])], threads)
     for t in threads.values():
         assert t.inbox == ["公开"]
 
@@ -36,7 +41,7 @@ def test_broadcast_writes_every_seat():
 def test_audience_never_enters_any_inbox():
     """内心独白/观众事件：任何席位的 inbox 都拿不到。"""
     threads = _threads()
-    deliver([Delivery(text="给观众的话", channels=["audience"])], threads)
+    _deliver([Delivery(text="给观众的话", channels=["audience"])], threads)
     for t in threads.values():
         assert t.inbox == []
 
@@ -44,7 +49,7 @@ def test_audience_never_enters_any_inbox():
 def test_mixed_channels_route_independently():
     """沉默动作形态（自己 + 观众）：自己听见自己，其他席位一无所知。"""
     threads = _threads()
-    deliver([Delivery(text="自救了一下", channels=[1, "audience"])], threads)
+    _deliver([Delivery(text="自救了一下", channels=[1, "audience"])], threads)
     assert threads[1].inbox == ["自救了一下"]
     assert threads[2].inbox == []
     assert threads[3].inbox == []
@@ -52,7 +57,7 @@ def test_mixed_channels_route_independently():
 
 def test_empty_text_is_dropped():
     threads = _threads()
-    deliver([Delivery(text="", channels=["broadcast"])], threads)
+    _deliver([Delivery(text="", channels=["broadcast"])], threads)
     for t in threads.values():
         assert t.inbox == []
 
@@ -65,7 +70,7 @@ def test_unknown_private_seat_fails_before_any_delivery():
         Delivery(text="坏路由", channels=[99]),
     ]
 
-    with pytest.raises(RuntimeError, match="unknown seats"):
-        deliver(deliveries, threads)
+    with pytest.raises(RuntimeError, match="未知座位"):
+        _deliver(deliveries, threads)
 
     assert all(thread.inbox == [] for thread in threads.values())

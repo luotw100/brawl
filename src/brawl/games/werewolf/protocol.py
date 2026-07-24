@@ -179,11 +179,3 @@ class WerewolfScene(BaseScene):
     win_reason: str | None = None
     deaths: list[DeathInfo] = Field(default_factory=list)
     timeline: list[SerializeAsAny[TimelineEntry]] = Field(default_factory=list)
-
-
-__all__ = [
-    "Deal", "DeathInfo", "DeathLog", "DeathResolved", "ExileVote", "GameOpen",
-    "GameOver", "HunterShot", "IdiotReveal", "NightStart", "RoleReveal", "SeatInfo",
-    "SeerCheck", "Speech", "VoteLog", "VoteReveal", "WerewolfScene", "WitchAction",
-    "WolfKill", "WolfVote",
-]

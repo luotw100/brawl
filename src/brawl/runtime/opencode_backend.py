@@ -413,7 +413,7 @@ class OpenCodeBackend:
     async def call(self, phase: str, view: Any, messages: list[ChatMessage]) -> ChatMessage:
         seat_no = getattr(view, "seat_no", None)
         if type(seat_no) is not int or seat_no <= 0:
-            raise TypeError(f"view.seat_no must be a positive int, got {seat_no!r}")
+            raise TypeError(f"view.seat_no 必须是正整数，收到 {seat_no!r}")
         session_id = await self._ensure_session(seat_no)
         self._raise_if_poisoned(seat_no)
         # 防御性清理上一轮未验收消息；正常 parse 失败会在 rollback 中立即完成。
@@ -424,7 +424,7 @@ class OpenCodeBackend:
         # 玩法层在 view 上挂的 JSON Schema；None 表示本局走纯文本协议（无结构化输出约束）。
         schema = getattr(view, "schema", None)
         if schema is not None and not isinstance(schema, dict):
-            raise TypeError(f"view.schema must be dict or None, got {type(schema)}")
+            raise TypeError(f"view.schema 必须是 dict 或 None，收到 {type(schema)}")
 
         resp = await self._send_and_register(session_id, seat_no, text, model_ref, schema)
 
@@ -436,7 +436,7 @@ class OpenCodeBackend:
             name = error.get("name") if isinstance(error, dict) else None
             if name == "StructuredOutputError":
                 raise RetryableActorError(f"模型未按 schema 产出 structured output：{error}")
-            raise RuntimeError(f"OpenCode agent error: {error}")
+            raise RuntimeError(f"OpenCode agent 错误：{error}")
         if schema is not None:
             structured = info.get("structured")
             if structured is None:
@@ -465,10 +465,3 @@ class OpenCodeBackend:
 
     async def close(self) -> None:
         await self._client.aclose()
-
-
-__all__ = [
-    "ModelBackend",
-    "OpenCodeBackend",
-    "OpenCodeSessionPoisoned",
-]

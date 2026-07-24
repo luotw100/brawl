@@ -47,10 +47,10 @@ def _recheck[ModelT: BaseModel](model: type[ModelT], value: Any, message: str) -
 def _validate_seat_keys(mapping: dict[int, Any], name: str) -> None:
     """在运行边界一次性收紧 seat 世界；下游直接按键访问。"""
     if not mapping:
-        raise RuntimeError(f"{name} must contain at least one seat")
+        raise RuntimeError(f"{name} 至少要有一个座位")
     invalid = [seat for seat in mapping if type(seat) is not int or seat <= 0]
     if invalid:
-        raise RuntimeError(f"{name} contains invalid seat keys: {invalid!r}")
+        raise RuntimeError(f"{name} 含非法座位键：{invalid!r}")
 
 
 def _validate_live_world(actors: dict[int, Actor], threads: dict[int, SeatThread]) -> None:
@@ -58,7 +58,7 @@ def _validate_live_world(actors: dict[int, Actor], threads: dict[int, SeatThread
     _validate_seat_keys(threads, "threads")
     if actors.keys() != threads.keys():
         raise RuntimeError(
-            "actors and threads must describe the same seats: "
+            "actors 与 threads 必须描述同一组座位："
             f"actors={sorted(actors)}, threads={sorted(threads)}"
         )
 
@@ -68,14 +68,14 @@ def _validated_expectation(
     threads: dict[int, SeatThread],
     actors: dict[int, Actor] | None = None,
 ) -> Expectation:
-    checked = _recheck(Expectation, expectation, "rules.expected returned a malformed Expectation")
+    checked = _recheck(Expectation, expectation, "rules.expected 返回了畸形的 Expectation")
     missing_threads = [seat for seat in checked.seats if seat not in threads]
     if missing_threads:
-        raise RuntimeError(f"expectation references seats without threads: {missing_threads}")
+        raise RuntimeError(f"expectation 引用了没有 thread 的座位：{missing_threads}")
     if actors is not None:
         missing_actors = [seat for seat in checked.seats if seat not in actors]
         if missing_actors:
-            raise RuntimeError(f"expectation references seats without actors: {missing_actors}")
+            raise RuntimeError(f"expectation 引用了没有 actor 的座位：{missing_actors}")
     return checked
 
 
@@ -86,14 +86,14 @@ def _validated_deliveries(
     """校验 Delivery 自身形状及其对当前 seat 世界的全部引用。"""
     checked: list[Delivery] = []
     for index, delivery in enumerate(deliveries):
-        item = _recheck(Delivery, delivery, f"delivery {index} is malformed")
+        item = _recheck(Delivery, delivery, f"delivery {index} 畸形")
         missing = [
             channel
             for channel in item.channels
             if type(channel) is int and channel not in threads
         ]
         if missing:
-            raise RuntimeError(f"delivery {index} references unknown seats: {missing}")
+            raise RuntimeError(f"delivery {index} 引用了未知座位：{missing}")
         checked.append(item)
     return checked
 
@@ -106,14 +106,14 @@ def _validated_sentence_batch(
     checked: list[Sentence] = []
     host_seen = False
     for index, sentence in enumerate(sentences):
-        item = _recheck(Sentence, sentence, f"sentence {index} is malformed")
+        item = _recheck(Sentence, sentence, f"sentence {index} 畸形")
         if item.speaker == "host":
             host_seen = True
         else:
             if host_seen:
-                raise RuntimeError("player sentence cannot follow a host sentence in one commit")
+                raise RuntimeError("同一 commit 里玩家句子不能跟在 host 句子之后")
             if item.speaker not in threads:
-                raise RuntimeError(f"sentence {index} references unknown speaker: {item.speaker}")
+                raise RuntimeError(f"sentence {index} 引用了未知发言者：{item.speaker}")
         _validated_deliveries(item.deliveries, threads)
         checked.append(item)
     return checked
@@ -151,11 +151,6 @@ def _deliver_validated(deliveries: list[Delivery], threads: dict[int, SeatThread
                 threads[channel].inbox.append(delivery.text)
 
 
-def deliver(deliveries: list[Delivery], threads: dict[int, SeatThread]) -> None:
-    """在公开边界校验后按 channel 机械路由 Delivery。"""
-    _deliver_validated(_validated_deliveries(deliveries, threads), threads)
-
-
 def _publish_batch(sentences: list[Sentence], threads: dict[int, SeatThread]) -> None:
     """发布完整事务；同时行动者先一起清 inbox，再按物理顺序收齐全部发言。"""
     players = [sentence for sentence in sentences if sentence.speaker != "host"]
@@ -177,11 +172,11 @@ def _validated_pending(
     """在 host 边界验完整批次；turn_id 任何重复都大声失败。"""
     raw = rules.pending(state)
     if not isinstance(raw, list):
-        raise RuntimeError("rules.pending must return a list")
+        raise RuntimeError("rules.pending 必须返回 list")
     checked: list[HostEmit] = []
     updated = set(seen_turns)
     for index, emit in enumerate(raw):
-        item = _recheck(HostEmit, emit, f"rules.pending returned malformed HostEmit at {index}")
+        item = _recheck(HostEmit, emit, f"rules.pending 在第 {index} 项返回了畸形的 HostEmit")
         if item.turn_id in updated:
             raise RuntimeError(f"host turn_id 重复：{item.turn_id}")
         updated.add(item.turn_id)
@@ -384,7 +379,7 @@ async def run(
             view = rules.view(seat, _state, threads[seat], first_speak=seat not in spoken)
             turn_prompt = getattr(view, "turn_prompt", None)
             if not isinstance(turn_prompt, str):
-                raise TypeError(f"rules.view result.turn_prompt must be str, got {type(turn_prompt)}")
+                raise TypeError(f"rules.view 结果的 turn_prompt 必须是 str，收到 {type(turn_prompt)}")
             raw, parsed = await _act_with_retry(
                 rules,
                 actors[seat],

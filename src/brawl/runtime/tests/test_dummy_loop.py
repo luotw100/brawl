@@ -140,7 +140,7 @@ async def test_resume_rejects_logical_half_turn_even_if_caller_committed_it(tmp_
 @pytest.mark.parametrize(
     ("shape", "message"),
     [
-        ("before_player", "player sentence cannot follow a host sentence"),
+        ("before_player", "玩家句子不能跟在 host 句子之后"),
         ("missing", "host 句子缺失"),
         ("forged", "host 句子缺失"),
         ("bad_prompt", "prompt 与规则视图不一致"),
@@ -341,7 +341,7 @@ async def test_unknown_route_is_rejected_before_journal_or_threads_change(tmp_pa
 
     journal = DirJournal(tmp_path / "rep", resume=False)
     threads = _threads()
-    with pytest.raises(RuntimeError, match="unknown seats"):
+    with pytest.raises(RuntimeError, match="未知座位"):
         await run(
             InvalidRouteRules(),
             setup=None,
@@ -350,7 +350,6 @@ async def test_unknown_route_is_rejected_before_journal_or_threads_change(tmp_pa
             threads=threads,
         )
 
-    assert journal.last_seq() == -1
     assert journal.load_sentences() == []
     assert all(thread.inbox == [] and thread.messages == [] for thread in threads.values())
     journal.close()
@@ -406,7 +405,7 @@ async def test_resume_rejects_unknown_route_before_clearing_threads(tmp_path):
         for seat in SEATS
     }
 
-    with pytest.raises(RuntimeError, match="unknown seats"):
+    with pytest.raises(RuntimeError, match="未知座位"):
         await resume(DummyRules(), journal=journal, threads=threads, setup=None)
 
     assert {seat: thread.inbox for seat, thread in threads.items()} == {

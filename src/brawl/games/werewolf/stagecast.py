@@ -432,6 +432,3 @@ def _snip(text: str, n: int = 36) -> str:
 
 def _seat_name(seats: list[SeatInfo], seat_no: int) -> str:
     return next((s.name for s in seats if s.no == seat_no), f"{seat_no}号")
-
-
-__all__ = ["STAGE_GAME", "apply", "is_opening_anchor", "new_scene", "stagecast", "summary", "terminal"]

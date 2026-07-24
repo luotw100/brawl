@@ -70,11 +70,6 @@ def render_covers(settings: CoverSettings) -> list[Path]:
     return paths
 
 
-def render_cover(settings: CoverSettings) -> Path:
-    """测试兼容入口：返回第一张生成图。"""
-    return render_covers(settings)[0]
-
-
 def _cover_background(path: Path, width: int, height: int) -> Image.Image:
     bg = Image.open(path).convert("RGB")
     src_ratio = bg.width / bg.height

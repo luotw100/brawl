@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from brawl.runtime.models import ModelSpec
-from brawl.runtime.registry import Persona, Registry, Strategy
+from brawl.runtime.registry import Registry
 from brawl.runtime.registry import load_registry as load_common_registry
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -17,6 +16,3 @@ DATA_DIR = Path(__file__).parent / "data"
 
 def load_registry(data_dir: Path = DATA_DIR) -> Registry:
     return load_common_registry(data_dir)
-
-
-__all__ = ["DATA_DIR", "ModelSpec", "Persona", "Registry", "Strategy", "load_registry"]

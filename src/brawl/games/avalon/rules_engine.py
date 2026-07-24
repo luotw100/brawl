@@ -205,7 +205,7 @@ class AvalonRules(Rules):
         if state.phase == "banter":
             order = state._banter_order
             return Expectation(seats=[order[state.banter_index]], turn_id=self._turn_id(state))
-        raise RuntimeError(f"unexpected phase for expected(): {state.phase}")
+        raise RuntimeError(f"expected() 遇到意外阶段：{state.phase}")
 
     def view(self, seat: int, state: AvalonState, thread: SeatThread, *, first_speak: bool = False) -> Any:
         expected = self.expected(state)
@@ -271,7 +271,7 @@ class AvalonRules(Rules):
             return self._parse_assassinate(seat, raw, state)
         if phase == "banter":
             return self._parse_banter(seat, raw, state)
-        raise RuntimeError(f"unexpected phase for parse(): {phase}")
+        raise RuntimeError(f"parse() 遇到意外阶段：{phase}")
 
     def _parse_propose(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
         q = min(state.quest_no, rules.QUESTS)
@@ -449,7 +449,7 @@ class AvalonRules(Rules):
             return state.model_copy(deep=True, update={
                 "reveal_emitted": True,
             })
-        raise RuntimeError(f"unknown action kind: {kind}")
+        raise RuntimeError(f"未知 action kind：{kind}")
 
     def advance(self, state: AvalonState) -> AvalonState:
         phase = state.phase
@@ -493,7 +493,7 @@ class AvalonRules(Rules):
             return state.model_copy(deep=True, update={"phase": "done"})
         if phase == "done":
             return state
-        raise RuntimeError(f"unexpected phase for advance(): {phase}")
+        raise RuntimeError(f"advance() 遇到意外阶段：{phase}")
 
     def _advance_after_vote(self, state: AvalonState) -> AvalonState:
         approved = sum(state.votes.values()) * 2 > state.players

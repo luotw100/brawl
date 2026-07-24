@@ -94,7 +94,7 @@ class _Compiler:
                 if placement == "attach_next" or not beats:
                     pending.append(directive)
                     continue
-                raise PlanError(f"unsupported host placement {placement!r} for beat {directive.beat!r}")
+                raise PlanError(f"beat {directive.beat!r} 的 host placement 不受支持：{placement!r}")
 
             beat = StageBeat(directive=directive)
             at = 0.0
@@ -243,7 +243,7 @@ class _Compiler:
         try:
             return self.spec.directives[directive.kind]
         except KeyError:
-            raise PlanError(f"stage plan has no directive rule for {directive.kind!r}") from None
+            raise PlanError(f"stage plan 没有指令 {directive.kind!r} 的规则") from None
 
     def _cue_specs(self, directive: Directive) -> list[dict[str, Any]]:
         return list(self._directive_spec(directive).get("cues", []))
@@ -278,7 +278,7 @@ class _Compiler:
             return name["none"] if self._field(directive, name["none_field"], None) is None else name["present"]
         if "empty_field" in name:
             return name["empty"] if not self._field(directive, name["empty_field"], []) else name["nonempty"]
-        raise PlanError(f"unsupported cue name expression: {name!r}")
+        raise PlanError(f"不支持的 cue 名字表达式：{name!r}")
 
     def _resolve_at(self, directive: Directive, spec: Any, duration: float, *, index: int = 0) -> float:
         if isinstance(spec, int | float):
@@ -293,7 +293,7 @@ class _Compiler:
             cfg = spec["stagger_end"]
             n = len(self._field(directive, cfg["field"], []))
             return n * duration * float(cfg["fraction"]) / max(n, 1)
-        raise PlanError(f"unsupported cue at expression: {spec!r}")
+        raise PlanError(f"不支持的 cue 时刻表达式：{spec!r}")
 
     def _first_text(self, directive: Directive) -> str:
         for field_name in ("text", "speech"):

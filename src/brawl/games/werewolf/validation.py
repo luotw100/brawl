@@ -260,12 +260,3 @@ def _valid_model_ref(ref: str) -> bool:
         and model
         and not any(char.isspace() for char in ref)
     )
-
-
-__all__ = [
-    "GameSetup",
-    "ReplayMeta",
-    "build_replay_meta",
-    "load_replay_meta",
-    "resolve_and_validate",
-]

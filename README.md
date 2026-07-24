@@ -34,6 +34,9 @@ server + 隔离 workspace，需 `opencode auth login` 与 `bwrap`）。存档目
 `sentences.jsonl`（句子日志=checkpoint）、`meta.json`（冻结配置）、`tts/`、`avatars/`、
 `video.mp4`、`covers/`。续跑只认 `brawl avalon --resume --replay <dir>`，不能附加其他参数。
 
+其他命令：`brawl console <dir>`（终端回放存档，零网络）；`brawl voice-forge`（音色铸造，
+见 voicelab）。
+
 录屏：自起一次性播放栈（单局引擎 + uvicorn 到 127.0.0.1 随机口）+ Xvfb 虚拟屏 + 带头
 Chromium + ffmpeg 单趟硬编，边播边录，音轨离线按拍拼接。无头服务器照跑；
 `--limit-seconds` 先出片段试看，`--speed` 快录（上限 16），`--headed` 本地可视调试。

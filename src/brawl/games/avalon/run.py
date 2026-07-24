@@ -184,6 +184,3 @@ def main(argv: list[str]) -> None:
     args, rest = pre.parse_known_args(argv)
     settings = AvalonSettings.load(cli_args=rest, config_file=args.config)
     run_async_main(run_game(settings))
-
-
-__all__ = ["main", "resume_game", "run_game"]

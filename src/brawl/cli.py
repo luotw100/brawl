@@ -85,6 +85,3 @@ def main() -> int:
         print("\n已中断。", file=sys.stderr)
         return 130
     return 0
-
-
-__all__ = ["COMMANDS", "main"]

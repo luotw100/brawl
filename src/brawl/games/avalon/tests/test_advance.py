@@ -8,7 +8,7 @@ from typing import ClassVar
 from brawl.games.avalon import rules as av_rules
 from brawl.games.avalon.rules_engine import AvalonRules, AvalonState
 from brawl.games.avalon.state import Role, Seat
-from brawl.runtime.loop import deliver
+from brawl.runtime.loop import _deliver_validated, _validated_deliveries
 from brawl.runtime.threads import SeatThread
 from brawl.runtime.tts import TTSRenderer
 from brawl.runtime.types import Sentence
@@ -154,7 +154,7 @@ def test_vote_result_tts_reads_summary_while_all_inboxes_receive_vote_ledger(tmp
     assert spoken.spoken is True
 
     threads = {no: SeatThread() for no in range(1, 6)}
-    deliver(emit.deliveries, threads)
+    _deliver_validated(_validated_deliveries(emit.deliveries, threads), threads)
     assert all(ledger.text in threads[no].inbox for no in threads)
 
     class FakeTTS:
