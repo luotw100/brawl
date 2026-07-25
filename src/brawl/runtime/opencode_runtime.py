@@ -109,6 +109,33 @@ def _host_auth_file() -> Path:
     return root / "opencode" / "auth.json"
 
 
+def _host_models_cache() -> Path:
+    cache_home = os.environ.get("XDG_CACHE_HOME")
+    root = Path(cache_home).expanduser() if cache_home else Path.home() / ".cache"
+    return root / "opencode" / "models.json"
+
+
+def _seed_models_cache(root: Path) -> None:
+    """把宿主机 models.dev 目录快照播进沙箱缓存（尽力而为）。
+
+    沙箱禁了模型目录拉取（OPENCODE_DISABLE_MODELS_FETCH=1），没有快照时
+    opencode 退回二进制内置旧目录，provider 新上线的模型会被
+    assert_models_available 误报为"server 不提供"。宿主机没有快照（或不是
+    常规文件）时静默跳过，维持旧行为。
+    """
+    src = _host_models_cache()
+    try:
+        if not stat.S_ISREG(src.lstat().st_mode):
+            return
+    except OSError:
+        return
+    dst = root / "cache" / "opencode" / "models.json"
+    _prepare_private_directory(dst.parent)
+    if dst.is_symlink():
+        raise OpenCodeRuntimeError(f"OpenCode 隔离目录不允许软链接：{dst}")
+    dst.write_bytes(src.read_bytes())
+
+
 def _prepare_layout(run_dir: Path, seats: int) -> _Layout:
     try:
         replay_root = run_dir.resolve(strict=True)
@@ -153,6 +180,7 @@ def _prepare_layout(run_dir: Path, seats: int) -> _Layout:
     if not stat.S_ISREG(auth_stat.st_mode) or auth_stat.st_nlink != 1 or auth_stat.st_size:
         raise OpenCodeRuntimeError(f"隔离认证挂载点不应包含数据：{auth_mount}")
     auth_mount.chmod(0o400)
+    _seed_models_cache(root)
     return _Layout(root=root, auth_mount=auth_mount, log=_next_log_path(root / "logs"))
 
 
