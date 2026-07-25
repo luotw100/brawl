@@ -288,7 +288,8 @@ def system_text(view: PlayerView) -> str:
 # - line_host_*：主持人台词，经 host.Host.announce 同时进全员 inbox 与 host 事件流（将来逐句
 #   TTS）。主持人像真主持人一样**控场串场**——请谁行动、宣布明牌结果、令牌去向——绝不复述
 #   玩家的发言，文案口语可读、不带【】标记/✔✘/×N 这类念不出来的符号，只说公开信息。
-# - line_player：玩家发言原文上桌的广播行，只进全员 inbox（玩家视角=主持人的话+别人的发言），
+# - 玩家发言没有 line_* 函数：rules_engine 把裸 speech 以 kind="speech" 投递，归属
+#   （N号：「…」）由框架在写 inbox 时渲染，只进全员 inbox（玩家视角=主持人的话+别人的发言），
 #   不是 host 事件——发言本身已在 propose/discuss/... 结构化事件里，回放层从那边取。
 # - line_team_record：队长提的队伍清单上桌存档，同样只进 inbox（线程里历史队伍的唯一结构化
 #   记录，供后续推理）；主持人台词改成只点名交接后由它接棒，不是 host 事件、不 TTS。
@@ -393,10 +394,6 @@ def line_host_reveal(winner: str, win_reason: str, roles: dict[int, Role]) -> st
 
 def line_host_closing() -> str:
     return "本局结束，下一局见。"
-
-
-def line_player(seat_no: int, speech: str) -> str:
-    return f"{seat_no}号：「{speech}」"
 
 
 def line_team_record(leader_no: int, team: list[int]) -> str:

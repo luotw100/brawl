@@ -244,16 +244,14 @@ def _private_transcript(view: PlayerView) -> str:
 #
 # line_host_*：主持人台词，经 host 句子同时进全员 inbox 与观众流。主持人控场串场——宣布
 # 天黑天亮、死讯与翻牌、放逐结果、终局身份——绝不复述玩家发言，口语可读、不带念不出来的符号。
-# line_player：玩家发言原文上桌的广播行，进全员 inbox。
-# line_wolf_chat：狼队夜聊，只进**狼席位** inbox 与观众流（好人永远看不到）。
+# 玩家发言没有 line_* 函数：rules_engine 把裸 speech 以 kind="speech" 投递，归属（N号：「…」）
+# 由框架在写 inbox 时渲染，进全员 inbox。
+# 狼队夜聊：裸 speech + wolf_chat_attribution 给的归属标签，只进**狼席位** inbox 与观众流
+# （好人永远看不到）。
 # line_vote_detail / line_hunter_shot / line_idiot_immune：公开账本明细，进全员 inbox。
 
-def line_player(no: int, speech: str) -> str:
-    return f"{no}号：「{speech}」"
-
-
-def line_wolf_chat(no: int, target: int, speech: str) -> str:
-    return f"狼队 {no}号（提议刀{target}号）：「{speech}」"
+def wolf_chat_attribution(no: int, target: int) -> str:
+    return f"狼队 {no}号（提议刀{target}号）"
 
 
 def line_vote_detail(votes: dict[int, int]) -> str:

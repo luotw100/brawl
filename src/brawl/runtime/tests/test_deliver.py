@@ -14,9 +14,13 @@ from brawl.runtime.threads import SeatThread
 from brawl.runtime.types import Delivery
 
 
-def _deliver(deliveries: list[Delivery], threads: dict[int, SeatThread]) -> None:
+def _deliver(
+    deliveries: list[Delivery],
+    threads: dict[int, SeatThread],
+    speaker: int | str = "host",
+) -> None:
     """公开 deliver 删除后，测试直取校验 + 路由两段内部件（语义与原公开函数一致）。"""
-    _deliver_validated(_validated_deliveries(deliveries, threads), threads)
+    _deliver_validated(_validated_deliveries(deliveries, threads), threads, speaker)
 
 
 def _threads(n: int = 3) -> dict[int, SeatThread]:
@@ -74,3 +78,51 @@ def test_unknown_private_seat_fails_before_any_delivery():
         _deliver(deliveries, threads)
 
     assert all(thread.inbox == [] for thread in threads.values())
+
+
+# ---------------------------------------------------------------- 归属渲染
+#
+# Delivery.text 是裸内容；写 inbox 的那一刻才按 speaker 包归属。归属只服务 LLM inbox，
+# TTS/字幕拿裸文本（见 tts._utterances / stagecast）。
+
+
+def test_speech_gets_attributed_on_entry_to_inbox():
+    """kind="speech"：裸发言包成 `N号：「…」` 入箱。"""
+    threads = _threads()
+    _deliver([Delivery(text="我过", channels=["broadcast"], kind="speech")], threads, speaker=2)
+    for t in threads.values():
+        assert t.inbox == ["2号：「我过」"]
+
+
+def test_narration_enters_inbox_verbatim():
+    """kind="narration"（默认）：完整成句原样入箱，不包归属。"""
+    threads = _threads()
+    _deliver([Delivery(text="队长 2号 提议的队伍：1号、2号。", channels=["broadcast"])], threads, speaker=2)
+    for t in threads.values():
+        assert t.inbox == ["队长 2号 提议的队伍：1号、2号。"]
+
+
+def test_speech_attribution_overrides_default_label():
+    """attribution 覆盖默认标签（狼聊的"狼队 N号（提议刀X号）"式扩展归属）。"""
+    threads = _threads()
+    _deliver(
+        [
+            Delivery(
+                text="刀 3 号",
+                channels=[2],
+                kind="speech",
+                attribution="狼队 1号（提议刀3号）",
+            )
+        ],
+        threads,
+        speaker=1,
+    )
+    assert threads[2].inbox == ["狼队 1号（提议刀3号）：「刀 3 号」"]
+
+
+def test_host_deliveries_never_get_attributed():
+    """host 句子即使是 speech kind 也不包归属（实践中 host 只产 narration）。"""
+    threads = _threads()
+    _deliver([Delivery(text="天黑请闭眼。", channels=["broadcast"], kind="speech")], threads, speaker="host")
+    for t in threads.values():
+        assert t.inbox == ["天黑请闭眼。"]

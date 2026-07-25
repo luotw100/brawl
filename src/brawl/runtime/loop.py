@@ -17,6 +17,7 @@ from pydantic import BaseModel, ValidationError
 from brawl.runtime.errors import FatalActorError, RetryableActorError
 from brawl.runtime.journal import Journal
 from brawl.runtime.parsing import JsonParseError
+from brawl.runtime.prompts import attribution_line
 from brawl.runtime.rules import Rules
 from brawl.runtime.threads import SeatThread, ThreadMessage
 from brawl.runtime.types import Delivery, Expectation, HostEmit, ParseResult, Renderer, Sentence
@@ -137,18 +138,24 @@ def _validated_logged_batches(
     return checked_batches
 
 
-def _deliver_validated(deliveries: list[Delivery], threads: dict[int, SeatThread]) -> None:
+def _deliver_validated(
+    deliveries: list[Delivery],
+    threads: dict[int, SeatThread],
+    speaker: int | str,
+) -> None:
     for delivery in deliveries:
         if not delivery.text:
             continue
+        # 归属在此刻渲染：speech 包成 `N号：「…」` 再入箱，narration 原样。
+        line = delivery.text if speaker == "host" else attribution_line(speaker, delivery)
         for channel in delivery.channels:
             if channel == "broadcast":
                 for thread in threads.values():
-                    thread.inbox.append(delivery.text)
+                    thread.inbox.append(line)
             elif channel == "audience":
                 pass
             else:
-                threads[channel].inbox.append(delivery.text)
+                threads[channel].inbox.append(line)
 
 
 def _publish_batch(sentences: list[Sentence], threads: dict[int, SeatThread]) -> None:
@@ -161,7 +168,7 @@ def _publish_batch(sentences: list[Sentence], threads: dict[int, SeatThread]) ->
         thread.messages.append(ThreadMessage(role="human", content=sentence.prompt))
         thread.messages.append(ThreadMessage(role="assistant", content=sentence.raw))
     for sentence in [*players, *hosts]:
-        _deliver_validated(sentence.deliveries, threads)
+        _deliver_validated(sentence.deliveries, threads, sentence.speaker)
 
 
 def _validated_pending(

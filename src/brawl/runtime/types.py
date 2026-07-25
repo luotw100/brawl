@@ -3,7 +3,8 @@
 这是 core 见到的全部"形状"：一段话 + 路由 + 一个 opaque action。玩法语义
 （这是投票还是刀人、payload 长啥样、谁该听）全在 rules，core 当字节流存。
 
-- `Delivery`：别人实际听到的一段自然语言 + 它要进哪些 inbox/broadcast/audience。
+- `Delivery`：别人实际听到的一段自然语言（裸内容，inbox 归属由框架渲染）+ 它要进哪些
+  inbox/broadcast/audience。
 - `Sentence`：一次"谁说了句什么"的完整记录；多条 sentence 共享
   `commit_id` 时属于同一个原子 turn。
 - `Expectation`：该谁说话、要遵守什么 JSON schema、这一回合的 turn_id。
@@ -35,13 +36,19 @@ class _StrictModel(BaseModel):
 class Delivery(_StrictModel):
     """一段话要递给谁。
 
-    `text` 是别的席位（它们是 LLM）inbox 里会看到的内容。`spoken=False` 表示文字仍按
-    channels 进入账本/inbox，但不是一句应由 TTS 念出的自然语言。
+    `text` 是裸内容——玩家发言就是发言原文，不带任何归属包装。归属是渲染不是数据：
+    `kind="speech"` 时由框架在写入席位 inbox 的那一刻按 Sentence.speaker 包成
+    `N号：「…」`（`attribution` 可覆盖标签，如狼聊的"狼队 N号（提议刀X号）"），TTS/字幕
+    等其余消费方各取裸文本。`kind="narration"`（默认）是完整成句——主持人台词、账本行、
+    monologue——原样进 inbox，不包归属。`spoken=False` 表示文字仍按 channels 进入
+    账本/inbox，但不是一句应由 TTS 念出的自然语言。
     """
 
     text: str
     channels: list[Channel] = Field(min_length=1)
     spoken: bool = True
+    kind: Literal["speech", "narration"] = "narration"
+    attribution: str | None = None
 
     @field_validator("channels")
     @classmethod

@@ -12,7 +12,21 @@
 
 from __future__ import annotations
 
+from brawl.runtime.types import Delivery, Seat
+
 _STYLE_DISCIPLINE = "说话简短干练，只打 1~2 个重点，别写长段总结，别复述全桌。"
+
+
+def attribution_line(speaker: Seat, delivery: Delivery) -> str:
+    """一条 delivery 写进席位 inbox 时的最终文本。
+
+    narration 是完整成句，原样入箱；speech 是裸发言，在此包归属——归属只服务于
+    LLM inbox（让它们分辨谁说了什么），TTS/字幕等其余消费方拿裸 `text`。
+    """
+    if delivery.kind == "narration":
+        return delivery.text
+    label = delivery.attribution or f"{speaker}号"
+    return f"{label}：「{delivery.text}」"
 
 
 def human_message(events: list[str], context: str, ask: str, tone: str = "", mimicry_guard: bool = True) -> str:

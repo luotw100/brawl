@@ -282,7 +282,7 @@ class AvalonRules(Rules):
         if len(team) != size or len(set(team)) != size or not set(team) <= nos:
             raise JsonParseError(f"{seat}号 提出非法队伍 {team}（需 {size} 个互不相同的在场座位）")
         deliveries = [
-            Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
+            Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
             Delivery(text=prompts.line_team_record(seat, team), channels=["broadcast"], spoken=False),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
@@ -297,7 +297,7 @@ class AvalonRules(Rules):
         if result.phase != "discuss":
             raise JsonParseError(f"动作 phase 应为 discuss，实际为 {result.phase}")
         deliveries = [
-            Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
+            Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps({
@@ -344,7 +344,7 @@ class AvalonRules(Rules):
         if result.phase != "lady_announce":
             raise JsonParseError(f"动作 phase 应为 lady_announce，实际为 {result.phase}")
         deliveries = [
-            Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
+            Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps({
@@ -360,7 +360,7 @@ class AvalonRules(Rules):
             raise JsonParseError(f"动作 phase 应为 evil_chat，实际为 {result.phase}")
         evil_channels: list[str | int] = [*state._evil_chat_order, "audience"]
         deliveries = [
-            Delivery(text=prompts.line_player(seat, result.speech), channels=evil_channels),
+            Delivery(text=result.speech, channels=evil_channels, kind="speech"),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps(
@@ -384,7 +384,7 @@ class AvalonRules(Rules):
         target = state._seat(result.target_no)
         hit = target.role is Role.MERLIN
         deliveries = [
-            Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
+            Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps({
@@ -399,7 +399,7 @@ class AvalonRules(Rules):
         if result.phase != "banter":
             raise JsonParseError(f"动作 phase 应为 banter，实际为 {result.phase}")
         deliveries = [
-            Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
+            Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps({

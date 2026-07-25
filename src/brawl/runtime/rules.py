@@ -63,6 +63,10 @@ class Rules(Protocol):
 
         模型产出不合规必须抛 brawl.runtime.parsing.JsonParseError，core 才会重新请求；
         其他异常视为规则实现错误并立即 fail-stop。
+
+        deliveries 的 `text` 必须是裸内容：玩家发言以 kind="speech" 投递发言原文，
+        `N号：「…」` 归属由 core 在写 inbox 时渲染（attribution 可覆盖标签）；
+        主持人台词/账本行等完整成句用默认的 narration，原样入箱。
         """
         ...
 

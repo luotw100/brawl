@@ -66,7 +66,7 @@ async def test_run_routes_broadcast_and_records(tmp_path):
     assert [s["commit_id"] for s in sentences] == [0, 1, 2, 2]
     assert [len(threads[no].messages) for no in SEATS] == [2, 2, 2]
     assert threads[1].messages[0].content == "你是 1 号，请说一句话。"
-    assert threads[1].messages[1].content == "1号说：大家好"
+    assert threads[1].messages[1].content == "大家好"
     journal.close()
 
 
@@ -94,12 +94,12 @@ async def test_resume_restores_inboxes(tmp_path):
     await resume(DummyRules(), journal=journal2, threads=threads, setup=None)
     journal2.close()
 
-    assert threads[1].inbox == ["1号说：大家好"]  # 发言人：清过后只余自己这句
-    assert threads[2].inbox == ["1号说：大家好"]  # 未发言者：累积广播
-    assert threads[3].inbox == ["1号说：大家好"]
+    assert threads[1].inbox == ["1号：「大家好」"]  # 发言人：清过后只余自己这句
+    assert threads[2].inbox == ["1号：「大家好」"]  # 未发言者：累积广播
+    assert threads[3].inbox == ["1号：「大家好」"]
     assert [m.model_dump() for m in threads[1].messages] == [
         {"role": "human", "content": "你是 1 号，请说一句话。"},
-        {"role": "assistant", "content": "1号说：大家好"},
+        {"role": "assistant", "content": "大家好"},
     ]
 
 
@@ -118,12 +118,13 @@ async def test_resume_rejects_logical_half_turn_even_if_caller_committed_it(tmp_
     rep = tmp_path / "rep"
 
     def sent(no: int, turn: str) -> Sentence:
-        text = f"{no}号说：大家好"
+        raw = "大家好"
+        parsed = TwoSeatRules().parse(no, raw, {})
         return Sentence(
-            seq=-1, turn_id=turn, speaker=no, raw=text,
+            seq=-1, turn_id=turn, speaker=no, raw=raw,
             prompt=f"你是 {no} 号，请说一句话。",
-            deliveries=[Delivery(text=text, channels=["broadcast"])],
-            action=text,
+            deliveries=parsed.deliveries,
+            action=parsed.action,
         )
 
     journal = DirJournal(rep, resume=False)
@@ -156,15 +157,16 @@ async def test_resume_rejects_host_rows_that_live_loop_cannot_produce(
     journal = DirJournal(tmp_path / "rep", resume=False)
 
     def player(no: int) -> Sentence:
-        text = f"{no}号说：大家好"
+        raw = "大家好"
+        parsed = rules.parse(no, raw, {})
         return Sentence(
             seq=-1,
             turn_id=f"dummy.{no - 1}.say",
             speaker=no,
-            raw=text,
+            raw=raw,
             prompt=f"你是 {no} 号，请说一句话。",
-            deliveries=[Delivery(text=text, channels=["broadcast"])],
-            action=text,
+            deliveries=parsed.deliveries,
+            action=parsed.action,
         )
 
     def closing(text: str = "主持人：本局结束。") -> Sentence:
@@ -222,7 +224,8 @@ async def test_run_owns_recovery_for_nonempty_journal(tmp_path) -> None:
     """续跑 state 只能由 journal 重放产生，调用方没有可伪造的 state 参数。"""
     rep = tmp_path / "rep"
     journal = DirJournal(rep, resume=False)
-    first = "1号说：大家好"
+    first = "大家好"
+    parsed = DummyRules().parse(1, first, {})
     journal.append_batch(
         [
             Sentence(
@@ -231,8 +234,8 @@ async def test_run_owns_recovery_for_nonempty_journal(tmp_path) -> None:
                 speaker=1,
                 raw=first,
                 prompt="你是 1 号，请说一句话。",
-                deliveries=[Delivery(text=first, channels=["broadcast"])],
-                action=first,
+                deliveries=parsed.deliveries,
+                action=parsed.action,
             )
         ]
     )
@@ -315,7 +318,7 @@ async def test_simultaneous_speakers_all_receive_the_whole_batch_on_live_and_res
         threads=live_threads,
     )
 
-    expected = ["1号说：大家好", "2号说：大家好"]
+    expected = ["1号：「大家好」", "2号：「大家好」"]
     assert live_threads[1].inbox == expected
     assert live_threads[2].inbox == expected
 

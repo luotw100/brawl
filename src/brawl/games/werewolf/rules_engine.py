@@ -311,7 +311,12 @@ class WerewolfRules:
         others = [w.no for w in state.living_wolves() if w.no != seat]
         deliveries = [
             # 狼队夜聊只进其他存活狼席位的 inbox；观众上帝视角同文可见。好人永不可见。
-            Delivery(text=prompts.line_wolf_chat(seat, result.target_no, result.speech), channels=[*others, "audience"]),
+            Delivery(
+                text=result.speech,
+                channels=[*others, "audience"],
+                kind="speech",
+                attribution=prompts.wolf_chat_attribution(seat, result.target_no),
+            ),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps({
@@ -358,7 +363,7 @@ class WerewolfRules:
         if result.phase != kind:
             raise JsonParseError(f"动作 phase 应为 {kind}，实际为 {result.phase}")
         deliveries = [
-            Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
+            Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps({
@@ -385,7 +390,7 @@ class WerewolfRules:
         if result.target_no is not None and result.target_no not in living:
             raise JsonParseError(f"猎人 {seat}号 开枪目标非法：{result.target_no}（可选：{sorted(living)}）")
         deliveries = [
-            Delivery(text=prompts.line_player(seat, result.speech), channels=["broadcast"]),
+            Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
             Delivery(text=result.monologue, channels=["audience"]),
         ]
         action = json.dumps({

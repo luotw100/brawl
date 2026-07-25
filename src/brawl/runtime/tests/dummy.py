@@ -36,7 +36,7 @@ class DummyRules:
 
     def parse(self, seat: int, raw: str, state: dict) -> ParseResult:
         return ParseResult(
-            deliveries=[Delivery(text=raw, channels=["broadcast"])],
+            deliveries=[Delivery(text=raw, channels=["broadcast"], kind="speech")],
             action=raw,
         )
 
@@ -71,7 +71,7 @@ class DummyActor:
 
     async def speak(self, seat: int, view: Any, turn_id: str) -> str:
         self.calls.append((seat, view.prompt, turn_id))
-        return f"{seat}号说：大家好"
+        return "大家好"
 
     def commit_turn(self, seat: int) -> None: ...
 

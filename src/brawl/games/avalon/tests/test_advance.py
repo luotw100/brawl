@@ -154,7 +154,7 @@ def test_vote_result_tts_reads_summary_while_all_inboxes_receive_vote_ledger(tmp
     assert spoken.spoken is True
 
     threads = {no: SeatThread() for no in range(1, 6)}
-    _deliver_validated(_validated_deliveries(emit.deliveries, threads), threads)
+    _deliver_validated(_validated_deliveries(emit.deliveries, threads), threads, "host")
     assert all(ledger.text in threads[no].inbox for no in threads)
 
     class FakeTTS:

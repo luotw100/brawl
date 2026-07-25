@@ -78,3 +78,24 @@ def test_missing_seat_voice_fails_at_tts_projection_boundary(tmp_path: Path) -> 
     )
     with pytest.raises(TTSError, match="缺少 2 号席位音色"):
         _renderer(tmp_path)._utterances([sentence], ["only-seat-1"], "host")
+
+
+def test_speech_delivery_is_voiced_bare_without_attribution(tmp_path: Path) -> None:
+    """kind="speech" 的 text 是裸发言：归属只渲染进 LLM inbox，TTS 念原文、不自报号码。"""
+    utterances = _renderer(tmp_path)._utterances(
+        [
+            Sentence(
+                seq=5,
+                commit_id=2,
+                turn_id="q1.a1.discuss.0",
+                speaker=1,
+                deliveries=[
+                    Delivery(text="6号说的有道理", channels=["broadcast"], kind="speech"),
+                    Delivery(text="内心戏", channels=["audience"]),
+                ],
+            )
+        ],
+        ["voice-1"],
+        "host",
+    )
+    assert [u.text for u in utterances] == ["6号说的有道理"]
