@@ -16,6 +16,7 @@ Xvfb 造一块虚拟屏（无需物理显示器，SSH 里照跑）→
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
 import signal
@@ -277,6 +278,19 @@ async def _wait(pred: Callable[[], bool], timeout: float, what: str) -> None:
 # ---------------------------------------------------------------- 采集（起栈 + 抓屏）
 
 
+_PR_SET_PDEATHSIG = 1  # Linux prctl(2)
+
+
+def _arm_pdeathsig() -> None:
+    """preexec_fn：子进程 exec 前挂上"父死即收 SIGINT"（PR_SET_PDEATHSIG）。
+
+    正常收尾走 gate.stop()/terminate()；父进程暴毙（kill -9、SSH 断连）走不到任何 finally 时
+    由内核补这一刀——抓屏 ffmpeg / Xvfb 不再漏成孤儿，对着死屏空转烧 CPU、往已删文件里写。
+    CDLL(None) 取的是已加载的 libc，子进程里只是一发 prctl 系统调用，不碰锁不分配。
+    """
+    ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGINT)
+
+
 def _free_display() -> int:
     """挑一个没被占的 X display 号（看 /tmp 下的锁文件 / 套接字）。"""
     for d in range(99, 160):
@@ -382,6 +396,7 @@ class RecordPlaybackGate:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 text=True,
+                preexec_fn=_arm_pdeathsig,
             )
             self.origin = time.time()
             assert self._proc.stdout is not None
@@ -423,6 +438,7 @@ async def _capture(settings: RecordSettings, web_dist: Path, tmpdir: Path) -> tu
     xvfb = subprocess.Popen(
         ["Xvfb", f":{dnum}", "-screen", "0", f"{WIDTH}x{HEIGHT}x24", "-nolisten", "tcp"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        preexec_fn=_arm_pdeathsig,
     )
     display = str(dnum)
 
