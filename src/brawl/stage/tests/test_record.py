@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -24,6 +27,26 @@ from brawl.stage.record import (
 from brawl.stage.record_settings import RENDER_DEVICE, RecordSettings
 from brawl.stage.sfx import SFX_VOLUME
 
+def test_pdeathsig_kills_child_when_parent_dies():
+    """父进程暴毙时内核补刀：中间进程挂 _arm_pdeathsig 起 sleep 后立刻自杀，sleep 必须跟着死。"""
+    script = (
+        "import subprocess, time\n"
+        "from brawl.stage.record import _arm_pdeathsig\n"
+        "p = subprocess.Popen(['sleep', '60'], preexec_fn=_arm_pdeathsig)\n"
+        "print(p.pid, flush=True)\n"
+        "time.sleep(0.5)\n"  # 留出 preexec 武装窗口再退场，关掉与 prctl 的竞态
+    )
+    mid = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+    assert mid.stdout is not None
+    pid = int(mid.stdout.readline())
+    mid.wait(timeout=10)
+    for _ in range(100):
+        if not Path(f"/proc/{pid}").exists():
+            return
+        time.sleep(0.05)
+    pytest.fail(f"父进程已死，子进程 {pid} 仍存活——pdeathsig 未生效")
+
+
 SFX = Path("/sfx-root")
 
 
@@ -35,10 +58,13 @@ def make_media(tmp_path: Path, files: list[str]) -> ReplayMediaResolver:
     """造一份带 manifest 的 replay 媒体面，返回其 resolver（URL 全部由它产出）。"""
     tts = tmp_path / "tts"
     tts.mkdir(exist_ok=True)
-    manifest = {}
+    manifest = {"entries": {}}
     for i, name in enumerate(files, start=1):
         (tts / name).write_bytes(b"x")
-        manifest[f"{i}.2"] = {"file": name, "duration_ms": 1000}
+        manifest["entries"][f"{i}.2"] = {
+            "file": name, "backend": "test", "duration_ms": 1000,
+            "voice_id": "v", "text_sha256": "t", "audio_sha256": "a",
+        }
     (tts / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return ReplayMediaResolver(tmp_path)
 

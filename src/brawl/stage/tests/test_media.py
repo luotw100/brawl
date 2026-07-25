@@ -14,10 +14,12 @@ from brawl.stage.media import ReplayMediaResolver
 def replay_dir(tmp_path: Path) -> Path:
     tts = tmp_path / "tts"
     tts.mkdir()
-    (tts / "manifest.json").write_text(json.dumps({
-        "3.2": {"file": "a b.opus", "duration_ms": 1500},
-        "4.host": {"file": "h.opus", "duration_ms": 800},
-    }), encoding="utf-8")
+    (tts / "manifest.json").write_text(json.dumps({"entries": {
+        "3.2": {"file": "a b.opus", "backend": "test", "duration_ms": 1500,
+                "voice_id": "v", "text_sha256": "t", "audio_sha256": "a"},
+        "4.host": {"file": "h.opus", "backend": "test", "duration_ms": 800,
+                   "voice_id": "v", "text_sha256": "t", "audio_sha256": "a"},
+    }}), encoding="utf-8")
     (tts / "a b.opus").write_bytes(b"x")
     (tts / "h.opus").write_bytes(b"x")
     avatars = tmp_path / "avatars"

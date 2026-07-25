@@ -61,10 +61,12 @@ def test_record_audio_segments_use_compiled_tracks_without_reinterpretation(tmp_
     tts.mkdir()
     import json
 
-    (tts / "manifest.json").write_text(json.dumps({
-        "1.host": {"file": "host.opus", "duration_ms": 4000},
-        "2.5": {"file": "main.opus", "duration_ms": 11000},
-    }), encoding="utf-8")
+    (tts / "manifest.json").write_text(json.dumps({"entries": {
+        "1.host": {"file": "host.opus", "backend": "test", "duration_ms": 4000,
+                   "voice_id": "v", "text_sha256": "t", "audio_sha256": "a"},
+        "2.5": {"file": "main.opus", "backend": "test", "duration_ms": 11000,
+                "voice_id": "v", "text_sha256": "t", "audio_sha256": "a"},
+    }}), encoding="utf-8")
     media = ReplayMediaResolver(tmp_path)
     host = HostSpeech(name="司仪", beat="lady", text="仙女环节", audio_url="/replay/tts/host.opus")
     choose = LadyChoose(holder_no=5, target_no=8, choose_monologue="")
