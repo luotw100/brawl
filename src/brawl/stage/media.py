@@ -9,26 +9,23 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from urllib.parse import quote
+
+from brawl.runtime.tts import Manifest, ManifestEntry
 
 
 class ReplayMediaResolver:
     def __init__(self, replay_dir: Path, *, url_prefix: str = "/replay") -> None:
         self._dir = replay_dir
         self._prefix = url_prefix.rstrip("/")
-        self._manifest = self._load_manifest(replay_dir / "tts" / "manifest.json")
+        # schema 唯一来源是 runtime.tts.Manifest（{"entries": {...}} 外层包裹），
+        # 直接复用模型，不在这里再手写一份 json 拆解（曾经脱节导致 KeyError: 'file'）。
+        self._manifest: dict[str, ManifestEntry] = Manifest.load(replay_dir / "tts" / "manifest.json").entries
         self._by_url: dict[str, tuple[Path, float]] = {
-            self._tts_url(entry["file"]): (replay_dir / "tts" / entry["file"], entry["duration_ms"] / 1000)
+            self._tts_url(entry.file): (replay_dir / "tts" / entry.file, entry.duration_ms / 1000)
             for entry in self._manifest.values()
         }
-
-    @staticmethod
-    def _load_manifest(path: Path) -> dict[str, dict]:
-        if not path.is_file():
-            return {}
-        return json.loads(path.read_text(encoding="utf-8"))
 
     def _tts_url(self, file: str) -> str:
         return f"{self._prefix}/tts/{quote(file)}"
@@ -37,7 +34,7 @@ class ReplayMediaResolver:
         entry = self._manifest.get(call_id)
         if entry is None:
             return None
-        return self._tts_url(entry["file"]), entry["duration_ms"] / 1000
+        return self._tts_url(entry.file), entry.duration_ms / 1000
 
     def avatar(self, seat: int) -> str | None:
         avatars = self._dir / "avatars"
