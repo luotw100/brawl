@@ -29,14 +29,6 @@ models:
   display: Kimi K3 256K
   avatar: kimi
   opencode_model: kimi-for-coding/k3-256k
-- name: oc-glm-5.2
-  display: GLM-5.2
-  avatar: zhipu
-  opencode_model: opencode-go/glm-5.2
-- name: oc-glm-5.1
-  display: GLM-5.1
-  avatar: zhipu
-  opencode_model: opencode-go/glm-5.1
 - name: oc-mimo-v2.5-pro
   display: MiMo v2.5 Pro
   avatar: mimo
