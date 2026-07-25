@@ -209,12 +209,21 @@ def test_wolf_schema_rejects_missing_wrong_or_coerced_fields(payload: dict) -> N
         {"phase": "witch_action", "monologue": "m"},
         {"phase": "witch_action", "save": False, "monologue": "m"},
         {"phase": "witch_action", "poison_target_no": None, "monologue": "m"},
-        {"phase": "witch_action", "save": "false", "poison_target_no": None, "monologue": "m"},
     ],
 )
 def test_witch_schema_requires_explicit_strict_decisions(payload: dict) -> None:
     with pytest.raises(JsonParseError):
         _rules().parse(6, json.dumps(payload, ensure_ascii=False), _state(phase="night_witch", wolf_target=9))
+
+
+def test_witch_save_normalizes_string_boolean() -> None:
+    """save 写成 "false" 字符串时按 schema 声明无损归一化，等价于明确不救。"""
+    raw = json.dumps(
+        {"phase": "witch_action", "save": "false", "poison_target_no": None, "monologue": "m"},
+        ensure_ascii=False,
+    )
+    pr = _rules().parse(6, raw, _state(phase="night_witch", wolf_target=9))
+    assert json.loads(pr.action)["save"] is False
 
 
 def test_hunter_schema_requires_explicit_target_even_for_no_shot() -> None:

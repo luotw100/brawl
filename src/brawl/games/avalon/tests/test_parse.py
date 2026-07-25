@@ -140,8 +140,15 @@ def test_team_vote_never_reaches_seats_before_tally() -> None:
     assert channels == {"audience"}
 
 
-def test_team_vote_rejects_string_boolean() -> None:
+def test_team_vote_normalizes_string_boolean() -> None:
+    """模型把布尔写成 "false" 字符串时按 schema 声明无损归一化（GLM 系怪癖）。"""
     raw = json.dumps({"phase": "team_vote", "approve": "false", "monologue": "m"})
+    pr = _rules().parse(2, raw, _state(phase="team_vote", team=[1, 4]))
+    assert json.loads(pr.action)["approve"] is False
+
+
+def test_team_vote_rejects_non_boolean_string() -> None:
+    raw = json.dumps({"phase": "team_vote", "approve": "yes", "monologue": "m"})
     with pytest.raises(JsonParseError):
         _rules().parse(2, raw, _state(phase="team_vote", team=[1, 4]))
 

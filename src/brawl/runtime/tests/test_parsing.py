@@ -25,6 +25,12 @@ class _OtherwiseLooseTarget(BaseModel):
     target_no: int
 
 
+class _MaybeCard(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    approve: bool | None
+
+
 def test_clean_json_with_surrounding_whitespace_parses() -> None:
     card = parse_json(' \n {"approve": true, "monologue": "好"}\t', _Card)
     assert card.approve is True and card.monologue == "好"
@@ -69,9 +75,38 @@ def test_missing_json_object_fails_fast(text: str) -> None:
         parse_json(text, _Card)
 
 
-def test_strict_boolean_rejects_string() -> None:
+def test_bool_field_accepts_json_spelled_boolean_strings() -> None:
+    """bool 字段上的 "true"/"false" 字符串是无损归一化，不是修复性容错。"""
+    assert parse_json('{"approve": "false", "monologue": "x"}', _Card).approve is False
+    assert parse_json('{"approve": "true", "monologue": "x"}', _Card).approve is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"approve": "yes", "monologue": "x"}',
+        '{"approve": "False", "monologue": "x"}',
+        '{"approve": "0", "monologue": "x"}',
+        '{"approve": 0, "monologue": "x"}',
+        '{"approve": 1, "monologue": "x"}',
+    ],
+)
+def test_non_boolean_forms_still_rejected(text: str) -> None:
+    """除 "true"/"false" 外的一切非布尔形式照旧严格拒收。"""
     with pytest.raises(JsonParseError, match="字段校验失败"):
-        parse_json('{"approve": "false", "monologue": "x"}', _Card)
+        parse_json(text, _Card)
+
+
+def test_str_field_keeps_boolean_spelled_strings_untouched() -> None:
+    """归一化只作用于声明为 bool 的字段，str 字段的 "true" 原样保留。"""
+    assert parse_json('{"approve": true, "monologue": "true"}', _Card).monologue == "true"
+
+
+def test_optional_bool_field_normalizes_too() -> None:
+    assert parse_json('{"approve": "false"}', _MaybeCard).approve is False
+    assert parse_json('{"approve": null}', _MaybeCard).approve is None
+    with pytest.raises(JsonParseError, match="字段校验失败"):
+        parse_json('{"approve": "maybe"}', _MaybeCard)
 
 
 def test_strict_integer_rejects_json_boolean() -> None:
