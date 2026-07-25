@@ -81,7 +81,7 @@ def _meta() -> dict:
     return {
         "schema_version": 1,
         "game": "test",
-        "player": "random",
+        "backend": "random",
         "setup": {"voices": ["voice-1"], "host_voice": "host-voice"},
     }
 

@@ -115,7 +115,7 @@ class _ReplayMeta(BaseModel):
 
     schema_version: Literal[1]
     game: str = Field(min_length=1)
-    player: Literal["random", "opencode"]
+    backend: Literal["random", "opencode"]
     setup: _TTSSetup
 
 
