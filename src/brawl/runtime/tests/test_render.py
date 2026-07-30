@@ -68,7 +68,7 @@ async def test_tts_injected_backend_writes_opus_and_manifest(tmp_path):
     journal.write_meta({
         "schema_version": 1,
         "game": "test",
-        "player": "random",
+        "backend": "random",
         "setup": {"voices": ["voice-1", "voice-2"], "host_voice": "host-voice"},
     })
     journal.append_batch([
