@@ -83,7 +83,17 @@ class _Projector:
             return [self._speech(sent, "discuss", a, quest=self._quest, attempt=self._attempt)]
         if kind == "team_vote":
             self._buf_votes[seat] = (a["approve"], a["monologue"])
-            return []
+            if "speech" not in a:
+                return []
+            return [
+                self._speech(
+                    sent,
+                    "discuss",
+                    a,
+                    quest=self._quest,
+                    attempt=self._attempt,
+                )
+            ]
         if kind == "quest":
             self._buf_cards[seat] = (a["success"], a["monologue"])
             return []
@@ -190,6 +200,11 @@ class _Projector:
         assert isinstance(seat, int)
         return Speech(
             phase=phase, seat_no=seat, text=a["speech"], monologue=a["monologue"],
+            position=(
+                a.get("position")
+                if self._meta.setup.agent_protocol >= 10
+                else None
+            ),
             call_id=call_id, audio_url=self._audio(call_id), **extra,
         )
 

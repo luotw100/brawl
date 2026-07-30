@@ -187,6 +187,9 @@
 .spot-tag  { font: 600 19px var(--f-sans); color: var(--c-gold); margin-top: 5px; letter-spacing: .04em; }
 .team-chips { padding: 10px 30px 0; font: 600 17px var(--f-sans); color: var(--c-text-soft); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .chip { font: 700 20px var(--f-display); color: var(--c-text); }
+.position-line { margin: 9px 30px 0; width: fit-content; padding: 4px 12px; border: 1px solid rgba(255,255,255,.2); border-radius: 14px; font: 700 16px var(--f-sans); color: var(--c-text-soft); background: rgba(255,255,255,.07); }
+.position-line.approve { color: var(--c-good-bright); border-color: var(--c-good-line); background: rgba(58,109,181,.24); }
+.position-line.reject { color: var(--c-evil-bright); border-color: var(--c-evil-line); background: rgba(156,23,48,.24); }
 .lady-line { padding: 8px 30px 0; font: 600 19px var(--f-sans); }
 .lady-line.ok { color: var(--c-good-bright); }
 .lady-line.bad { color: var(--c-evil-bright); }

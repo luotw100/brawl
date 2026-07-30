@@ -39,11 +39,23 @@ class OpenCodeActor:
 
     def __init__(self, backend: ModelBackend) -> None:
         self._backend = backend
+        self._retry_feedback: dict[int, str] = {}
+
+    def set_retry_feedback(self, seat: int, feedback: str) -> None:
+        """把裁判对未公开草稿的确定性拒绝原因带给同一席位的下一次尝试。"""
+        self._retry_feedback[seat] = feedback
 
     async def speak(self, seat: int, view: Any, turn_id: str) -> str:
         prompt = getattr(view, "prompt", None)
         if not isinstance(prompt, str):
             raise TypeError(f"view.prompt 必须是 str，收到 {type(prompt)}")
+        feedback = self._retry_feedback.pop(seat, None)
+        if feedback:
+            prompt = (
+                f"{prompt}\n\n"
+                f"裁判拒绝了你上一份尚未公开的草稿：{feedback[:2400]}\n"
+                "请只修正这个错误，再重新完成当前动作。"
+            )
 
         messages = [ChatMessage(role="human", content=prompt)]
         proxy = _ViewProxy(view, seat_no=seat)

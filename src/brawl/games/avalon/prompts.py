@@ -306,6 +306,10 @@ def _seat_no(n: int) -> str:
     return f"{_zh_count(n)}号"
 
 
+def _seat_list(seats: list[int]) -> str:
+    return "、".join(f"{seat}号" for seat in seats)
+
+
 def _ordinal(n: int) -> str:
     return f"第{_zh_count(n)}个"
 
@@ -401,6 +405,15 @@ def line_team_record(leader_no: int, team: list[int]) -> str:
     return f"队长 {leader_no}号 提议的队伍：{nos}。"
 
 
+def line_public_position(seat_no: int, position: str) -> str:
+    position_zh = {
+        "approve": "赞成",
+        "reject": "反对",
+        "undecided": "未定",
+    }[position]
+    return f"{seat_no}号 当前票意：{position_zh}。"
+
+
 def line_votes(votes: dict[int, bool]) -> str:
     marks = "、".join(f"{no}号{'✔' if ok else '✘'}" for no, ok in sorted(votes.items()))
     return f"【开票】{marks}"
@@ -418,6 +431,568 @@ def situation(view: PlayerView) -> str:
         f"{_REASONING_BASELINE}\n"
         f"{_public_history(view)}"
     )
+
+
+# ---------------------------------------------------------------- OpenCode role-agent protocol v2
+
+def agent_seed(view: PlayerView) -> str:
+    """写入持久 session、但不触发模型回答的固定私有事实与已提交历史。"""
+    return (
+        "主持人把以下私有事实写入你的个人会话。它们只属于你这个座位；后续始终控制同一名玩家。\n\n"
+        f"本局共 {view.players} 人，座位号 1~{view.players}。{_lineup_block(view)}。\n"
+        f"你是 {view.seat_no} 号。{_role_brief(view)}\n\n"
+        f"{_private_transcript(view)}"
+    )
+
+
+def agent_situation(view: PlayerView) -> str:
+    """当前决策所需的最小确定状态；公开原话另以 inbox 增量逐字提供。"""
+    score = f"任务比分蓝方{view.succeeded}:红方{view.failed}"
+    if view.phase == "evil_chat":
+        return f"当前确定状态：蓝方已完成三个任务，进入红方终局密谈；{score}。"
+    if view.phase == "assassinate":
+        return f"当前确定状态：红方终局密谈结束，轮到刺客指认梅林；{score}。"
+    if view.phase == "banter":
+        if view.agent_protocol >= 21:
+            side = "蓝方" if view.role.side is Side.GOOD else "红方"
+            return (
+                "当前确定状态：对局已经结束，主持人已公开底牌；"
+                f"{score}；你翻牌后的真实身份是{_ROLE_LABEL[view.role]}（{side}）。"
+            )
+        return f"当前确定状态：对局已经结束，主持人已公开底牌；{score}。"
+    if view.phase in ("lady_choose", "lady_announce"):
+        completed = max(1, view.quest_no - 1)
+        return f"当前确定状态：M{completed} 已结束，正在处理湖中仙女；{score}。"
+
+    hammer = "；这是第 5 次组队，再否决红方立即获胜" if view.attempt >= 5 else ""
+    rejection_fact = ""
+    if view.agent_protocol >= 24:
+        rejection_fact = f"；本任务此前已累计否决{max(0, view.attempt - 1)}次"
+        if view.attempt == 4:
+            rejection_fact += "；本提案若否决将进入第5次组队，不会立即判负"
+    team = (
+        "；当前提议队伍：" + "、".join(f"{no}号" for no in view.team)
+        if view.team
+        else ""
+    )
+    membership = ""
+    if view.agent_protocol >= 23 and view.team:
+        membership = (
+            "；你本人在当前提议队伍中"
+            if view.seat_no in view.team
+            else "；你本人不在当前提议队伍中"
+        )
+    stakes = ""
+    if view.agent_protocol >= 18:
+        consequences = []
+        if view.failed == 2:
+            consequences.append("本任务若失败，红方立即获胜")
+        if view.succeeded == 2:
+            consequences.append("本任务若成功，蓝方完成任务轨并进入刺杀")
+        if consequences:
+            stakes = "；" + "；".join(consequences)
+    return (
+        f"当前确定状态：M{view.quest_no} 第{view.attempt}次组队"
+        f"{rejection_fact}{hammer}；"
+        f"队长{view.leader_no}号；本任务{view.team_size}人，需{view.fails_required}张破坏才失败；"
+        f"{score}{stakes}{team}{membership}。"
+    )
+
+
+def agent_public_ledger(view: PlayerView) -> str:
+    """Render exact public mechanics without replacing any player's words."""
+    if not view.history and view.phase != "quest":
+        return "主持人公开机械账本（确定事实）：尚无完成表决的提案。"
+    rows = ["主持人公开机械账本（确定事实；玩家发言原话仍保留在会话历史）："]
+    for record in view.history:
+        team = "、".join(f"{no}号" for no in record.team)
+        votes = "、".join(
+            f"{no}号{'赞成' if approve else '反对'}"
+            for no, approve in sorted(record.votes.items())
+        )
+        if record.approved:
+            result = "成功" if record.result == "success" else "失败"
+            outcome = f"提案通过；任务{result}，{record.fails}张破坏"
+        else:
+            outcome = "提案否决，未执行任务"
+        rows.append(
+            f"- M{record.quest} 第{record.attempt}次：队长{record.leader_no}号；"
+            f"队伍[{team}]；票型[{votes}]；{outcome}。"
+        )
+    if view.phase == "quest":
+        team = "、".join(f"{no}号" for no in view.team)
+        votes = "、".join(
+            f"{no}号{'赞成' if approve else '反对'}"
+            for no, approve in sorted(view.current_votes.items())
+        )
+        rows.append(
+            f"- M{view.quest_no} 第{view.attempt}次：队长{view.leader_no}号；"
+            f"队伍[{team}]；票型[{votes}]；提案通过，任务进行中，破坏数尚未公开。"
+        )
+    return "\n".join(rows)
+
+
+def agent_participation_index(view: PlayerView) -> str:
+    """Index public task participation by seat for the action at hand."""
+    if view.phase == "propose":
+        seats = range(1, view.players + 1)
+        scope = "全桌"
+    elif view.phase in {"discuss", "team_vote"}:
+        seats = view.team
+        scope = "当前队伍"
+    else:
+        return ""
+    completed = [record for record in view.history if record.approved]
+    rows = [
+        f"主持人{scope}公开任务履历索引"
+        "（只表示执行记录；参加失败任务不等于红方，未参加任务也不等于蓝方）："
+    ]
+    for seat in seats:
+        records = [
+            (
+                f"M{record.quest}{'成功' if record.result == 'success' else '失败'}"
+                f"（{record.fails}张破坏）"
+            )
+            for record in completed
+            if seat in record.team
+        ]
+        history = "、".join(records) if records else "尚未执行任务"
+        rows.append(f"- {seat}号：{history}。")
+    return "\n".join(rows)
+
+
+def agent_private_facts(view: PlayerView) -> str:
+    """Repeat only facts this seat already knows, adjacent to its decision."""
+    if view.phase not in {
+        "propose",
+        "discuss",
+        "team_vote",
+        "quest",
+        "lady_choose",
+        "lady_announce",
+    }:
+        return ""
+    team = set(view.team)
+    if view.role is Role.MERLIN:
+        seen = "、".join(f"{no}号" for no in view.intel)
+        text = (
+            f"主持人重申你的私有确定事实：你是梅林；夜视确定红方是[{seen}]；"
+            "莫德雷德不在这份夜视名单中。"
+        )
+        if team:
+            on_team = sorted(team & set(view.intel))
+            listed = "、".join(f"{no}号" for no in on_team) if on_team else "无"
+            text += f"当前队伍中的夜视红方：{listed}。"
+        return text
+    if view.role is Role.PERCIVAL:
+        candidates = "、".join(f"{no}号" for no in view.intel)
+        text = (
+            f"主持人重申你的私有确定事实：你是派西维尔；夜视候选[{candidates}]"
+            "恰好一人是梅林、另一人是莫甘娜，你尚不能直接区分。"
+        )
+        if team:
+            on_team = sorted(team & set(view.intel))
+            listed = "、".join(f"{no}号" for no in on_team) if on_team else "无"
+            text += f"当前队伍包含的夜视候选：{listed}。"
+            if len(on_team) == len(view.intel):
+                text += "因此当前队伍确定至少包含一名红方。"
+        if view.agent_protocol >= 19:
+            completed = [record for record in view.history if record.approved]
+            rows = []
+            for candidate in view.intel:
+                records = [
+                    (
+                        f"M{record.quest}"
+                        f"{'成功' if record.result == 'success' else '失败'}"
+                        f"（{record.fails}张破坏）"
+                    )
+                    for record in completed
+                    if candidate in record.team
+                ]
+                history = "、".join(records) if records else "尚未执行任务"
+                rows.append(f"{candidate}号：{history}")
+            text += (
+                "两名夜视候选的公开任务履历对照（只是公开机械事实，"
+                "身份仍需结合整局判断）："
+                + "；".join(rows)
+                + "。"
+            )
+        return text
+    if view.role in {Role.ASSASSIN, Role.MORGANA, Role.MORDRED}:
+        allies = "、".join(f"{no}号" for no in view.intel)
+        text = (
+            f"主持人重申你的私有确定事实：你是{_ROLE_LABEL[view.role]}；"
+            f"开局确认同伙是[{allies}]；奥伯伦不在名单中。"
+        )
+        if team:
+            on_team = sorted(team & set(view.intel))
+            listed = "、".join(f"{no}号" for no in on_team) if on_team else "无"
+            text += f"当前队伍中的已知同伙：{listed}。"
+        return text
+    if view.role is Role.OBERON:
+        return (
+            "主持人重申你的私有确定事实：你是奥伯伦；开局没有确认认识任何同伙，"
+            "其他玩家身份对你都不确定。"
+        )
+    return "主持人重申你的私有确定事实：你是忠臣，没有夜视信息。"
+
+
+def agent_lady_facts(view: PlayerView) -> str:
+    """Separate this seat's private checks from every public Lady claim."""
+    if view.agent_protocol < 24:
+        return ""
+    if not view.lady_checks and len(view.lady_used) <= 1:
+        return ""
+    if view.lady_checks:
+        checks = "、".join(
+            f"{target}号={'蓝方' if side == 'good' else '红方'}"
+            for target, side in sorted(view.lady_checks.items())
+        )
+        own = f"你亲自从主持人收到的查验结果：[{checks}]。"
+    else:
+        own = "你没有亲自从主持人收到过任何查验结果。"
+    return (
+        f"主持人重申你的湖中仙女信息边界：{own}"
+        "只有你亲自收到的结果才是你的私有确定事实。其他玩家公开宣布的仙女结果"
+        "全部只是玩家声明；即使声明者曾被你查验，也不会沿令牌传递成你的确定事实。"
+    )
+
+
+def agent_turn_prompt(view: PlayerView) -> str:
+    """v2 每轮只送公开/私密增量、当前确定状态和本次动作。"""
+    parts = []
+    # inbox 是 runtime 按可见性规则逐字投递的增量，既可能是公开桌面，也可能是红方密谈。
+    # 不做摘要或重写，避免玩法信息在传输边界丢失。
+    if view.inbox:
+        parts.append("你新收到的信息：\n" + "\n".join(view.inbox))
+    parts.append(agent_situation(view))
+    if view.agent_protocol >= 11:
+        parts.append(agent_public_ledger(view))
+    if view.agent_protocol >= 12:
+        index = agent_participation_index(view)
+        if index:
+            parts.append(index)
+    if view.agent_protocol >= 13:
+        private_facts = agent_private_facts(view)
+        if private_facts:
+            parts.append(private_facts)
+    lady_facts = agent_lady_facts(view)
+    if lady_facts:
+        parts.append(lady_facts)
+    parts.append(agent_ask(view.phase, view))
+    if view.agent_protocol == 16:
+        parts.append(
+            "行动前先在工具外私下核对：当前队伍或候选是否触及主持人重申的"
+            "私有确定事实，公开机械账本是否支持你的决定；不要用前面玩家重复"
+            "表达的共识代替这次核对。核对后再调用唯一动作工具。工具外文本"
+            "不会成为玩家发言；需要发言时，只有工具的 speech 参数会发送。"
+        )
+    return "\n\n".join(parts)
+
+
+def agent_ask(phase: str, view: PlayerView) -> str:
+    """角色 agent 的当前动作；自然语言与离散机器动作明确分离。"""
+    membership_guard = (
+        "队伍是否包含你，以主持人给出的当前队伍清单为准，不得说反。"
+        "你只能控制自己的任务牌；在队或不在队本身都不能证明整队安全，"
+        "也不能单独决定赞成或反对。"
+        if view.agent_protocol >= 23 and view.team
+        else ""
+    )
+    epistemic_guard = (
+        "private_basis 必须区分主持人事实与玩家声明：湖中仙女的公开宣布、"
+        "身份自称和任务牌自述都只是玩家声明；持令牌执行查验的是查验者，"
+        "目标才是被查验者，二者不可混同。"
+        if view.agent_protocol >= 19
+        else ""
+    )
+    if phase == "propose":
+        suffix = (
+            "提交这支队伍也会把你当前的公开票意登记为赞成自己的提案。"
+            if view.agent_protocol >= 10
+            else ""
+        )
+        if view.agent_protocol >= 15:
+            private_basis = (
+                "先在 private_basis 中私下写出直接影响组队的一两个确定事实或推断；"
+                if view.agent_protocol >= 17
+                else ""
+            )
+            mission_guard = (
+                "任务席位是胜负资源，不是无成本查验；红方可以出成功，所以让嫌疑位"
+                "再次执行任务不能洗清他。任一阵营已拿两分时，先评估本队失败风险，"
+                "再考虑新增信息。"
+                if view.agent_protocol >= 18
+                else ""
+            )
+            return (
+                f"你是当前队长。{private_basis}调用 submit_team，team 提交恰好 "
+                f"{view.team_size} 个"
+                "互不相同的座位号，speech 提交你的公开组队发言。只有 speech 参数"
+                "会公布上桌，工具外文本不会成为玩家发言。"
+                f"{suffix}{mission_guard}{epistemic_guard}"
+            )
+        return (
+            f"你是当前队长。先直接说出你的公开组队发言，然后调用 submit_team，"
+            f"提交恰好 {view.team_size} 个互不相同的座位号。{suffix}"
+        )
+    if phase == "discuss":
+        team = "、".join(f"{no}号" for no in view.team)
+        if view.agent_protocol >= 10:
+            anonymous_card_fact = (
+                "机械事实：任务牌匿名；任何人承诺或声称自己出成功，"
+                "都不能据此向全桌自证。"
+                if view.agent_protocol >= 11
+                else ""
+            )
+            if view.agent_protocol >= 15:
+                no_filler = (
+                    "如果你没有不同于前面发言的新依据，不必另造理由；speech 可以"
+                    "只写“过”或一句立场，position 仍按真实倾向填写。"
+                    if view.agent_protocol >= 16
+                    else ""
+                )
+                private_basis = (
+                    "先在 private_basis 中私下写出直接影响票意的一两个确定事实或推断；"
+                    if view.agent_protocol >= 17
+                    else ""
+                )
+                mission_guard = (
+                    "任务席位是胜负资源，不是无成本查验；红方可以出成功，所以让"
+                    "嫌疑位再次执行任务不能洗清他。任一阵营已拿两分时，先评估"
+                    "本队失败风险，再考虑新增信息。"
+                    if view.agent_protocol >= 18
+                    else ""
+                )
+                return (
+                    f"轮到你对队伍 [{team}] 发言。{private_basis}调用 "
+                    "submit_statement：speech 提交"
+                    "你的公开发言，position 登记这段发言表达的当前票意（approve、"
+                    "reject 或 undecided）。只有 speech 参数会公布上桌，工具外文本"
+                    "不会成为玩家发言。票意是公开动作，主持人会单独展示；它只是你"
+                    "此刻公开表达的立场，不是最终秘密票。"
+                    f"{anonymous_card_fact}{no_filler}{mission_guard}"
+                    f"{membership_guard}{epistemic_guard}"
+                )
+            return (
+                f"轮到你对队伍 [{team}] 发言。先直接输出你要公开说的话，然后调用 "
+                "submit_statement 登记这段发言表达的当前票意：position=approve、"
+                "reject 或 undecided。这个票意是公开动作，主持人会单独展示；它只是"
+                f"你此刻公开表达的立场，不是最终秘密票。{anonymous_card_fact}"
+            )
+        if view.agent_protocol == 9:
+            return (
+                f"轮到你对队伍 [{team}] 发言。先直接输出你要公开说的话，然后调用 "
+                "submit_statement 登记这段发言表达的当前票意：position=approve、"
+                "reject 或 undecided。这只是你此刻公开表达的立场，不是最终秘密票。"
+            )
+        if view.agent_protocol != 7:
+            return f"轮到你对队伍 [{team}] 发言。直接输出你要公开说的话。"
+        return (
+            f"轮到你对队伍 [{team}] 发言。只说本轮前面发言尚未包含、"
+            "并且会影响投票的内容；若没有新内容，直接只说“过。”。"
+        )
+    if phase == "team_vote":
+        team = "、".join(f"{no}号" for no in view.team)
+        if view.agent_protocol >= 9:
+            position = {
+                "approve": "赞成",
+                "reject": "反对",
+                "undecided": "未定",
+                None: "未登记",
+            }[view.public_position]
+            # v19 accidentally asked for private_basis here even though
+            # submit_ballot intentionally has no such field.  Preserve the old
+            # replay contract; v20-v21 use a field-free reminder, while v22
+            # deliberately adds private_basis to the ballot tool itself.
+            ballot_epistemic_guard = (
+                epistemic_guard
+                if view.agent_protocol == 19 or view.agent_protocol >= 22
+                else (
+                    "最终判断仍须区分主持人事实与玩家声明：湖中仙女的公开宣布、"
+                    "身份自称和任务牌自述都不是确定事实；持令牌执行查验的是查验者，"
+                    "目标才是被查验者。"
+                    if view.agent_protocol >= 20
+                    else ""
+                )
+            )
+            mission_guard = (
+                "任务席位是胜负资源，不是无成本查验；红方可以出成功，嫌疑位"
+                "不能靠再次执行任务自证。赛点先评估失败风险，再考虑新增信息。"
+                if view.agent_protocol >= 18
+                else ""
+            )
+            return (
+                f"现在秘密表决队伍 [{team}]。你在讨论阶段登记的公开票意是“{position}”。"
+                "结合此后收到的发言作最终决定，"
+                + (
+                    "先在 private_basis 中私下重核自己的阵营、私有确定事实与胜负目标；"
+                    if view.agent_protocol >= 22
+                    else ""
+                )
+                + "调用 submit_ballot 提交 approve=true 或 "
+                "false，并用 reason 写一句可公开且不泄露私密信息的决策理由。若最终票与"
+                "已登记的明确票意不同，主持人会在开票前原样公开这句改票理由；改票本身"
+                f"不会被驳回。{membership_guard}{mission_guard}"
+                f"{ballot_epistemic_guard}"
+            )
+        if view.agent_protocol >= 8:
+            return (
+                f"现在秘密表决队伍 [{team}]。先回看你本轮自己的公开发言和此后收到的"
+                "新信息；若判断没有被新信息改变，投票应与自己的公开承诺一致。"
+                "调用 submit_vote 提交 approve=true 或 false。"
+            )
+        return f"现在秘密表决队伍 [{team}]。调用 submit_vote 提交 approve=true 或 false。"
+    if phase == "quest":
+        if view.role.side is Side.GOOD:
+            choice = "你是蓝方，只能提交 success=true"
+        else:
+            private_team_fact = ""
+            coordination = ""
+            if view.agent_protocol >= 11:
+                known = sorted(set(view.team) & set(view.intel))
+                if view.role is Role.OBERON:
+                    private_team_fact = (
+                        "你是奥伯伦，开局没有确认认识任何红方同伙；"
+                        "本队其他成员的身份对你都不确定。"
+                    )
+                else:
+                    recognized = (
+                        "、".join(f"{no}号" for no in known)
+                        if known
+                        else "无"
+                    )
+                    private_team_fact = (
+                        f"你开局确认认识且在本队的红方同伙：{recognized}；"
+                        "除此之外的队员身份对你不确定，可能包含你不认识的奥伯伦。"
+                    )
+            if (
+                view.agent_protocol >= 14
+                and view.role in {Role.ASSASSIN, Role.MORGANA, Role.MORDRED}
+            ):
+                recognized_team = sorted({
+                    view.seat_no,
+                    *(set(view.team) & set(view.intel)),
+                })
+                if len(recognized_team) >= view.fails_required:
+                    designated = recognized_team[:view.fails_required]
+                    rule = (
+                        f"默认由座位最小的{view.fails_required}人"
+                        f"[{_seat_list(designated)}]提交破坏，其他互认红方默认成功隐藏"
+                    )
+                else:
+                    designated = recognized_team
+                    rule = (
+                        "互认红方人数不足任务失败门槛，"
+                        f"本队全部互认红方[{_seat_list(designated)}]默认提交破坏"
+                    )
+                assignment = (
+                    "你是本次默认破坏者"
+                    if view.seat_no in designated
+                    else "你是本次默认隐藏者"
+                )
+                coordination = (
+                    "开局互认红方的共同默认约定（未知奥伯伦不参与）："
+                    f"本队互认红方[{_seat_list(recognized_team)}]；{rule}；{assignment}。"
+                    "只有基于当前比分和整局策略的明确理由才偏离，"
+                    "不要因猜测队友是否行动而重复破坏。"
+                )
+            choice = (
+                f"你是红方。{private_team_fact}{coordination}"
+                f"可提交 success=true 或 false；本任务需 "
+                f"{view.fails_required} 张破坏才失败"
+            )
+        private_basis = (
+            "先在 private_basis 中私下核对阵营、当前队伍、比分、失败门槛和"
+            "主持人给出的破坏约定；"
+            if view.agent_protocol >= 17
+            else ""
+        )
+        return (
+            f"现在秘密提交任务牌。{choice}。{private_basis}调用 submit_quest。"
+        )
+    if phase == "lady_choose":
+        candidates = "、".join(f"{no}号" for no in view.lady_candidates())
+        private_basis = (
+            "先在 private_basis 中私下写出选择该查验目标的直接依据；"
+            if view.agent_protocol >= 17
+            else ""
+        )
+        return (
+            f"选择湖中仙女查验对象，可选：{candidates}。{private_basis}"
+            "调用 submit_lady 提交 target_no。"
+        )
+    if phase == "lady_announce":
+        side = "蓝方" if view.lady_seen == "good" else "红方"
+        if view.agent_protocol >= 15:
+            return (
+                f"主持人私下确认：你查验的 {view.lady_target}号真实阵营是{side}。"
+                "调用 submit_speech，在 speech 中提交你要向全桌宣布的话；你可以"
+                "如实说，也可以撒谎。只有 speech 参数会公布上桌。"
+            )
+        no_tool = "本阶段不调用任何工具。" if view.agent_protocol >= 11 else ""
+        return (
+            f"主持人私下确认：你查验的 {view.lady_target}号真实阵营是{side}。"
+            f"现在直接输出你要向全桌宣布的话；你可以如实说，也可以撒谎。{no_tool}"
+        )
+    if phase == "evil_chat":
+        roster = "、".join(f"{no}号" for no in view.evil_team)
+        if view.agent_protocol >= 15:
+            return (
+                f"蓝方已完成三个任务。终局红方完整名单是：{roster}。现在是红方私聊，"
+                "调用 submit_speech，在 speech 中提交你给刺客的梅林判断；"
+                "这段话只发送给红方。"
+            )
+        no_tool = "本阶段不调用任何工具。" if view.agent_protocol >= 11 else ""
+        return (
+            f"蓝方已完成三个任务。终局红方完整名单是：{roster}。"
+            f"现在是红方私聊，直接说出你给刺客的梅林判断；蓝方不会听见。{no_tool}"
+        )
+    if phase == "assassinate":
+        targets = "、".join(f"{no}号" for no in view.good_suspects())
+        if view.agent_protocol >= 15:
+            private_basis = (
+                "先在 private_basis 中私下写出整局轨迹中支持该目标的关键依据；"
+                if view.agent_protocol >= 17
+                else ""
+            )
+            return (
+                f"可刺杀的蓝方座位是：{targets}。{private_basis}调用 "
+                "submit_assassination，"
+                "target_no 提交刺杀目标，speech 提交公开指认。只有 speech 参数"
+                "会公布上桌。"
+            )
+        return (
+            f"可刺杀的蓝方座位是：{targets}。先直接说出公开指认，"
+            "然后调用 submit_assassination 提交 target_no。"
+        )
+    if phase == "banter":
+        anonymous_card_fact = (
+            "系统至终局也不公布每人的任务牌；除你自己的牌外，只有破坏数和已知信息"
+            "能够唯一推出时才能归因，不要把猜测写成事实。"
+            if view.agent_protocol >= 11
+            else ""
+        )
+        if view.agent_protocol >= 15:
+            review_scope = (
+                "只复盘一个由你亲自做出的关键决定，用1到3句话说清当时依据和结果，"
+                "不要按任务顺序重述全局，也不要替其他玩家声称他当时知道什么。必须"
+                "区分“当时已知”和“翻牌后才知道”；“全蓝队伍”只指翻牌后确认全员"
+                "都是蓝方，红方自己在队中时不能这样称呼。"
+                if view.agent_protocol >= 21
+                else ""
+            )
+            return (
+                "底牌已经公开，轮到你复盘。调用 submit_speech，在 speech 中提交"
+                "你要说的话。只有 speech 参数会公布上桌。"
+                f"{review_scope}{anonymous_card_fact}"
+            )
+        no_tool = "本阶段不调用任何工具。" if view.agent_protocol >= 11 else ""
+        return (
+            "底牌已经公开，轮到你复盘。直接输出你要说的话。"
+            f"{anonymous_card_fact}{no_tool}"
+        )
+    raise ValueError(f"未知 Avalon phase：{phase}")
 
 
 # ---------------------------------------------------------------- OpenCode agent 专用提问

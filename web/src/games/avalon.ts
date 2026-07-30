@@ -22,6 +22,7 @@ export interface Speech {
   seat_no: number;
   text: string;
   monologue: string;
+  position?: "approve" | "reject" | "undecided" | null;
   quest: number | null;
   attempt: number | null;
   team: number[] | null;

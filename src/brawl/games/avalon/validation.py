@@ -8,6 +8,7 @@ TTS 与回放的唯一真源。凡是会影响未来 prompt、模型选择或后
 from __future__ import annotations
 
 import random
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -21,6 +22,29 @@ from brawl.games.run import RunSettings, SettingsError
 from brawl.runtime import setup as core_setup
 from brawl.runtime.files import UnsafePathError, read_regular_bytes
 from brawl.runtime.journal import JournalCorruptionError, load_replay_sentences
+
+_PROTOCOL9_REQUIRED_CONFIG = frozenset({
+    "agent/avalon-servant.md",
+    "agent/avalon-merlin.md",
+    "agent/avalon-percival.md",
+    "agent/avalon-assassin.md",
+    "agent/avalon-morgana.md",
+    "agent/avalon-mordred.md",
+    "agent/avalon-oberon.md",
+    "tool/submit_team.js",
+    "tool/submit_statement.js",
+    "tool/submit_ballot.js",
+    "tool/submit_quest.js",
+    "tool/submit_lady.js",
+    "tool/submit_assassination.js",
+    "opencode.json",
+})
+_PROTOCOL10_EXACT_CONFIG = _PROTOCOL9_REQUIRED_CONFIG | {
+    "tool/submit_vote.js",
+}
+_PROTOCOL15_EXACT_CONFIG = _PROTOCOL10_EXACT_CONFIG | {
+    "tool/submit_speech.js",
+}
 
 
 class GameSetup(BaseModel):
@@ -44,6 +68,29 @@ class GameSetup(BaseModel):
     roles: tuple[Role, ...]
     first_leader: int
     lady_holder: int | None
+    # v1 是旧 StructuredOutput prompt；v2 是角色 agent + 离散动作工具；
+    # v3 是首版质量闸；v4 冻结 agent 配置；v5 是窄质量语义；
+    # v6 加入互认红方的防重复破坏协调；v7 是文本语义门禁；
+    # v8 撤销语言审判；v9 让玩家用小工具自报票意并显式说明改票；
+    # v10 把该票意升级为桌面与 Stage 都可见的正式公开动作。
+    # v11 在保留逐字公开历史的同时，每轮重放确定性的公开机械账本。
+    # v12 为组队与讨论追加按座位检索的公开任务履历，避免低价模型跟随错误复述。
+    # v13 把该座位已有的角色私有事实贴近当前动作，避免长会话丢失夜视。
+    # v14 给开局互认红方一份按座位计算的默认破坏约定，避免对称决策重复破坏。
+    # v15 只把工具参数中的 speech 作为玩家发言，工具外文本仅留作原始审计。
+    # v16 利用该私有通道要求同一模型先核对确定事实再提交动作，并允许无新增信息时过。
+    # v17 把最小决定依据纳入战略工具的私有参数，避免低价模型直接跳过核对。
+    # v18 在赛点与组队决策旁重申任务位不是无成本查验，避免用生死任务洗嫌疑人。
+    # v19 贴近动作区分玩家声明与主持人事实，并对照派西维尔两名候选的公开履历。
+    # v20 修正最终投票提示：submit_ballot 不接收 private_basis，不再要求该字段。
+    # v21 收窄赛后复盘并重申真实身份与时间信息边界，避免翻牌知识倒灌。
+    # v22 在最终落票前要求私下重核阵营依据，避免被后续桌面话术冲掉私有事实。
+    # v23 贴近当前队伍动作重申本人是否在队，并阻断由此直接推出整队或票意。
+    # v24 分开重放本人亲自获得的仙女结果与其他玩家的公开声明，阻断链式认定。
+    # 默认 v1 使字段尚不存在的旧 replay 能按原文精确恢复。
+    agent_protocol: Literal[
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+    ] = 1
 
     @model_validator(mode="after")
     def _check_shape(self) -> GameSetup:
@@ -95,6 +142,12 @@ class GameSetup(BaseModel):
                 )
 
         _validate_role_pool(self.roles)
+        if self.agent_protocol >= 2:
+            fixed = rules.MERLIN_ASSASSIN_PERCIVAL_MORGANA_MORDRED_OBERON_LADY_10
+            if Counter(self.roles) != Counter(fixed.roles):
+                raise ValueError("agent_protocol>=2 只支持固定十人全角色板")
+            if self.lady_holder is None:
+                raise ValueError("agent_protocol>=2 必须启用湖中仙女")
         return self
 
     @property
@@ -116,6 +169,8 @@ class AvalonReplayMeta(BaseModel):
     seed: int | None
     setup: GameSetup
     model_labels: dict[str, str]
+    # v4 起把完整 OpenCode agent/tool 配置作为 replay 输入冻结；旧 meta 缺省为 None。
+    agent_config: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def _check_meta(self) -> AvalonReplayMeta:
@@ -132,6 +187,53 @@ class AvalonReplayMeta(BaseModel):
             not ref for ref in self.setup.opencode_models
         ):
             raise ValueError("opencode 对局的每个座位都必须冻结有效模型引用")
+        if self.backend == "random" and self.setup.agent_protocol != 1:
+            raise ValueError("random 对局只支持 agent_protocol=1")
+        if (
+            self.backend == "opencode"
+            and self.setup.agent_protocol >= 4
+            and self.agent_config is None
+        ):
+            raise ValueError("agent_protocol>=4 的 opencode 对局必须冻结 agent_config")
+        if (
+            self.backend == "opencode"
+            and self.setup.agent_protocol >= 9
+            and self.agent_config is not None
+        ):
+            missing = sorted(
+                _PROTOCOL9_REQUIRED_CONFIG - set(self.agent_config)
+            )
+            if missing:
+                raise ValueError(
+                    f"agent_protocol>=9 的 agent_config 缺少运行文件：{missing}"
+                )
+        if (
+            self.backend == "opencode"
+            and self.setup.agent_protocol >= 10
+            and self.agent_config is not None
+        ):
+            expected_config = (
+                _PROTOCOL15_EXACT_CONFIG
+                if self.setup.agent_protocol >= 15
+                else _PROTOCOL10_EXACT_CONFIG
+            )
+            paths = set(self.agent_config)
+            missing = sorted(expected_config - paths)
+            unexpected = sorted(paths - expected_config)
+            if missing or unexpected:
+                raise ValueError(
+                    "agent_protocol>=10 的 agent_config 必须是闭合文件集："
+                    f"missing={missing}, unexpected={unexpected}"
+                )
+            empty = sorted(
+                path
+                for path, content in self.agent_config.items()
+                if not content.strip()
+            )
+            if empty:
+                raise ValueError(
+                    f"agent_protocol>=10 的 agent_config 文件内容不能为空：{empty}"
+                )
         return self
 
 
@@ -199,6 +301,7 @@ def resolve_and_validate(
         roles=tuple(roles),
         first_leader=first_leader,
         lady_holder=(first_leader - 2) % players + 1 if board.lady else None,
+        agent_protocol=24 if settings.backend == "opencode" else 1,
     )
 
 

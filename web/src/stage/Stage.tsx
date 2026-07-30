@@ -366,6 +366,7 @@ function StageContent({ ch, scene, last }: { ch: Channel; scene: AvalonScene; la
         <Spotlight ch={ch} item={last} seat={sp} no={d.seat_no}
           tag={PHASE_LABEL[d.phase]} text={d.text} audio={d.audio_url} monologue={d.monologue}
           team={d.team ?? undefined}
+          position={d.position ?? undefined}
           ladyNo={d.lady_target} />
       );
     }
@@ -627,10 +628,10 @@ function RevealRow({ stagger, children }: { stagger: number; children: ReactNode
   return <div className="reveal-row" style={{ "--rv-stagger": `${stagger}s` } as CSSProperties}>{children}</div>;
 }
 
-function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, ladyNo }: {
+function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, position, ladyNo }: {
   ch: Channel; item: FeedItem; seat: AvalonSeatInfo | undefined; no: number; tag: string;
   text: string; audio: string | null; monologue: string;
-  team?: number[]; ladyNo: number | null;
+  team?: number[]; position?: "approve" | "reject" | "undecided"; ladyNo: number | null;
 }) {
   return (
     <div className="spotlight">
@@ -652,6 +653,11 @@ function Spotlight({ ch, item, seat, no, tag, text, audio, monologue, team, lady
       </div>
       {team && team.length > 0 && (
         <div className="team-chips">提队：{team.map((t) => <span key={t} className="chip">{circ(t)}</span>)}</div>
+      )}
+      {position && (
+        <div className={`position-line ${position}`}>
+          当前票意：{position === "approve" ? "赞成" : position === "reject" ? "反对" : "未定"}
+        </div>
       )}
       {ladyNo !== null && (
         <div className="lady-line">
@@ -1229,4 +1235,3 @@ function WerewolfOverView({ ch, scene, banter }: { ch: Channel; scene: WerewolfS
     </div>
   );
 }
-

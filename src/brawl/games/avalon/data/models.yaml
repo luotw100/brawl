@@ -5,6 +5,14 @@
 # opencode_model 格式：providerID/modelID，例如 opencode-go/deepseek-v4-pro。
 # avatar 指向厂商 logo（data/avatars/<avatar>.png），直播渲染用；display 是头像下小字。
 models:
+- name: ds-v4-pro
+  display: DeepSeek V4 Pro
+  avatar: deepseek
+  opencode_model: deepseek/deepseek-v4-pro
+- name: ds-v4-flash
+  display: DeepSeek V4 Flash
+  avatar: deepseek
+  opencode_model: deepseek/deepseek-v4-flash
 - name: oc-minimax-m3
   display: MiniMax M3
   avatar: minimax

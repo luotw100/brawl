@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -15,7 +16,7 @@ import signal
 import stat
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ import httpx
 
 EXPECTED_OPENCODE_VERSION = "1.17.20"
 RUNTIME_DIR = "_opencode"
+_TRUSTED_CONFIG_DIR = "trusted-config"
 
 _SERVER_USERNAME = "opencode"
 _START_TIMEOUT = 30.0
@@ -56,6 +58,7 @@ class _Layout:
     root: Path
     auth_mount: Path
     log: Path
+    trusted_config: Path | None
 
 
 def prepare_opencode_installation() -> OpenCodeInstallation:
@@ -136,7 +139,120 @@ def _seed_models_cache(root: Path) -> None:
     dst.write_bytes(src.read_bytes())
 
 
-def _prepare_layout(run_dir: Path, seats: int) -> _Layout:
+def _normalized_trusted_config(files: Mapping[str, str]) -> dict[str, str]:
+    """Validate a trusted config bundle and enforce lossless session history.
+
+    ``opencode.json`` belongs to the bundle rather than an environment-only
+    override so the effective runtime policy is visible in the replay
+    directory.  JSONC is deliberately not synthesized or edited here.
+    """
+
+    normalized = dict(files)
+    raw_config = normalized.get("opencode.json", "{}")
+    try:
+        config = json.loads(raw_config)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise OpenCodeRuntimeError(f"可信 OpenCode 配置 opencode.json 不是合法 JSON：{exc}") from exc
+    if not isinstance(config, dict):
+        raise OpenCodeRuntimeError("可信 OpenCode 配置 opencode.json 顶层必须是 JSON object")
+    compaction = config.get("compaction", {})
+    if not isinstance(compaction, dict):
+        raise OpenCodeRuntimeError("可信 OpenCode 配置 compaction 必须是 JSON object")
+    config["compaction"] = {**compaction, "auto": False, "prune": False}
+    normalized["opencode.json"] = json.dumps(config, ensure_ascii=False, indent=2) + "\n"
+    return normalized
+
+
+def _trusted_relative_path(raw: str) -> Path:
+    """Turn one bundle key into a safe relative filesystem path."""
+
+    if not isinstance(raw, str) or not raw:
+        raise OpenCodeRuntimeError(f"可信 OpenCode 配置路径必须是非空字符串：{raw!r}")
+    path = Path(raw)
+    if path.is_absolute() or ".." in path.parts:
+        raise OpenCodeRuntimeError(f"可信 OpenCode 配置路径必须是无 .. 的相对路径：{raw!r}")
+    if path == Path("."):
+        raise OpenCodeRuntimeError(f"可信 OpenCode 配置路径不能指向目录本身：{raw!r}")
+    return path
+
+
+def _write_trusted_file(path: Path, content: str) -> None:
+    """Create a 0600 config file, or prove an existing file is identical."""
+
+    if not isinstance(content, str):
+        raise OpenCodeRuntimeError(f"可信 OpenCode 配置内容必须是字符串：{path}")
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        current = None
+    except OSError as exc:
+        raise OpenCodeRuntimeError(f"无法检查可信 OpenCode 配置文件：{path}：{exc}") from exc
+
+    if current is not None:
+        if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+            kind = "软链接" if stat.S_ISLNK(current.st_mode) else "非普通文件"
+            raise OpenCodeRuntimeError(f"可信 OpenCode 配置不允许{kind}：{path}")
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise OpenCodeRuntimeError(f"无法读取可信 OpenCode 配置文件：{path}：{exc}") from exc
+        if existing != content:
+            raise OpenCodeRuntimeError(f"已有可信 OpenCode 配置内容不同，拒绝覆盖：{path}")
+        path.chmod(0o600)
+        return
+
+    data = content.encode("utf-8")
+    try:
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            with os.fdopen(fd, "wb", closefd=False) as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(fd)
+        path.chmod(0o600)
+    except FileExistsError as exc:
+        raise OpenCodeRuntimeError(f"可信 OpenCode 配置文件创建时被并发替换：{path}") from exc
+    except OSError as exc:
+        raise OpenCodeRuntimeError(f"无法写入可信 OpenCode 配置文件：{path}：{exc}") from exc
+
+
+def _seed_trusted_config(root: Path, files: Mapping[str, str]) -> Path:
+    """Materialize the caller-owned closed config inputs below the sandbox root."""
+
+    config_root = root / _TRUSTED_CONFIG_DIR
+    _prepare_private_directory(config_root)
+    destinations: dict[Path, str] = {}
+    for raw_path, content in _normalized_trusted_config(files).items():
+        relative = _trusted_relative_path(raw_path)
+        if relative == Path("opencode.jsonc"):
+            raise OpenCodeRuntimeError(
+                "可信 OpenCode 配置不接受 opencode.jsonc；请合并进由运行时校验的 opencode.json"
+            )
+        if relative in destinations and destinations[relative] != content:
+            raise OpenCodeRuntimeError(f"可信 OpenCode 配置路径归一化后冲突：{raw_path!r}")
+        destinations[relative] = content
+
+    for relative, content in destinations.items():
+        destination = config_root / relative
+        parent = config_root
+        for part in relative.parts[:-1]:
+            parent /= part
+            _prepare_private_directory(parent)
+        _write_trusted_file(destination, content)
+    return config_root
+
+
+def _prepare_layout(
+    run_dir: Path,
+    seats: int,
+    trusted_config: Mapping[str, str] | None = None,
+) -> _Layout:
     try:
         replay_root = run_dir.resolve(strict=True)
     except OSError as exc:
@@ -181,7 +297,13 @@ def _prepare_layout(run_dir: Path, seats: int) -> _Layout:
         raise OpenCodeRuntimeError(f"隔离认证挂载点不应包含数据：{auth_mount}")
     auth_mount.chmod(0o400)
     _seed_models_cache(root)
-    return _Layout(root=root, auth_mount=auth_mount, log=_next_log_path(root / "logs"))
+    config_path = _seed_trusted_config(root, trusted_config) if trusted_config is not None else None
+    return _Layout(
+        root=root,
+        auth_mount=auth_mount,
+        log=_next_log_path(root / "logs"),
+        trusted_config=config_path,
+    )
 
 
 def _prepare_private_directory(directory: Path) -> None:
@@ -237,8 +359,8 @@ def _sandbox_command(installation: OpenCodeInstallation, layout: _Layout) -> lis
     return command
 
 
-def _sandbox_env(password: str) -> dict[str, str]:
-    return {
+def _sandbox_env(password: str, *, trusted_config: bool = False) -> dict[str, str]:
+    env = {
         "HOME": "/oc/home",
         "XDG_DATA_HOME": "/oc/data",
         "XDG_CONFIG_HOME": "/oc/config",
@@ -258,6 +380,9 @@ def _sandbox_env(password: str) -> dict[str, str]:
         "PATH": "/usr/bin:/bin",
         "LANG": "C.UTF-8",
     }
+    if trusted_config:
+        env["OPENCODE_CONFIG_DIR"] = f"/oc/{_TRUSTED_CONFIG_DIR}"
+    return env
 
 
 @asynccontextmanager
@@ -265,9 +390,10 @@ async def open_opencode_runtime(
     installation: OpenCodeInstallation,
     run_dir: Path,
     seats: int,
+    trusted_config: Mapping[str, str] | None = None,
 ) -> AsyncIterator[OpenCodeConnection]:
     """Start one isolated server for a game and always reap its process tree."""
-    layout = _prepare_layout(run_dir, seats)
+    layout = _prepare_layout(run_dir, seats, trusted_config)
     password = secrets.token_urlsafe(32)
     command = _sandbox_command(installation, layout)
     try:
@@ -275,7 +401,7 @@ async def open_opencode_runtime(
             *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=_sandbox_env(password),
+            env=_sandbox_env(password, trusted_config=layout.trusted_config is not None),
             start_new_session=True,
         )
     except OSError as exc:

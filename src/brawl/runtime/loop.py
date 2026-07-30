@@ -557,6 +557,7 @@ async def _act_with_retry(
     """只重试明确的瞬态 actor 失败与明确的模型产出拒绝。"""
     for retry_no in range(1, _MAX_RETRIES + 1):
         retry_error: BaseException
+        rejected_draft: str | None = None
         try:
             if semaphore is None:
                 raw = await actor.speak(seat, view, turn_id)
@@ -578,12 +579,19 @@ async def _act_with_retry(
             except JsonParseError as exc:
                 await actor.rollback(seat)
                 retry_error = exc
+                rejected_draft = raw
             except BaseException:
                 await actor.rollback(seat)
                 raise
             else:
                 return raw, parsed
 
+        feedback = getattr(actor, "set_retry_feedback", None)
+        if callable(feedback):
+            feedback_text = str(retry_error)
+            if rejected_draft:
+                feedback_text += f"\n被拒绝的原草稿：{rejected_draft[:1600]}"
+            feedback(seat, feedback_text)
         if retry_no == _MAX_RETRIES:
             raise retry_error
         delay = min(_BACKOFF_BASE * 2 ** (retry_no - 1), _BACKOFF_CAP) + random.random()

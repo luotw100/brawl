@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import random
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from brawl.games.avalon import prompts, rules
+from brawl.games.avalon import legacy_language_gates, prompts, rules
+from brawl.games.avalon.agents import agent_name
 from brawl.games.avalon.state import (
     Assassination,
     LadyChoice,
@@ -40,6 +42,109 @@ class LadyTransfer(BaseModel):
     target: int
 
 
+class _AgentTool(BaseModel):
+    """OpenCode v2 的游戏盲工具信封；具体字段仍由阶段 action model 校验。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    name: str
+    input: dict[str, Any]
+
+
+class _AgentReply(BaseModel):
+    """后端从自然语言与工具 trace 确定性整理出的信封。"""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    text: str | None = None
+    tool: _AgentTool | None = None
+
+
+class _StatementToolInput(BaseModel):
+    """Protocol 9 player's own structured account of its public position."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    position: Literal["approve", "reject", "undecided"]
+
+
+class _BallotToolInput(BaseModel):
+    """Protocol 9 secret vote plus the player's own decision rationale."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    approve: bool
+    reason: str = Field(min_length=1, max_length=300)
+
+
+class _SpeechToolInput(BaseModel):
+    """Protocol 15 public speech carried by an explicit game tool."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    speech: str = Field(min_length=1)
+
+
+class _TeamToolInput(_SpeechToolInput):
+    """Protocol 15 proposal payload."""
+
+    team: list[int]
+
+
+class _StatementWithSpeechToolInput(_SpeechToolInput):
+    """Protocol 15 discussion payload."""
+
+    position: Literal["approve", "reject", "undecided"]
+
+
+class _AssassinationToolInput(_SpeechToolInput):
+    """Protocol 15 assassination payload."""
+
+    target_no: int
+
+
+class _PrivateBasisToolInput(BaseModel):
+    """Protocol 17 private decision basis, never projected to game output."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+
+    private_basis: str = Field(min_length=1)
+
+
+class _ReasonedBallotToolInput(_BallotToolInput, _PrivateBasisToolInput):
+    """Protocol 22 final ballot with a private decision basis."""
+
+
+class _ReasonedTeamToolInput(_TeamToolInput, _PrivateBasisToolInput):
+    """Protocol 17 proposal payload with a private decision basis."""
+
+
+class _ReasonedStatementToolInput(
+    _StatementWithSpeechToolInput,
+    _PrivateBasisToolInput,
+):
+    """Protocol 17 discussion payload with a private decision basis."""
+
+
+class _ReasonedQuestToolInput(_PrivateBasisToolInput):
+    """Protocol 17 quest card with a private decision basis."""
+
+    success: bool
+
+
+class _ReasonedLadyToolInput(_PrivateBasisToolInput):
+    """Protocol 17 Lady target with a private decision basis."""
+
+    target_no: int
+
+
+class _ReasonedAssassinationToolInput(
+    _AssassinationToolInput,
+    _PrivateBasisToolInput,
+):
+    """Protocol 17 assassination payload with a private decision basis."""
+
+
 # 每个行动阶段的 StructuredOutput schema，模块加载时一次性冻结。
 _PHASE_SCHEMAS: dict[str, dict[str, Any]] = {
     phase: action_schema(model, phase)
@@ -56,6 +161,21 @@ _PHASE_SCHEMAS: dict[str, dict[str, Any]] = {
     }.items()
 }
 
+_PHASE_TO_TOOL: dict[str, str] = {
+    "propose": "submit_team",
+    "team_vote": "submit_vote",
+    "quest": "submit_quest",
+    "lady_choose": "submit_lady",
+    "assassinate": "submit_assassination",
+}
+_SPEECH_PHASES = {
+    "propose",
+    "discuss",
+    "lady_announce",
+    "evil_chat",
+    "assassinate",
+    "banter",
+}
 
 class AvalonState(BaseModel):
     """对局状态：对 core 不透明，仅由 AvalonRules 管理。"""
@@ -84,6 +204,18 @@ class AvalonState(BaseModel):
     lady_seen: str | None = None
     lady_transfer: LadyTransfer | None = None
     assassination: dict[str, Any] | None = None
+    agent_protocol: Literal[
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+    ] = 1
+    # Only protocol 7's quarantined language gates consume these snapshots.
+    # Protocol 8 keeps the authoritative transcript in SeatThread/journal.
+    discussion_speeches: dict[int, str] = Field(default_factory=dict)
+    discussion_stances: dict[int, bool] = Field(default_factory=dict)
+    lady_checks: dict[int, dict[int, str]] = Field(default_factory=dict)
+    discussion_positions: dict[
+        int,
+        Literal["approve", "reject", "undecided"],
+    ] = Field(default_factory=dict)
 
     @property
     def players(self) -> int:
@@ -150,6 +282,7 @@ class AvalonRules(Rules):
             leader=setup.first_leader,
             lady_holder=setup.lady_holder,
             lady_used=[setup.lady_holder] if setup.lady_holder is not None else [],
+            agent_protocol=setup.agent_protocol,
         )
 
     def is_terminal(self, state: AvalonState) -> bool:
@@ -230,16 +363,36 @@ class AvalonRules(Rules):
             succeeded=state.quests_succeeded,
             failed=state.quests_failed,
             team=list(state.team),
+            current_votes=dict(state.votes),
             lady_used=list(state.lady_used),
+            lady_checks=dict(state.lady_checks.get(seat, {})),
             lady_target=state.lady_target,
             lady_seen=state.lady_seen if seat == state.lady_holder else None,
             tone=s.tone,
             strategy=s.strategy,
             history=list(state.history),
+            inbox=list(thread.inbox),
             messages=list(thread.messages),
             phase=state.phase,
             evil_team=list(state.evil_team),
+            agent_protocol=state.agent_protocol,
+            public_position=state.discussion_positions.get(seat),
         )
+        if state.agent_protocol >= 2:
+            view.turn_prompt = prompts.agent_turn_prompt(view)
+            view.prompt = view.turn_prompt
+            # backend 在每个新 session 只 noReply seed 一次；始终提供完整候选，
+            # 使冷恢复或未来不同的 actor 装配不依赖 first_speak 的实现细节。
+            view.seed_prompt = prompts.agent_seed(view)
+            view.agent = agent_name(view.role)
+            view.action_tool = self._agent_action_tool(state)
+            # v15 的公开发言属于工具动作本身；工具外 assistant 文本只是
+            # OpenCode 原始审计，不参与桌面语义。
+            view.speech_required = (
+                state.agent_protocol < 15 and state.phase in _SPEECH_PHASES
+            )
+            return view
+
         with_situation = state.phase not in ("evil_chat", "assassinate", "lady_announce", "banter")
         mimicry_guard = state.phase not in ("evil_chat", "banter")
         ask = prompts.opencode_ask(state.phase, view)
@@ -273,54 +426,357 @@ class AvalonRules(Rules):
             return self._parse_banter(seat, raw, state)
         raise RuntimeError(f"parse() 遇到意外阶段：{phase}")
 
+    @staticmethod
+    def _agent_action_tool(state: AvalonState) -> str | None:
+        if (
+            state.agent_protocol >= 15
+            and state.phase in {"lady_announce", "evil_chat", "banter"}
+        ):
+            return "submit_speech"
+        if state.agent_protocol >= 9:
+            if state.phase == "discuss":
+                return "submit_statement"
+            if state.phase == "team_vote":
+                return "submit_ballot"
+        return _PHASE_TO_TOOL.get(state.phase)
+
+    def _parse_action(
+        self,
+        raw: str,
+        state: AvalonState,
+        model: type[BaseModel],
+    ) -> Any:
+        """兼容旧 JSON action，并把 v2 工具信封还原到同一条规则校验路径。"""
+        if state.agent_protocol == 1:
+            return parse_json(raw, model)
+
+        try:
+            decoded = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        # RandomActor 与旧已提交 raw 仍是 phase JSON；v2 OpenCode raw 没有 phase。
+        if isinstance(decoded, dict) and "phase" in decoded:
+            if state.agent_protocol >= 15:
+                tool = self._agent_action_tool(state)
+                raise JsonParseError(
+                    f"agent_protocol>=15 的 {state.phase} 阶段必须提交 {tool} 工具"
+                )
+            if state.agent_protocol >= 9 and state.phase in {
+                "discuss",
+                "team_vote",
+            }:
+                tool = self._agent_action_tool(state)
+                raise JsonParseError(
+                    f"agent_protocol>=9 的 {state.phase} 阶段必须提交 {tool} 工具"
+                )
+            return parse_json(raw, model)
+
+        reply = parse_json(raw, _AgentReply)
+        expected_tool = self._agent_action_tool(state)
+        if expected_tool is None:
+            if reply.tool is not None:
+                raise JsonParseError(
+                    f"{state.phase} 阶段不应提交工具，实际收到 {reply.tool.name}"
+                )
+        elif reply.tool is None:
+            raise JsonParseError(f"{state.phase} 阶段缺少 {expected_tool} 工具动作")
+        elif reply.tool.name != expected_tool:
+            raise JsonParseError(
+                f"{state.phase} 阶段应提交 {expected_tool}，实际收到 {reply.tool.name}"
+            )
+
+        payload: dict[str, Any] = {
+            "phase": state.phase,
+            # 旧 action model 仍用同一份严格字段定义；v2 不生成 audience 独白，
+            # 先以内部占位通过形状校验，再清空且不创建 delivery。
+            "monologue": "unused",
+        }
+        if state.agent_protocol < 15 and state.phase in _SPEECH_PHASES:
+            speech = (reply.text or "").strip()
+            if not speech:
+                raise JsonParseError(f"{state.phase} 阶段缺少公开发言")
+            payload["speech"] = speech
+        metadata: dict[str, Any] = {}
+        if reply.tool is not None:
+            if state.agent_protocol >= 22 and state.phase == "team_vote":
+                ballot = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _ReasonedBallotToolInput,
+                )
+                self._private_basis(ballot.private_basis)
+                payload["approve"] = ballot.approve
+                reason = ballot.reason.strip()
+                if not reason:
+                    raise JsonParseError("submit_ballot.reason 不能为空白")
+                metadata["decision_reason"] = reason
+            elif state.agent_protocol >= 17 and state.phase == "propose":
+                proposal = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _ReasonedTeamToolInput,
+                )
+                self._private_basis(proposal.private_basis)
+                payload["team"] = proposal.team
+                payload["speech"] = self._tool_speech(proposal.speech)
+            elif state.agent_protocol >= 17 and state.phase == "discuss":
+                statement = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _ReasonedStatementToolInput,
+                )
+                self._private_basis(statement.private_basis)
+                payload["speech"] = self._tool_speech(statement.speech)
+                metadata["position"] = statement.position
+            elif state.agent_protocol >= 17 and state.phase == "quest":
+                quest = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _ReasonedQuestToolInput,
+                )
+                self._private_basis(quest.private_basis)
+                payload["success"] = quest.success
+            elif state.agent_protocol >= 17 and state.phase == "lady_choose":
+                lady = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _ReasonedLadyToolInput,
+                )
+                self._private_basis(lady.private_basis)
+                payload["target_no"] = lady.target_no
+            elif state.agent_protocol >= 17 and state.phase == "assassinate":
+                assassination = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _ReasonedAssassinationToolInput,
+                )
+                self._private_basis(assassination.private_basis)
+                payload["target_no"] = assassination.target_no
+                payload["speech"] = self._tool_speech(assassination.speech)
+            elif state.agent_protocol >= 15 and state.phase == "propose":
+                proposal = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _TeamToolInput,
+                )
+                payload["team"] = proposal.team
+                payload["speech"] = self._tool_speech(proposal.speech)
+            elif state.agent_protocol >= 15 and state.phase == "discuss":
+                statement = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _StatementWithSpeechToolInput,
+                )
+                payload["speech"] = self._tool_speech(statement.speech)
+                metadata["position"] = statement.position
+            elif (
+                state.agent_protocol >= 15
+                and state.phase in {"lady_announce", "evil_chat", "banter"}
+            ):
+                statement = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _SpeechToolInput,
+                )
+                payload["speech"] = self._tool_speech(statement.speech)
+            elif state.agent_protocol >= 15 and state.phase == "assassinate":
+                assassination = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _AssassinationToolInput,
+                )
+                payload["target_no"] = assassination.target_no
+                payload["speech"] = self._tool_speech(assassination.speech)
+            elif state.agent_protocol >= 9 and state.phase == "discuss":
+                statement = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _StatementToolInput,
+                )
+                metadata["position"] = statement.position
+            elif state.agent_protocol >= 9 and state.phase == "team_vote":
+                ballot = parse_json(
+                    json.dumps(reply.tool.input, ensure_ascii=False),
+                    _BallotToolInput,
+                )
+                payload["approve"] = ballot.approve
+                reason = ballot.reason.strip()
+                if not reason:
+                    raise JsonParseError("submit_ballot.reason 不能为空白")
+                metadata["decision_reason"] = reason
+            else:
+                payload.update(reply.tool.input)
+
+        checked = parse_json(json.dumps(payload, ensure_ascii=False), model)
+        return SimpleNamespace(
+            **{
+                **checked.model_dump(),
+                **metadata,
+                "monologue": "",
+            }
+        )
+
+    @staticmethod
+    def _tool_speech(speech: str) -> str:
+        cleaned = speech.strip()
+        if not cleaned:
+            raise JsonParseError("工具参数 speech 不能为空白")
+        return cleaned
+
+    @staticmethod
+    def _private_basis(basis: str) -> str:
+        cleaned = basis.strip()
+        if not cleaned:
+            raise JsonParseError("工具参数 private_basis 不能为空白")
+        return cleaned
+
     def _parse_propose(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
         q = min(state.quest_no, rules.QUESTS)
         size = rules.team_size(state.players, q)
-        result = parse_json(raw, Proposal)
+        result = self._parse_action(raw, state, Proposal)
         team = sorted(result.team)
         nos = set(range(1, state.players + 1))
         if len(team) != size or len(set(team)) != size or not set(team) <= nos:
             raise JsonParseError(f"{seat}号 提出非法队伍 {team}（需 {size} 个互不相同的在场座位）")
+        if state.agent_protocol == 7:
+            legacy_language_gates.validate_proposal_speech(
+                seat,
+                result.speech,
+                team,
+                state,
+            )
         deliveries = [
             Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
             Delivery(text=prompts.line_team_record(seat, team), channels=["broadcast"], spoken=False),
-            Delivery(text=result.monologue, channels=["audience"]),
         ]
-        action = json.dumps({
+        if state.agent_protocol >= 10:
+            deliveries.append(Delivery(
+                text=prompts.line_public_position(seat, "approve"),
+                channels=["broadcast"],
+                spoken=False,
+            ))
+        if result.monologue:
+            deliveries.append(Delivery(text=result.monologue, channels=["audience"]))
+        action_payload: dict[str, Any] = {
             "kind": "propose", "seat": seat, "team": team,
             "speech": result.speech, "monologue": result.monologue,
-        }, ensure_ascii=False)
+        }
+        if state.agent_protocol >= 10:
+            action_payload["position"] = "approve"
+        action = json.dumps(action_payload, ensure_ascii=False)
         return ParseResult(deliveries=deliveries, action=action)
 
     def _parse_discuss(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
-        result = parse_json(raw, Statement)
+        result = self._parse_action(raw, state, Statement)
         if result.phase != "discuss":
             raise JsonParseError(f"动作 phase 应为 discuss，实际为 {result.phase}")
+        if state.agent_protocol == 7:
+            legacy_language_gates.validate_discussion_speech(
+                seat,
+                result.speech,
+                state,
+            )
+        declared_stance = (
+            legacy_language_gates.declared_stance(
+                seat,
+                result.speech,
+                state.agent_protocol,
+            )
+            if 4 <= state.agent_protocol <= 7
+            else None
+        )
         deliveries = [
             Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
-            Delivery(text=result.monologue, channels=["audience"]),
         ]
-        action = json.dumps({
+        if state.agent_protocol >= 10:
+            deliveries.append(Delivery(
+                text=prompts.line_public_position(seat, result.position),
+                channels=["broadcast"],
+                spoken=False,
+            ))
+        if result.monologue:
+            deliveries.append(Delivery(text=result.monologue, channels=["audience"]))
+        action_payload = {
             "kind": "discuss", "seat": seat,
-            "speech": result.speech, "monologue": result.monologue,
-        }, ensure_ascii=False)
+            "speech": result.speech,
+            "monologue": result.monologue,
+        }
+        if state.agent_protocol >= 9:
+            action_payload["position"] = result.position
+        if 4 <= state.agent_protocol <= 7:
+            action_payload["declared_stance"] = declared_stance
+        action = json.dumps(action_payload, ensure_ascii=False)
         return ParseResult(deliveries=deliveries, action=action)
 
     def _parse_team_vote(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
-        result = parse_json(raw, TeamVote)
-        deliveries = [Delivery(text=result.monologue, channels=["audience"])]
-        action = json.dumps({
+        result = self._parse_action(raw, state, TeamVote)
+        declared = state.discussion_stances.get(seat)
+        if (
+            state.agent_protocol == 7
+            and declared is not None
+            and result.approve is not declared
+        ):
+            word = "赞成" if declared else "反对"
+            raise JsonParseError(
+                f"你本轮公开明确承诺投{word}，实际秘密票必须保持一致；"
+                "若可能被后置发言改变，讨论时应说“目前倾向”而不是作强承诺"
+            )
+        deliveries = []
+        action_payload: dict[str, Any] = {
             "kind": "team_vote", "seat": seat,
             "approve": result.approve, "monologue": result.monologue,
-        }, ensure_ascii=False)
+        }
+        if state.agent_protocol >= 9:
+            action_payload["reason"] = result.decision_reason
+            prior = state.discussion_positions.get(seat)
+            final_position = "approve" if result.approve else "reject"
+            if state.agent_protocol >= 10:
+                action_payload["position"] = final_position
+            if prior in ("approve", "reject") and prior != final_position:
+                prior_zh = "赞成" if prior == "approve" else "反对"
+                final_zh = "赞成" if result.approve else "反对"
+                if state.agent_protocol >= 10:
+                    change_speech = (
+                        f"我最终将票意从{prior_zh}改为{final_zh}："
+                        f"{result.decision_reason}"
+                    )
+                else:
+                    change_speech = (
+                        f"我在听完后续讨论后把票意从{prior_zh}改为{final_zh}："
+                        f"{result.decision_reason}"
+                    )
+                deliveries.append(Delivery(
+                    text=change_speech,
+                    channels=["broadcast"],
+                    kind="speech",
+                ))
+                action_payload["changed_from"] = prior
+                action_payload["speech"] = change_speech
+        elif result.monologue:
+            deliveries.append(Delivery(
+                text=result.monologue,
+                channels=["audience"],
+            ))
+        action = json.dumps(action_payload, ensure_ascii=False)
         return ParseResult(deliveries=deliveries, action=action)
 
     def _parse_quest(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
         s = state._seat(seat)
-        result = parse_json(raw, QuestCard)
+        result = self._parse_action(raw, state, QuestCard)
         if s.role.side is Side.GOOD and not result.success:
             raise JsonParseError(f"{seat}号 是蓝方却出了破坏票——蓝方只能出成功")
-        deliveries = [Delivery(text=result.monologue, channels=["audience"])]
+        if (
+            state.agent_protocol in (6, 7)
+            and s.role.side is Side.EVIL
+            and s.role is not Role.OBERON
+            and not result.success
+        ):
+            recognized_on_team = sorted(
+                {seat, *s.intel} & set(state.team)
+            )
+            needed = rules.fails_required(state.players, state.quest_no)
+            assigned = recognized_on_team[:needed]
+            if seat not in assigned:
+                raise JsonParseError(
+                    f"为避免互认红方重复破坏，本任务默认只由座位最小的 "
+                    f"{needed} 名已互认红方出破坏；当前队内互认红方是 "
+                    f"{recognized_on_team}，负责者是 {assigned}。你应出成功；"
+                    "奥伯伦因未互认不在此约定内"
+                )
+        deliveries = (
+            [Delivery(text=result.monologue, channels=["audience"])]
+            if result.monologue
+            else []
+        )
         action = json.dumps({
             "kind": "quest", "seat": seat,
             "success": result.success, "monologue": result.monologue,
@@ -328,11 +784,15 @@ class AvalonRules(Rules):
         return ParseResult(deliveries=deliveries, action=action)
 
     def _parse_lady_choose(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
-        result = parse_json(raw, LadyChoice)
+        result = self._parse_action(raw, state, LadyChoice)
         candidates = set(range(1, state.players + 1)) - set(state.lady_used)
         if result.target_no not in candidates:
             raise JsonParseError(f"{seat}号 查验了非法对象 {result.target_no}")
-        deliveries = [Delivery(text=result.monologue, channels=["audience"])]
+        deliveries = (
+            [Delivery(text=result.monologue, channels=["audience"])]
+            if result.monologue
+            else []
+        )
         action = json.dumps({
             "kind": "lady_choose", "seat": seat,
             "target_no": result.target_no, "monologue": result.monologue,
@@ -340,13 +800,14 @@ class AvalonRules(Rules):
         return ParseResult(deliveries=deliveries, action=action)
 
     def _parse_lady_announce(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
-        result = parse_json(raw, Statement)
+        result = self._parse_action(raw, state, Statement)
         if result.phase != "lady_announce":
             raise JsonParseError(f"动作 phase 应为 lady_announce，实际为 {result.phase}")
         deliveries = [
             Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
-            Delivery(text=result.monologue, channels=["audience"]),
         ]
+        if result.monologue:
+            deliveries.append(Delivery(text=result.monologue, channels=["audience"]))
         action = json.dumps({
             "kind": "lady_announce", "seat": seat,
             "speech": result.speech, "monologue": result.monologue,
@@ -355,14 +816,15 @@ class AvalonRules(Rules):
         return ParseResult(deliveries=deliveries, action=action)
 
     def _parse_evil_chat(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
-        result = parse_json(raw, Statement)
+        result = self._parse_action(raw, state, Statement)
         if result.phase != "evil_chat":
             raise JsonParseError(f"动作 phase 应为 evil_chat，实际为 {result.phase}")
         evil_channels: list[str | int] = [*state._evil_chat_order, "audience"]
         deliveries = [
             Delivery(text=result.speech, channels=evil_channels, kind="speech"),
-            Delivery(text=result.monologue, channels=["audience"]),
         ]
+        if result.monologue:
+            deliveries.append(Delivery(text=result.monologue, channels=["audience"]))
         action = json.dumps(
             {
                 "kind": "evil_chat",
@@ -375,7 +837,7 @@ class AvalonRules(Rules):
         return ParseResult(deliveries=deliveries, action=action)
 
     def _parse_assassinate(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
-        result = parse_json(raw, Assassination)
+        result = self._parse_action(raw, state, Assassination)
         # 终局互认已把完整红方名单明确交给刺客；合法目标由这份已披露名单自然投影，
         # 不在这里借裁判 role 真值另做一套隐形过滤。
         legal = {x.no for x in state.seats} - set(state.evil_team)
@@ -385,8 +847,9 @@ class AvalonRules(Rules):
         hit = target.role is Role.MERLIN
         deliveries = [
             Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
-            Delivery(text=result.monologue, channels=["audience"]),
         ]
+        if result.monologue:
+            deliveries.append(Delivery(text=result.monologue, channels=["audience"]))
         action = json.dumps({
             "kind": "assassinate", "seat": seat,
             "target_no": result.target_no, "speech": result.speech,
@@ -395,13 +858,14 @@ class AvalonRules(Rules):
         return ParseResult(deliveries=deliveries, action=action)
 
     def _parse_banter(self, seat: int, raw: str, state: AvalonState) -> ParseResult:
-        result = parse_json(raw, Statement)
+        result = self._parse_action(raw, state, Statement)
         if result.phase != "banter":
             raise JsonParseError(f"动作 phase 应为 banter，实际为 {result.phase}")
         deliveries = [
             Delivery(text=result.speech, channels=["broadcast"], kind="speech"),
-            Delivery(text=result.monologue, channels=["audience"]),
         ]
+        if result.monologue:
+            deliveries.append(Delivery(text=result.monologue, channels=["audience"]))
         action = json.dumps({
             "kind": "banter", "seat": seat,
             "speech": result.speech, "monologue": result.monologue,
@@ -416,11 +880,44 @@ class AvalonRules(Rules):
                 "team": list(a["team"]),
                 "pregame_done": True,
                 "lady_transfer": None,
+                "discussion_speeches": (
+                    {a["seat"]: a["speech"]}
+                    if state.agent_protocol == 7
+                    else {}
+                ),
+                "discussion_stances": (
+                    {a["seat"]: True}
+                    if state.agent_protocol == 7
+                    else {}
+                ),
+                "discussion_positions": (
+                    {a["seat"]: "approve"}
+                    if state.agent_protocol >= 9
+                    else {}
+                ),
             })
         if kind == "discuss":
-            return state.model_copy(deep=True, update={
+            updates: dict[str, Any] = {
                 "discuss_count": state.discuss_count + 1,
-            })
+            }
+            if state.agent_protocol == 7:
+                stances = dict(state.discussion_stances)
+                declared = a.get("declared_stance")
+                if declared is not None:
+                    stances[a["seat"]] = declared
+                updates.update({
+                    "discussion_speeches": {
+                        **state.discussion_speeches,
+                        a["seat"]: a["speech"],
+                    },
+                    "discussion_stances": stances,
+                })
+            if state.agent_protocol >= 9:
+                updates["discussion_positions"] = {
+                    **state.discussion_positions,
+                    a["seat"]: a["position"],
+                }
+            return state.model_copy(deep=True, update=updates)
         if kind == "team_vote":
             return state.model_copy(deep=True, update={
                 "votes": {**state.votes, a["seat"]: a["approve"]},
@@ -431,10 +928,18 @@ class AvalonRules(Rules):
             })
         if kind == "lady_choose":
             target = state._seat(a["target_no"])
-            return state.model_copy(deep=True, update={
+            updates: dict[str, Any] = {
                 "lady_target": a["target_no"],
                 "lady_seen": target.role.side.value,
-            })
+            }
+            if state.agent_protocol == 7 or state.agent_protocol >= 24:
+                checks = {
+                    holder: dict(results)
+                    for holder, results in state.lady_checks.items()
+                }
+                checks.setdefault(a["seat"], {})[a["target_no"]] = target.role.side.value
+                updates["lady_checks"] = checks
+            return state.model_copy(deep=True, update=updates)
         if kind == "lady_announce":
             return state
         if kind == "evil_chat":

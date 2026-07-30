@@ -119,6 +119,62 @@ async def test_parse_failure_triggers_respeak(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parse_failure_is_fed_back_to_retrying_actor() -> None:
+    class FeedbackActor(FlakyParseActor):
+        def __init__(self) -> None:
+            super().__init__(fail_times=1)
+            self.feedback: list[str] = []
+
+        def set_retry_feedback(self, seat: int, feedback: str) -> None:
+            self.feedback.append(feedback)
+
+    actor = FeedbackActor()
+    actors = {no: (actor if no == SEATS[0] else FlakyParseActor(0)) for no in SEATS}
+    await run(
+        StrictDummyRules(),
+        setup=None,
+        actors=actors,
+        journal=NullJournal(),
+        threads=_threads(),
+    )
+
+    assert actor.feedback == ["空产出非法"]
+
+
+@pytest.mark.asyncio
+async def test_parse_failure_feedback_includes_rejected_nonempty_draft() -> None:
+    class DraftRules(DummyRules):
+        def parse(self, seat: int, raw: str, state: dict):
+            if raw == "坏草稿":
+                raise JsonParseError("与公开承诺矛盾")
+            return super().parse(seat, raw, state)
+
+    class FeedbackActor(FlakyParseActor):
+        def __init__(self) -> None:
+            super().__init__(fail_times=0)
+            self.feedback: list[str] = []
+
+        async def speak(self, seat: int, view: Any, turn_id: str) -> str:
+            self.calls += 1
+            return "坏草稿" if self.calls == 1 else f"{seat}号说：已修正"
+
+        def set_retry_feedback(self, seat: int, feedback: str) -> None:
+            self.feedback.append(feedback)
+
+    actor = FeedbackActor()
+    actors = {no: (actor if no == SEATS[0] else FlakyParseActor(0)) for no in SEATS}
+    await run(
+        DraftRules(),
+        setup=None,
+        actors=actors,
+        journal=NullJournal(),
+        threads=_threads(),
+    )
+
+    assert actor.feedback == ["与公开承诺矛盾\n被拒绝的原草稿：坏草稿"]
+
+
+@pytest.mark.asyncio
 async def test_journal_batches_turn_atomically(tmp_path):
     """一个 turn 的玩家句子 + host 串场同批落盘（追加一次成型），seq 连续无洞。"""
     import json

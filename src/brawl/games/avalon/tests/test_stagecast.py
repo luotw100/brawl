@@ -26,6 +26,7 @@ from brawl.games.avalon.rules import DEFAULT_BOARD
 from brawl.games.avalon.stagecast import apply, stagecast
 from brawl.games.run import RunSettings
 from brawl.runtime.journal import load_replay_sentences
+from brawl.runtime.types import Delivery, Sentence
 from brawl.stage.protocol import Directive, HostSpeech
 
 
@@ -48,6 +49,18 @@ async def _run(replay: Path, seed: int = 42) -> list[Directive]:
     sentences = load_replay_sentences(replay)
     meta = json.loads((replay / "meta.json").read_text(encoding="utf-8"))
     return stagecast(sentences, meta, FakeMedia())
+
+
+def _agent_meta(meta: dict, protocol: int) -> dict:
+    copied = json.loads(json.dumps(meta))
+    copied["backend"] = "opencode"
+    copied["setup"]["agent_protocol"] = protocol
+    copied["setup"]["opencode_models"] = [
+        "deepseek/deepseek-v4-flash"
+        for _ in copied["setup"]["roles"]
+    ]
+    copied["agent_config"] = avalon_run.trusted_config(protocol)
+    return copied
 
 
 def _assert_invariants(directives: list[Directive]) -> None:
@@ -119,3 +132,56 @@ async def test_evil_chat_and_assassination_covered_across_seeds(tmp_path) -> Non
     assert "assassination" in kinds_seen, f"选定 seed 没跑出刺杀局：{kinds_seen}"
     assert "evil_chat" in phases_seen
     assert "evil_chat_opening" in beats_seen
+
+
+@pytest.mark.asyncio
+async def test_changed_vote_explanation_respects_position_visibility_version(
+    tmp_path,
+) -> None:
+    replay = tmp_path / "source"
+    await _run(replay, seed=7)
+    meta = json.loads((replay / "meta.json").read_text(encoding="utf-8"))
+    text = (
+        "我在听完后续讨论后把票意从赞成改为反对："
+        "后置位指出3号上一轮反投自己的提案。"
+    )
+    sentence = Sentence(
+        seq=99,
+        turn_id="q1.a1.team_vote",
+        speaker=2,
+        commit_id=10,
+        deliveries=[
+            Delivery(
+                text=text,
+                channels=["broadcast"],
+                kind="speech",
+            )
+        ],
+        action=json.dumps(
+            {
+                "kind": "team_vote",
+                "seat": 2,
+                "approve": False,
+                "monologue": "",
+                "reason": "后置位指出3号上一轮反投自己的提案。",
+                "changed_from": "approve",
+                "position": "reject",
+                "speech": text,
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    for protocol, expected_position in ((9, None), (10, "reject")):
+        directives = stagecast(
+            [sentence],
+            _agent_meta(meta, protocol),
+            FakeMedia(),
+        )
+
+        assert len(directives) == 1
+        assert isinstance(directives[0], Speech)
+        assert directives[0].phase == "discuss"
+        assert directives[0].seat_no == 2
+        assert directives[0].text == text
+        assert directives[0].position == expected_position

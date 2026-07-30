@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from brawl.games.avalon.agents import trusted_config
 from brawl.games.avalon.registry import Registry, load_registry
 from brawl.games.avalon.rules_engine import AvalonRules, AvalonState
 from brawl.games.avalon.validation import (
@@ -100,7 +101,18 @@ async def _open_actors(
         return
 
     assert installation is not None
-    async with open_opencode_runtime(installation, replay, meta.setup.players) as connection:
+    if meta.setup.agent_protocol >= 4:
+        bundle = meta.agent_config
+    elif meta.setup.agent_protocol >= 2:
+        bundle = trusted_config(meta.setup.agent_protocol)
+    else:
+        bundle = None
+    async with open_opencode_runtime(
+        installation,
+        replay,
+        meta.setup.players,
+        trusted_config=bundle,
+    ) as connection:
         seat_models = {
             no: ref
             for no, ref in enumerate(meta.setup.opencode_models, start=1)
@@ -134,6 +146,11 @@ def _build_meta(
             for name in dict.fromkeys(setup.models)
             if registry.models[name].display
         },
+        agent_config=(
+            trusted_config(setup.agent_protocol)
+            if setup.agent_protocol >= 4
+            else None
+        ),
     )
 
 

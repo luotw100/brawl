@@ -55,6 +55,7 @@ class Speech(Directive):
     seat_no: int
     text: str
     monologue: str
+    position: Literal["approve", "reject", "undecided"] | None = None
     quest: int | None = None
     attempt: int | None = None
     team: list[int] | None = None  # 仅 propose：本次提的队

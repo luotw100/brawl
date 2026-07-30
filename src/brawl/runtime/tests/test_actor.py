@@ -55,6 +55,22 @@ async def test_opencode_actor_infers_seat_no_when_view_lacks_it():
 
 
 @pytest.mark.asyncio
+async def test_opencode_actor_adds_retry_feedback_once() -> None:
+    backend = FakeBackend()
+    actor = OpenCodeActor(backend)
+    view = SimpleNamespace(prompt="提交当前动作")
+
+    actor.set_retry_feedback(2, "队伍人数应为 4")
+    await actor.speak(2, view, "turn")
+    await actor.speak(2, view, "turn")
+
+    first = backend.calls[-2][2][0].content
+    second = backend.calls[-1][2][0].content
+    assert "上一份尚未公开的草稿：队伍人数应为 4" in first
+    assert second == "提交当前动作"
+
+
+@pytest.mark.asyncio
 async def test_random_actor_returns_fixed_answer():
     actor = RandomActor(lambda seat, view: "投赞成票")
     raw = await actor.speak(2, SimpleNamespace(prompt="x"), "vote")
