@@ -12,7 +12,7 @@
 
 **大模型训练效率**
 - 自动驾驶VLA模型训练加速，**H卡MFU最高到45%左右**
-- `Dataloader`/`DDP`/`FSDP`/`bf16`/`torch.compile`/`CUDA Graph`/`Activation Checkpoint`等技术的应用
+- `Dataloader`/`DDP`/`FSDP`/`bf16`/`torch.compile`/`CUDA Graph`/`Activation Checkpoint`/`Seq Packing`等技术的应用
 
 **编译器与推理引擎**
 - 自研编译器前端：**浮点→定点转换、图融合**，VLA/规控/机器人/座舱等模型落地
@@ -20,11 +20,7 @@
 
 **训练框架与基础设施**
 - 训练框架：从Pytorch Lightning迁移到自研的xtorch，**支撑2000卡规模稳定训练**
-- 监控系统：添加详细的关键节点埋点，可迅速诊断效率、崩溃问题
-- 快速重启机制：多卡训练场景下热重载，**发生故障时分钟级别续训**
-- 自动调优Agent：基于Lang Graph搭建自动性能调优系统，**AI可一键调优Infra相关超参**
-- DT分离：将Dataloader和Training进程逻辑上分离，可将CPU密集的数据预处理分离到其它机器，**根治CPU竞争问题**
-- 存储降本、视频解码、环境搭建、SGLang部署开源模型...
+- 监控系统、快速重启机制、DT分离、存储降本、视频解码、SGLang部署模型
 
 **多芯片适配与异构部署**
 - 华为昇腾/阿里PPU：训推适配、精度对齐、性能调优
@@ -58,11 +54,11 @@
     - Optimizer CPU offload，降低显存峰值压力
 - Wan base的世界模型推理加速，端到端加速2x以上，主要手段有：
     - DiT部分int8量化，torch.compile，VAE的Decoder3D首帧缓存
-    - Cross-Chunk的block cache(https://arxiv.org/abs/2604.20289)
+    - Cross-Chunk的block cache：X-Cache（arXiv:2604.20289）
 
 **编译器与推理引擎**
 - 定点化pass开发：将伪量化的IR计算图转为全定点的IR计算图，覆盖Matmul、LUT、加减乘除比较等类型算子
-- 图融合：通过Concat传播思想将多个并行op合并为一个，提升计算效率
+- 图融合：通过Concat传播思路将多个并行op合并为一个，提升计算效率
 - 推理引擎开发及加速：实现IR的Interpreter，以及batch化、模拟int计算、triton op等加速手段
 - 配套工具链开发：图变化正确性验证、推理性能评测、算子算力统计、AoTI导出等cli工具
 
@@ -76,7 +72,7 @@
 ### Momenta · 高级软件工程师 · Infra | 2023.07 - 2024.10 | 北京
 
 - fp16训练及auto scale的调优，加速60%以上
-- 自动化AC：运行时perf各层级模型的显存/耗时开销，自动寻找“性价比”高的模块做activation checkpoint
+- 自动化AC：运行时监测各层级模型的显存/耗时开销，自动寻找“性价比”高的模块做activation checkpoint
 - 昇腾 910B 适配：PETR base的检测模型适配、性能测试与精度对比
 - 针对RepVGG结构模型的2:4稀疏训练，loss、评测指标可下降到和稠密训练一致，整网推理耗时下降13%左右
 - 参考Deepspeed实现高性能的forward/backward transformer CUDA kernel，相比torch原版加速7%左右
@@ -91,4 +87,12 @@
 - 开发安防ToB的算法SDK，包括检测、识别等各类CV类算法在端侧设备的落地
 - 海思Hi35xx系列、NVIDIA Jetson系列、瑞芯微RK系列上的算法适配、精度对齐、性能优化
 - 内部算法框架及组件开发，对算法屏蔽硬件差异，对用户屏蔽算法差异，开发并维护十多个算法组件
+
+## 教育经历
+
+### 西安理工大学 · 自动化 本科 · 自动化与信息工程学院 | 2014.09 - 2018.06 | 西安
+
+- 全国大学生数学建模竞赛 国家一等奖
+- 各类电子设计大赛、循迹车、创业大赛获得一二等奖
+- DIY四旋翼无人机、风力摆系统、激光雕刻机等
 
