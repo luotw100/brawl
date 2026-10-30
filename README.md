@@ -1,65 +1,79 @@
 # brawl
 
-AI 对战游戏：让若干常驻人设 AI 互相玩社交推理游戏（阿瓦隆、狼人杀），把对局录成视频发布。
-观众全程上帝视角（看得见所有底牌与内心独白），这是节目的核心看点。
+让 Agent 主持不同模型参与的阿瓦隆对局，产出可复盘的文本内容。
 
-**根本纪律：brawl 就是一个完整的游戏，replay 是游戏存档。** 生成（AI 对局）、回放（终端）、
-配音（TTS）、演出（录屏出片）都是同一个代码库对同一份存档的不同消费——"懂规则"只发生在
-玩法包里，演出是把存档重放一遍并逐步投影成舞台指令。
+由当前对话里的 Agent 充当 driver：读文字规则、直接调用各座位模型、裁决和记录。
+各座位有独立对话历史，无需 Codex subagent。只有模型通信与持久化使用通用小工具，游戏规则不写进代码。
 
-## 顶层结构
+只维护一个板子：**阿瓦隆 10 人全角色，带湖中仙女**。
+好人是梅林、派西维尔、4 忠臣；坏人是刺客、莫甘娜、莫德雷德、奥伯伦。
 
-单一 uv 项目、单一 Python 包（src 布局）、一条 CLI：
+## 使用
 
-- `src/brawl/runtime/` —— 对局运行时（Sentence Runtime）：驱动循环 / opencode 调用 / 句子日志 / resume / TTS / 终端回放。游戏盲。
-- `src/brawl/stage/` —— 演出壳：单局引擎 / playplan 节奏编译 / 录屏 / 封面 / 一次性 WS 服务。游戏盲。
-- `src/brawl/games/avalon/` `src/brawl/games/werewolf/` —— 玩法包：规则（rules_engine）+ 演出（stagecast / protocol / plan.yaml），一个玩法一个文件夹，自包含。
-- `src/brawl/cli.py` —— 组合根：子命令路由 + 玩法能力登记（板子/演出/resume；runtime/stage 不 import 玩法包）。
-- `src/brawl/games/run.py` —— `brawl run`/`brawl resume`：跨玩法统一参数面 + 板子注册表。
-- `src/brawl/voicelab/` —— 音色铸造工具。
-- `web/` —— 舞台前端（React/Vite）：录屏与（未来的）直播共用同一页。
+在这个仓库打开 Agent 对话，例如：
 
-## 出片流水线
+> 开一局阿瓦隆 10 人全角色湖仙局，所有座位用 DeepSeek，开始主持并保存存档。
 
-```bash
-uv sync && (cd web && npm install)
+或：
 
-uv run brawl run --board merlin-assassin-percival-morgana-mordred-oberon-lady-10 --replay /tmp/avalon1  # ① 生成存档（AI 对局）
-uv run brawl tts /tmp/avalon1                       # ② 配音（阿里云 DashScope，增量）
-uv run brawl record /tmp/avalon1                    # ③ 出片 → /tmp/avalon1/video.mp4
-uv run brawl cover /tmp/avalon1                     # ④ 封面 → /tmp/avalon1/covers/
-```
+> 按 runs/某一局/state.md 接着主持这局，不要重新发牌。
 
-开局侧：`brawl run --board <板子>` 一个参数面打所有玩法——板子决定玩法、人数与角色构成
-（当前：阿瓦隆 10 人全角色带湖仙 / 狼人杀 12 人预女猎白），其余参数（`--backend`/`--seed`/
-`--cast`/`--models` 等）全板通用。`--backend random` 零网络冒烟；默认 `--backend opencode`
-走托管的 OpenCode（每座位独立 server + 隔离 workspace，需 `opencode auth login` 与 `bwrap`）。
-存档目录即发布单元：`sentences.jsonl`（句子日志=checkpoint）、`meta.json`（冻结配置）、
-`tts/`、`avatars/`、`video.mp4`、`covers/`。续跑只认 `brawl resume --replay <dir>`，
-对局参数从 meta.json 恢复，不能附加其他参数。
+`AGENTS.md` 指向 [主持 skill](skills/brawl-play/SKILL.md) 和 [板子规则](skills/brawl-play/rules/avalon.md)。
+Skill 放在普通 `skills/` 目录，通过 AGENTS.md 或显式文件路径加载；不依赖用户机器的全局 skill 安装。
 
-其他命令：`brawl console <dir>`（终端回放存档，零网络）；`brawl voice-forge`（音色铸造，
-见 voicelab）。
+## 模型调用工具
 
-录屏：自起一次性播放栈（单局引擎 + uvicorn 到 127.0.0.1 随机口）+ Xvfb 虚拟屏 + 带头
-Chromium + ffmpeg 单趟硬编，边播边录，音轨离线按拍拼接。成品规格固定 1920×1080 @ 30fps
-含 BGM；`--limit-seconds` 先出片段试看，`--speed` 快录（上限 16）。覆盖已有 video.mp4 /
-封面时，需输入当场生成的 4 位随机冷静码确认。
-
-## 加玩法
-
-一个文件夹一个玩法：rules（Rules 协议）+ stagecast（StageGame bundle）+ plan.yaml +
-前端渲染器 + tests。runtime/stage 两个包都不 import 玩法；CLI 登记即接入全部命令，
-测试从 `src/brawl` 自动发现、无需登记。
-
-## 测试与检查
+仅需 Python 3.12 标准库。凭证放仓库根 `.env`，可以参照 `.env.example`；已有环境变量优先。
+默认模型为 `deepseek-flash`，可用模型通过 API 查询，不在代码里维护厂商模型表。
 
 ```bash
-uv run pytest -q
-uv run ruff check .
+python tools/seat_chat.py models
+python tools/seat_chat.py init --game runs/demo --seat 01 \
+  --system-file /tmp/seat-01.md --model deepseek-flash \
+  --parameters '{"max_tokens":8192,"thinking":{"type":"enabled"}}'
+python tools/seat_chat.py send --game runs/demo --seats 01 --file /tmp/turn-01.md
+python tools/seat_chat.py call --game runs/demo --seat 01
 ```
 
-## 直播
+`--system-file` 是主持者准备的规则、身份和人设；`send --file` 是新增可见事件与当前行动要求。
+同一份公开通知可通过 `--seats 01 02 03` 投递给多个座位，私密通知只投递给相应座位。
+这两个文件可以是任意 UTF-8 文本，工具不解析游戏语义。
 
-本期只做录屏；7×24 频道（导播台/片库/overlay/公网边缘）已从代码库移除（在 git 历史里），
-回归时在单局引擎之上重建调度层。
+`init` 支持 `--base-url`、`--api-key-env`、`--model` 和厂商参数 `--parameters`，用于其他兼容 Chat Completions 的服务。
+`call` 自动读取完整座位历史，只输出本轮答复、usage 和审计路径，不把完整 prompt 打回主持上下文。
+选手 API 本身仍接收完整历史，第一版不自动摘要或裁剪。
+
+## 存档
+
+```text
+runs/时间-avalon/
+  rules.md                 本局规则
+  roster.md                模型、角色、人设和初始私密情报
+  state.md                 主持进度及待处理行动
+  replay.md                完整记录：公开、私密、裁决、修正
+  summary.md               结果、转折和复盘索引
+  outbox/                  主持者准备的投递文本
+  seats/01/
+    system.md              座位设定
+    config.json            模型连接参数，不含 key
+    history.jsonl          每行一组完整 user/assistant 往返
+    inbox/                 持久化增量通知，以历史中的 ID 判断是否已消费
+    calls/调用ID/          原始请求、响应、输入 ID、提交状态
+```
+
+对局正文自由使用 Markdown，不要求固定事件 schema。座位的 JSON/JSONL 是通信工具内部使用的普通 UTF-8 文本。
+每次请求保存完整输入和原始响应，不保存 Authorization header。
+网络或 API 错误不会消费 inbox，也不会自动重试；不完整输出保留在调用档案中但不加入有效对话。
+已收到完整响应、尚未提交历史时，可用 `call --recover <调用ID>` 恢复，不重复调用模型。
+
+主持者只纠正规则误解、明确的记忆错误与行动矛盾；保留合法但愚蠢的决策，也允许角色正常欺骗。
+信息范围靠提示词与主持者分发约束；第一版不增加沙箱或整局预算限制。
+
+## 验证
+
+```bash
+python -m unittest discover -s tools/tests -v
+```
+
+测试覆盖座位历史续接、定向投递、调用失败、截断回复和中断恢复；不访问网络。
+主持准确性与对局内容质量通过真实阿瓦隆比赛继续打磨。

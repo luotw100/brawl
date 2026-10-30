@@ -1,4 +1,0 @@
-interface:
-  display_name: "Avalon Title"
-  short_description: "为阿瓦隆对局视频生成两行封面标题并写入title.txt文件"
-  default_prompt: "Use $avalon-title-txt to review Avalon replay folders and write two-line title.txt cover titles."
