@@ -25,7 +25,7 @@
 `AGENTS.md` 指向 [主持 skill](skills/brawl-play/SKILL.md) 和 [板子规则](skills/brawl-play/rules/avalon.md)。
 Skill 保存在仓库的 `skills/` 目录，通过 AGENTS.md 或显式文件路径加载。
 具体操作见 [一次行动、纠错、快照与异常示例](skills/brawl-play/references/hosting.md)。
-主持阶段复用现有工具并写入对局数据，工具能力缺口作为独立维护事项记录。
+对局期间严禁新增或修改程序代码，严格按 skill 使用现有工具；不顺手之处在终局后统一提出修改建议。随机和一次性数据操作按 skill 的既定约定执行。
 
 ## 模型调用工具
 
