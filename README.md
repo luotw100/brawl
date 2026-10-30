@@ -52,6 +52,7 @@ python tools/seat_chat.py call --game runs/demo --seat 01
 runs/时间-avalon/
   rules.md                 本局规则
   roster.md                模型、角色、人设和初始私密情报
+  random.md                随机种子、候选输入、执行脚本和结果
   state.md                 主持进度及待处理行动
   replay.md                完整记录：公开、私密、裁决、修正
   summary.md               结果、转折和复盘索引
@@ -71,6 +72,7 @@ runs/时间-avalon/
 
 主持者纠正规则误解、明确的记忆错误与行动矛盾，保留合法但愚蠢的决策，并按游戏规则处理欺骗与伪装。
 信息范围由提示词和主持者的消息分发共同约束。
+发牌、起始队长和抽签通过实际执行 Python `random` 完成，种子取执行时的 `int(time.time())`（Unix 时间戳，精确到秒），种子与结果随局保存。
 
 ## 验证
 
