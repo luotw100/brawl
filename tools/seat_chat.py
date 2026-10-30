@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent text seats over a Chat Completions API. No game rules; stdlib only."""
+"""Manage persistent seat conversations through a Chat Completions API."""
 
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ def request_json(url, key, payload=None, timeout=180):
         with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        # Do not print provider bodies, request headers or credentials.
+        # Report the HTTP status as a concise provider error.
         raise SeatError(f"provider HTTP {exc.code}; request was not committed; no automatic retry") from None
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         raise SeatError("network/response error; outcome may be unknown; no automatic retry") from None
@@ -249,7 +249,7 @@ def models(args):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     commands = p.add_subparsers(dest="command", required=True)
-    init = commands.add_parser("init", help="create a seat without making an API call")
+    init = commands.add_parser("init", help="initialize seat configuration and conversation files")
     init.add_argument("--game", required=True)
     init.add_argument("--seat", required=True)
     init.add_argument("--system-file", required=True)
@@ -266,7 +266,7 @@ def parser():
     run = commands.add_parser("call", help="call one seat; print only this turn's reply and metadata")
     run.add_argument("--game", required=True)
     run.add_argument("--seat", required=True)
-    run.add_argument("--recover", help="commit a saved response without sending another API request")
+    run.add_argument("--recover", help="commit a saved response to seat history")
     run.set_defaults(func=call)
     listing = commands.add_parser("models", help="query the provider's currently available model IDs")
     listing.add_argument("--base-url", default=DEFAULT_BASE)

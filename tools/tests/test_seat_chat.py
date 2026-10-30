@@ -1,4 +1,4 @@
-"""Behavioral checks for persistence and real request assembly; no paid calls."""
+"""Check persistence and request assembly with local simulated responses."""
 
 import argparse
 import importlib.util
